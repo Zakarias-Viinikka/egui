@@ -1,0 +1,11 @@
+[package]
+name = "logging"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+db_wrapper = { path = "/home/zakke/ProgStuff/z_db/db_wrapper", default-features = false, features = ["native"] }
+protocol = { path = "/home/zakke/ProgStuff/z_db/protocol" }
+
+[lints]
+workspace = true

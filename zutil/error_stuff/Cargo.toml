@@ -1,0 +1,10 @@
+[package]
+name = "error_stuff"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "/home/zakke/ProgStuff/z_db/protocol" }
+
+[lints]
+workspace = true

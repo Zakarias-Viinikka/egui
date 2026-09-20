@@ -1,0 +1,9 @@
+[package]
+name = "notes_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
