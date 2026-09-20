@@ -5,7 +5,6 @@ const WIDTH_FRACTION: f32 = 0.95;
 const HEIGHT_FRACTION: f32 = 0.95;
 const CIRCLE_DIAMETER_FRACTION: f32 = 0.90;
 const CIRCLE_STROKE_WIDTH: f32 = 2.0;
-const BACK_MARGIN: f32 = 20.0;
 const TEXTBOX_MAX_WIDTH: f32 = 140.0;
 const TEXTBOX_CORNER_RADIUS: f32 = 6.0;
 const PULSE_COLOR: egui::Color32 = egui::Color32::WHITE;
@@ -34,11 +33,15 @@ impl Default for MainPanelState {
 
 pub enum MainPanelAction {
     None,
-    Back,
-    TextClicked { text: String, center: egui::Pos2, size: egui::Vec2 },
+    TextClicked { index: usize, rect: egui::Rect },
 }
 
-pub fn main_panel_ui(ui: &mut egui::Ui, state: &mut MainPanelState, texts: &[String]) -> MainPanelAction {
+pub fn main_panel_ui(
+    ui: &mut egui::Ui,
+    state: &mut MainPanelState,
+    texts: &[String],
+    hidden: Option<usize>,
+) -> MainPanelAction {
     let mut action = MainPanelAction::None;
 
     let screen = ui.available_rect_before_wrap();
@@ -53,8 +56,7 @@ pub fn main_panel_ui(ui: &mut egui::Ui, state: &mut MainPanelState, texts: &[Str
     ui.painter().circle_stroke(rect.center(), radius, stroke);
 
     let n = texts.len();
-    let mut closest: Option<usize> = None;
-    let mut rects: Vec<egui::Rect> = Vec::new();
+    let mut rects: Vec<Option<egui::Rect>> = vec![None; n];
 
     if n > 0 {
         let start = -std::f32::consts::FRAC_PI_2;
@@ -69,14 +71,17 @@ pub fn main_panel_ui(ui: &mut egui::Ui, state: &mut MainPanelState, texts: &[Str
             .collect();
 
         let mouse = ui.ctx().input(|i| i.pointer.latest_pos());
-        closest = mouse.map(|m| {
-            let mut best = 0usize;
+        let closest = mouse.and_then(|m| {
+            let mut best: Option<usize> = None;
             let mut best_d = f32::MAX;
             for (i, p) in points.iter().enumerate() {
+                if Some(i) == hidden {
+                    continue;
+                }
                 let d = p.distance(m);
                 if d < best_d {
                     best_d = d;
-                    best = i;
+                    best = Some(i);
                 }
             }
             best
@@ -91,6 +96,9 @@ pub fn main_panel_ui(ui: &mut egui::Ui, state: &mut MainPanelState, texts: &[Str
         state.last_highlighted = closest;
 
         for (i, text) in texts.iter().enumerate() {
+            if Some(i) == hidden {
+                continue;
+            }
             let highlighted = closest == Some(i);
             let r = crate::components::textbox::ui::textbox_ui(
                 ui,
@@ -99,22 +107,33 @@ pub fn main_panel_ui(ui: &mut egui::Ui, state: &mut MainPanelState, texts: &[Str
                 TEXTBOX_MAX_WIDTH,
                 highlighted,
             );
-            rects.push(r);
+            rects[i] = Some(r);
         }
 
         if let Some(pending) = &state.pending {
             let now = ui.input(|inp| inp.time);
             if now - pending.started_at >= PULSE_DELAY_SECS {
-                if let Some(r) = rects.get(pending.index) {
+                if let Some(Some(r)) = rects.get(pending.index) {
                     state.pulses.push(PulseState::new(
                         ui,
-                        r.center(),
-                        r.size(),
+                        *r,
                         TEXTBOX_CORNER_RADIUS,
                         PULSE_COLOR,
                     ));
                 }
                 state.pending = None;
+            }
+        }
+
+        let pointer_clicked = ui.input(|i| i.pointer.primary_clicked());
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        if pointer_clicked && hidden.is_none() {
+            if let (Some(pos), Some(i)) = (pointer_pos, closest) {
+                if rect.contains(pos) {
+                    if let Some(Some(r)) = rects.get(i) {
+                        action = MainPanelAction::TextClicked { index: i, rect: *r };
+                    }
+                }
             }
         }
     }
@@ -123,29 +142,6 @@ pub fn main_panel_ui(ui: &mut egui::Ui, state: &mut MainPanelState, texts: &[Str
         ui.ctx().request_repaint();
     }
     state.pulses.retain(|p| !crate::components::pulse::ui::pulse_ui(ui, p));
-
-    let back_center = egui::pos2(rect.right() - BACK_MARGIN, rect.top() + BACK_MARGIN);
-    let back_clicked = crate::components::back_button::ui::back_button_ui(ui, back_center);
-
-    if back_clicked {
-        action = MainPanelAction::Back;
-    } else {
-        let pointer_clicked = ui.input(|i| i.pointer.primary_clicked());
-        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-        if pointer_clicked {
-            if let (Some(pos), Some(i)) = (pointer_pos, closest) {
-                if rect.contains(pos) {
-                    if let Some(r) = rects.get(i) {
-                        action = MainPanelAction::TextClicked {
-                            text: texts[i].clone(),
-                            center: r.center(),
-                            size: r.size(),
-                        };
-                    }
-                }
-            }
-        }
-    }
 
     action
 }

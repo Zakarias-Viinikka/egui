@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "core", "db", "error_stuff", "json_parsing", "logging", "ui_math"]
+members = ["app", "core", "db", "error_stuff", "json_parsing", "logging", "ui_math", "design"]
 resolver = "2"
 
 [workspace.package]

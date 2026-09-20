@@ -10,6 +10,8 @@ pub struct FillTemplateState {
     pub example: String,
     pub values: HashMap<String, String>,
     pub result: Option<String>,
+    pub focused_index: Option<usize>,
+    pub pending_focus: Option<usize>,
 }
 
 impl Default for FillTemplateState {
@@ -22,6 +24,8 @@ impl Default for FillTemplateState {
             example: String::new(),
             values: HashMap::new(),
             result: None,
+            focused_index: None,
+            pending_focus: None,
         }
     }
 }
@@ -35,6 +39,8 @@ impl FillTemplateState {
             new_values.insert(m, v);
         }
         self.values = new_values;
+        self.focused_index = None;
+        self.pending_focus = None;
     }
 }
 
@@ -72,6 +78,34 @@ pub fn fill_template_ui(
 
     let markers = extract_markers(&state.content);
 
+    if !markers.is_empty() {
+        let mut dir = 0i32;
+        ui.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                dir = 1;
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                dir = -1;
+            }
+        });
+
+        if state.focused_index.is_none() {
+            state.focused_index = Some(0);
+            state.pending_focus = Some(0);
+        }
+
+        if dir != 0 {
+            let len = markers.len();
+            let cur = state.focused_index.unwrap_or(0);
+            let next = if dir > 0 {
+                (cur + 1) % len
+            } else {
+                (cur + len - 1) % len
+            };
+            state.focused_index = Some(next);
+            state.pending_focus = Some(next);
+        }
+    }
+
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
         ui.add_space(8.0);
         let width = ui.available_width();
@@ -84,10 +118,40 @@ pub fn fill_template_ui(
             if markers.is_empty() {
                 ui.label("no markers in this template");
             } else {
-                for m in &markers {
-                    ui.label(m);
-                    let entry = state.values.entry(m.clone()).or_default();
-                    ui.text_edit_singleline(entry);
+                let mut new_focus: Option<usize> = None;
+                for (idx, m) in markers.iter().enumerate() {
+                    ui.label(egui::RichText::new(m.as_str()).strong());
+                    let response = {
+                        let entry = state.values.entry(m.clone()).or_default();
+                        ui.scope(|ui| {
+                            let v = ui.visuals_mut();
+                            v.extreme_bg_color = design::colors::FIELD_BG;
+                            v.override_text_color = Some(design::colors::FIELD_TEXT);
+                            v.widgets.inactive.bg_stroke =
+                                egui::Stroke::new(1.0, design::colors::FIELD_BORDER);
+                            v.widgets.hovered.bg_stroke =
+                                egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
+                            v.widgets.active.bg_stroke =
+                                egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
+                            ui.text_edit_singleline(entry)
+                        })
+                        .inner
+                    };
+
+                    if state.pending_focus == Some(idx) {
+                        response.request_focus();
+                    }
+                    if response.has_focus() {
+                        new_focus = Some(idx);
+                    }
+                    ui.add_space(6.0);
+                }
+
+                if let Some(i) = new_focus {
+                    state.focused_index = Some(i);
+                }
+                if state.pending_focus.is_some() {
+                    state.pending_focus = None;
                 }
             }
 

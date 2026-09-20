@@ -13,6 +13,7 @@ logging = { path = "../logging" }
 fading_popup = { path = "/home/zakke/ProgStuff/egui/reusable_components/fading_popup" }
 popup = { path = "/home/zakke/ProgStuff/egui/reusable_components/popup" }
 error_stuff = { path = "../error_stuff" }
+design = { path = "../design" }
 db_wrapper = { path = "/home/zakke/ProgStuff/z_db/db_wrapper", default-features = false, features = ["native"] }
 
 [lints]

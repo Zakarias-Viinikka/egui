@@ -1,9 +1,10 @@
-use crate::ui_screens::{disabled, edit_text, json, main_menu, projects, templates};
+use crate::ui_screens::{disabled, edit_text, json, projects, templates};
 use db_wrapper::mascot::LiveForever;
 use edit_text::create_text::ui::{CreateTextAction, CreateTextState};
 use edit_text::edit_single_text::ui::{EditSingleTextAction, EditSingleTextState};
 use edit_text::ui::{EditTextAction, EditTextState};
 use templates::create_template::ui::{CreateTemplateAction, CreateTemplateState};
+use templates::edit_single_category::ui::{EditSingleCategoryAction, EditSingleCategoryState};
 use templates::edit_single_template::ui::{EditSingleTemplateAction, EditSingleTemplateState};
 use templates::fill_template::ui::{FillTemplateAction, FillTemplateState};
 use projects::ui::{ProjectsAction, ProjectsState};
@@ -12,26 +13,36 @@ use fading_popup::ui::{FadingPopupParams, FadingPopupState, PopupScreenPosition,
 use std::sync::mpsc::{Receiver, Sender, channel};
 use json::example::ui::{JsonExampleAction, JsonExampleState, default_example_json};
 use json::ui::JsonState;
-use main_menu::ui::MainMenuAction;
+use crate::components::bounce_text::ui::{BounceTextState, bounce_text_ui};
+use crate::components::circle_menu::ui::CircleMenuState;
+use crate::globals::{ItemKind, MenuItem};
+use std::collections::{HashMap, HashSet};
 use protocol::payload::DeleteRowIn;
 use zutil_db::helpers::edit::{edit_text_body, edit_text_title};
-use zutil_db::helpers::category::{TYPE_META, TYPE_NORMAL, category_col, category_id_opt, read_categories_with_ids_by_type, read_category_name_by_id};
+use zutil_db::helpers::category::{TYPE_META, TYPE_NORMAL, category_col, category_id_opt, read_all_categories_with_ids, read_categories_with_ids_by_type, read_category_name_by_id};
 use zutil_db::helpers::new_row::{new_row_template, new_row_text_with_category};
 use zutil_db::helpers::project::new_row_project;
 use zutil_db::helpers::edit::{edit_template_content, edit_template_example, edit_template_instructions, edit_template_title};
-use zutil_db::helpers::read::read_template_by_id;
+use zutil_db::helpers::read::{read_all_templates, read_template_by_id};
 use zutil_db::helpers::read::read_text_by_id;
 
 pub fn run(db: LiveForever) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        centered: true,
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_position([0.0, 0.0])
+            .with_inner_size([1920.0, 1080.0])
+            .with_decorations(false)
+            .with_transparent(true),
         ..Default::default()
     };
 
     eframe::run_native(
         "zutil",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new(db)))),
+        Box::new(|cc| {
+            cc.egui_ctx.set_visuals(eframe::egui::Visuals::light());
+            Ok(Box::new(App::new(db)))
+        }),
     )
 }
 
@@ -45,8 +56,11 @@ struct FadingPopup {
     body: String,
 }
 
+const AI_PROMPT_PLACEHOLDERS: &[&str] = &["Placeholder 1", "Placeholder 2", "Placeholder 3"];
+const TEXT_PLACEHOLDERS: &[&str] = &["Placeholder A", "Placeholder B", "Placeholder C"];
+
 enum Page {
-    MainMenu,
+    CircleMenu,
     EditText,
     CreateText,
     EditSingleText,
@@ -73,13 +87,37 @@ pub struct App {
     edit_single_template_state: EditSingleTemplateState,
     fill_template_state: FillTemplateState,
     projects_state: ProjectsState,
+    circle_menu_state: CircleMenuState,
+    bounces: Vec<BounceTextState>,
+    open_template: Option<FillTemplateState>,
+    editor_overlay: Option<EditorOverlay>,
+}
+
+enum EditorOverlay {
+    Template(EditSingleTemplateState),
+    Category(EditSingleCategoryState),
 }
 
 impl App {
     fn new(db: LiveForever) -> Self {
+        crate::globals::init_menu(vec![
+            MenuItem { label: "Templates".to_string(), kind: ItemKind::PushTemplatesCategories },
+            MenuItem {
+                label: "AI Prompts".to_string(),
+                kind: ItemKind::PushPlaceholder(
+                    AI_PROMPT_PLACEHOLDERS.iter().map(|s| s.to_string()).collect(),
+                ),
+            },
+            MenuItem {
+                label: "Text".to_string(),
+                kind: ItemKind::PushPlaceholder(
+                    TEXT_PLACEHOLDERS.iter().map(|s| s.to_string()).collect(),
+                ),
+            },
+        ]);
         Self {
             db,
-            page: Page::MainMenu,
+            page: Page::CircleMenu,
             edit_text_state: EditTextState::default(),
             create_text_state: CreateTextState::default(),
             edit_single_text_state: EditSingleTextState::default(),
@@ -92,6 +130,10 @@ impl App {
             edit_single_template_state: EditSingleTemplateState::default(),
             fill_template_state: FillTemplateState::default(),
             projects_state: ProjectsState::default(),
+            circle_menu_state: CircleMenuState::default(),
+            bounces: Vec::new(),
+            open_template: None,
+            editor_overlay: None,
         }
     }
 
@@ -291,7 +333,235 @@ fn load_category_lists(db: &LiveForever) -> Result<(Vec<String>, Vec<String>), S
     Ok((normal, meta))
 }
 
-impl eframe::App for App {
+impl App {
+    fn push_template_categories(&mut self) {
+        let templates = match read_all_templates(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let categories = match read_all_categories_with_ids(&self.db) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let name_by_id: HashMap<i64, String> = categories
+            .into_iter()
+            .map(|(id, name, _)| (id, name))
+            .collect();
+
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &templates {
+            if let Some(cid) = row.cols.get(5).and_then(|c| c.as_int().ok()).copied() {
+                if seen.insert(cid) {
+                    if let Some(name) = name_by_id.get(&cid) {
+                        items.push(MenuItem {
+                            label: name.clone(),
+                            kind: ItemKind::PushTemplatesInCategory(cid),
+                        });
+                    }
+                }
+            }
+        }
+        crate::globals::push_menu(items);
+    }
+
+    fn push_templates_in_category(&mut self, target_cid: i64) {
+        let templates = match read_all_templates(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &templates {
+            let cid = row.cols.get(5).and_then(|c| c.as_int().ok()).copied();
+            if cid == Some(target_cid) {
+                let id = row
+                    .cols
+                    .first()
+                    .and_then(|c| c.as_int().ok())
+                    .copied()
+                    .unwrap_or(0);
+                let title = row
+                    .cols
+                    .get(1)
+                    .and_then(|c| c.as_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                items.push(MenuItem {
+                    label: title,
+                    kind: ItemKind::OpenTemplate(id),
+                });
+            }
+        }
+        crate::globals::push_menu(items);
+    }
+
+    fn open_template_overlay(&mut self, tid: i64) {
+        let row_opt = match read_template_by_id(&self.db, tid) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let row = match row_opt {
+            Some(r) => r,
+            None => return,
+        };
+        let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let content = row.cols.get(2).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let instructions = row.cols.get(3).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let example = row.cols.get(4).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+
+        let mut state = FillTemplateState::default();
+        state.id = tid;
+        state.title = title;
+        state.content = content;
+        state.instructions = instructions;
+        state.example = example;
+        state.reset_values_for_markers();
+        self.open_template = Some(state);
+    }
+
+    fn draw_template_overlay(&mut self, ui: &mut eframe::egui::Ui) {
+        let mut close = false;
+        if let Some(state) = self.open_template.as_mut() {
+            let inner = crate::components::page_frame::ui::page_frame_opaque_ui(ui);
+            ui.scope_builder(
+                eframe::egui::UiBuilder::new().max_rect(inner),
+                |ui| {
+                    match templates::fill_template::ui::fill_template_ui(ui, state) {
+                        FillTemplateAction::Back => close = true,
+                        FillTemplateAction::None => {}
+                    }
+                },
+            );
+        }
+        if close {
+            self.open_template = None;
+        }
+    }
+}
+
+impl App {
+    fn open_edit_template_overlay(&mut self, tid: i64) {
+        let row_opt = match read_template_by_id(&self.db, tid) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let row = match row_opt {
+            Some(r) => r,
+            None => return,
+        };
+        let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let content = row.cols.get(2).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let instructions = row.cols.get(3).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let example = row.cols.get(4).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let category = match row.cols.get(5).and_then(|c| c.as_int().ok()).copied() {
+            Some(cid) => read_category_name_by_id(&self.db, cid)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        let meta_category = match row.cols.get(6).and_then(|c| c.as_int().ok()).copied() {
+            Some(cid) => read_category_name_by_id(&self.db, cid)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        picker.current = category;
+        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        meta_picker.current = meta_category;
+
+        if let Ok((n, m)) = load_category_lists(&self.db) {
+            self.available_normal_categories = n;
+            self.available_meta_categories = m;
+        }
+
+        self.editor_overlay = Some(EditorOverlay::Template(EditSingleTemplateState {
+            id: tid,
+            title,
+            content,
+            instructions,
+            example,
+            category_picker: picker,
+            meta_category_picker: meta_picker,
+        }));
+    }
+
+    fn open_edit_category_overlay(&mut self, cid: i64) {
+        let name = read_category_name_by_id(&self.db, cid)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        self.editor_overlay = Some(EditorOverlay::Category(EditSingleCategoryState {
+            id: cid,
+            original_name: name.clone(),
+            name,
+        }));
+    }
+
+    fn draw_editor_overlay(&mut self, ui: &mut eframe::egui::Ui) {
+        let inner = crate::components::page_frame::ui::page_frame_opaque_ui(ui);
+        let mut close = false;
+        let mut save: Option<EditorOverlay> = None;
+
+        let overlay = match self.editor_overlay.as_mut() {
+            Some(o) => o,
+            None => return,
+        };
+
+        ui.scope_builder(eframe::egui::UiBuilder::new().max_rect(inner), |ui| {
+            match overlay {
+                EditorOverlay::Template(state) => {
+                    match templates::edit_single_template::ui::edit_single_template_ui(
+                        ui,
+                        state,
+                        &self.available_normal_categories,
+                        &self.available_meta_categories,
+                    ) {
+                        EditSingleTemplateAction::Back => close = true,
+                        EditSingleTemplateAction::Save => {}
+                        EditSingleTemplateAction::None => {}
+                    }
+                }
+                EditorOverlay::Category(state) => {
+                    match templates::edit_single_category::ui::edit_single_category_ui(ui, state) {
+                        EditSingleCategoryAction::Back => close = true,
+                        EditSingleCategoryAction::Save => {
+                            let id = state.id;
+                            let name = state.name.clone();
+                            save = Some(EditorOverlay::Category(EditSingleCategoryState {
+                                id,
+                                original_name: name.clone(),
+                                name,
+                            }));
+                        }
+                        EditSingleCategoryAction::None => {}
+                    }
+                }
+            }
+        });
+
+        if let Some(EditorOverlay::Category(state)) = &save {
+            let result = self.db.edit_col_in_row(
+                zutil_db::helpers::edit::edit_category_name(state.id, state.name.clone()),
+            );
+            unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_category", "save");
+            if let Some(EditorOverlay::Category(s)) = self.editor_overlay.as_mut() {
+                s.original_name = s.name.clone();
+            }
+        }
+
+        if close {
+            self.editor_overlay = None;
+        }
+    }
+}
+
+    fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
+        design::colors::BACKDROP
+    }
+
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         let mut popup_finished = false;
         if let Some(p) = &mut self.fading_popup {
@@ -317,32 +587,187 @@ impl eframe::App for App {
             }
         }
 
-        eframe::egui::CentralPanel::default().show(ui, |ui| {
-            if is_disabled() {
-                disabled::ui::disabled_ui(ui, &self.db);
-                return;
-            }
+        eframe::egui::CentralPanel::default()
+            .frame(eframe::egui::Frame::new().fill(eframe::egui::Color32::TRANSPARENT))
+            .show(ui, |ui| {
+                if is_disabled() {
+                    disabled::ui::disabled_ui(ui, &self.db);
+                    return;
+                }
 
-            match self.page {
-                Page::MainMenu => {
-                    match main_menu::ui::main_menu_ui(ui) {
-                        MainMenuAction::GoToEditText => {
+                crate::globals::set_modal_open(
+                    self.open_template.is_some() || self.editor_overlay.is_some(),
+                );
+                crate::globals::set_disable_rightclick(false);
+
+                if ui.input(|i| i.pointer.secondary_clicked())
+                    && !matches!(self.page, Page::CircleMenu)
+                {
+                    if self.open_template.is_some() {
+                        self.open_template = None;
+                    } else if self.editor_overlay.is_some() {
+                        self.editor_overlay = None;
+                    } else {
+                        self.page = Page::CircleMenu;
+                    }
+                }
+
+                let screen = ui.available_rect_before_wrap();
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    eframe::egui::Color32::from_rgba_premultiplied(0, 0, 0, 200),
+                );
+
+                let close_center =
+                    eframe::egui::pos2(
+                        screen.right() - design::numbers::SCREEN_CORNER,
+                        screen.top() + design::numbers::SCREEN_CORNER,
+                    );
+                if crate::components::close_button::ui::close_button_ui(ui, close_center) {
+                    ui.ctx()
+                        .send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
+                }
+
+                if !crate::globals::modal_open() {
+                    use crate::components::top_menu::ui::TopMenuAction;
+                    match crate::components::top_menu::ui::top_menu_ui(ui) {
+                        TopMenuAction::GoToViewAll => {
                             self.edit_text_state.reload(&self.db);
                             self.page = Page::EditText;
                         }
-                        MainMenuAction::GoToJson => {
-                            self.page = Page::Json;
-                        }
-                        MainMenuAction::GoToProjects => {
+                        TopMenuAction::GoToProjects => {
                             self.projects_state.reload(&self.db);
                             self.page = Page::Projects;
                         }
-                        MainMenuAction::None => {}
+                        TopMenuAction::GoToJson => {
+                            self.page = Page::Json;
+                        }
+                        TopMenuAction::None => {}
                     }
                 }
+
+                if matches!(self.page, Page::CircleMenu) {
+                    let texts = crate::globals::current_labels();
+                    let response = crate::components::circle_menu::ui::circle_menu_ui(
+                        ui,
+                        &mut self.circle_menu_state,
+                        &texts,
+                    );
+
+                    if let Some(i) = response.right_clicked {
+                        let items = crate::globals::current_items();
+                        if let Some(item) = items.get(i) {
+                            match item.kind.clone() {
+                                ItemKind::OpenTemplate(tid) => {
+                                    self.open_edit_template_overlay(tid);
+                                }
+                                ItemKind::PushTemplatesInCategory(cid) => {
+                                    self.open_edit_category_overlay(cid);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    if response.right_clicked.is_none()
+                        && ui.input(|i| i.pointer.secondary_clicked())
+                        && crate::globals::depth() > 1
+                        && !crate::globals::disable_rightclick()
+                    {
+                        crate::globals::pop_menu();
+                    }
+
+                    if let Some(i) = response.clicked {
+                        if self.bounces.is_empty() {
+                            let r = response.rects.get(i).copied().unwrap_or(eframe::egui::Rect::NOTHING);
+                            if r != eframe::egui::Rect::NOTHING {
+                                self.bounces.push(BounceTextState::new(
+                                    ui,
+                                    r.center(),
+                                    r.size(),
+                                    texts.get(i).cloned().unwrap_or_default(),
+                                ));
+                            }
+                            let items = crate::globals::current_items();
+                            if let Some(item) = items.get(i) {
+                                match item.kind.clone() {
+                                    ItemKind::PushTemplatesCategories => {
+                                        self.push_template_categories();
+                                    }
+                                    ItemKind::PushTemplatesInCategory(cid) => {
+                                        self.push_templates_in_category(cid);
+                                    }
+                                    ItemKind::OpenTemplate(tid) => {
+                                        self.open_template_overlay(tid);
+                                    }
+                                    ItemKind::PushPlaceholder(labels) => {
+                                        let items: Vec<MenuItem> = labels
+                                            .into_iter()
+                                            .map(|l| MenuItem { label: l, kind: ItemKind::None })
+                                            .collect();
+                                        crate::globals::push_menu(items);
+                                    }
+                                    ItemKind::None => {}
+                                }
+                            }
+                        }
+                    }
+
+                    if !self.bounces.is_empty() {
+                        ui.ctx().request_repaint();
+                        self.bounces.retain(|b| !bounce_text_ui(ui, b));
+                    }
+
+                    if self.open_template.is_none() && crate::globals::depth() > 1 {
+                        let back_center = eframe::egui::pos2(
+                            screen.left() + design::numbers::SCREEN_CORNER,
+                            screen.top() + design::numbers::SCREEN_CORNER,
+                        );
+                        if crate::components::back_button::ui::back_button_ui(ui, back_center) {
+                            crate::globals::pop_menu();
+                        }
+                    }
+
+                    if self.open_template.is_some() {
+                        self.draw_template_overlay(ui);
+                    }
+                    if self.editor_overlay.is_some() {
+                        self.draw_editor_overlay(ui);
+                    }
+
+                    return;
+                }
+
+                let back_center =
+                    eframe::egui::pos2(
+                        screen.left() + design::numbers::SCREEN_CORNER,
+                        screen.top() + design::numbers::SCREEN_CORNER,
+                    );
+                if crate::components::back_button::ui::back_button_ui(ui, back_center) {
+                    self.page = Page::CircleMenu;
+                }
+
+                let inner = crate::components::page_frame::ui::page_frame_ui(ui);
+
+                let this = &mut *self;
+                ui.scope_builder(
+                    eframe::egui::UiBuilder::new().max_rect(inner),
+                    |ui| {
+                        this.draw_current_page(ui);
+                    },
+                );
+            });
+    }
+}
+
+impl App {
+    fn draw_current_page(&mut self, ui: &mut eframe::egui::Ui) {
+        match self.page {
+                Page::CircleMenu => {}
                 Page::EditText => {
                     match edit_text::ui::edit_text_ui(ui, &self.db, &mut self.edit_text_state) {
-                        EditTextAction::Back => self.page = Page::MainMenu,
+                        EditTextAction::Back => self.page = Page::CircleMenu,
                         EditTextAction::NewTemplate => {
                             {
         let (n, m) = unwrap_or_bail!(load_category_lists(&self.db), "edit_text", "load_category_lists");
@@ -571,7 +996,7 @@ impl eframe::App for App {
                 }
                 Page::Json => {
                     match json::ui::json_ui(ui, &mut self.json_state) {
-                        json::ui::JsonAction::Back => self.page = Page::MainMenu,
+                        json::ui::JsonAction::Back => self.page = Page::CircleMenu,
                         json::ui::JsonAction::Do => {}
                         json::ui::JsonAction::ImportConfirmed(payloads) => {
                             let (text_count, tpl_count, _cat_count) = unwrap_or_bail!(
@@ -783,7 +1208,7 @@ impl eframe::App for App {
                 }
                 Page::Projects => {
                     match projects::ui::projects_ui(ui, &self.db, &mut self.projects_state) {
-                        ProjectsAction::Back => self.page = Page::MainMenu,
+                        ProjectsAction::Back => self.page = Page::CircleMenu,
                         ProjectsAction::Create { title, path, launch_zed, launch_adstud } => {
                             let result = self.db.insert_data(new_row_project(
                                 title,
@@ -935,6 +1360,5 @@ impl eframe::App for App {
                     }
                 }
             }
-        });
     }
 }

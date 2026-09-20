@@ -30,6 +30,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         crate::components::background::ui::background_ui(ui, |ui| {
             crate::components::main_content::ui::main_content_ui(ui, &mut self.main_content);
+            crate::components::debug_log::ui::debug_log_ui(ui);
         });
     }
 }

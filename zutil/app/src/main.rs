@@ -1,3 +1,4 @@
+mod globals;
 mod app;
 mod components;
 mod ui_screens;

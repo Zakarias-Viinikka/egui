@@ -1,10 +1,8 @@
 use eframe::egui;
 use std::sync::atomic::{AtomicU64, Ordering};
-
-const PULSE_CANCEL_WINDOW_SECS: f64 = 0.08;
-const PULSE_DURATION_SECS: f64 = 0.8;
-const PULSE_MAX_EXPANSION: f32 = 30.0;
-const PULSE_THICKNESS: f32 = 3.0;
+use design::numbers::{
+    PULSE_CANCEL_WINDOW_SECS, PULSE_DURATION_SECS, PULSE_MAX_EXPANSION, PULSE_THICKNESS,
+};
 
 static NEXT_PULSE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -41,11 +39,6 @@ impl PulseState {
 pub fn pulse_ui(ui: &mut egui::Ui, state: &PulseState) -> bool {
     let now = ui.input(|i| i.time);
     let progress = ((now - state.started_at) / PULSE_DURATION_SECS) as f32;
-
-    crate::components::debug_log::ui::log(
-        "pulse",
-        format!("{:?} progress={:.3}", state.id, progress),
-    );
 
     if progress >= 1.0 {
         return true;

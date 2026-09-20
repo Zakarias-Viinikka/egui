@@ -64,3 +64,12 @@ pub fn edit_template_example(template_id: i64, new_example: String) -> EditColIn
         new_value: Col::Text(new_example),
     }
 }
+
+pub fn edit_category_name(category_id: i64, new_name: String) -> EditColInRowIn {
+    EditColInRowIn {
+        table_name: "categories".to_string(),
+        row_id: category_id.to_string(),
+        column: "name".to_string(),
+        new_value: Col::Text(new_name),
+    }
+}
