@@ -6,7 +6,13 @@ pub enum ItemKind {
     PushTemplatesCategories,
     PushTemplatesInCategory(i64),
     OpenTemplate(i64),
-    PushPlaceholder(Vec<String>),
+    PushPromptCategories,
+    PushPromptsInCategory(i64),
+    CopyPrompt(i64),
+    PushTextCategories,
+    PushTextsInCategory(i64),
+    OpenTextEditor(i64),
+    ViewText(i64),
     None,
 }
 

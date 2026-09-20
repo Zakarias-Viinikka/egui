@@ -2,6 +2,7 @@ use crate::ui_screens::{disabled, edit_text, json, projects, templates};
 use db_wrapper::mascot::LiveForever;
 use edit_text::create_text::ui::{CreateTextAction, CreateTextState};
 use edit_text::edit_single_text::ui::{EditSingleTextAction, EditSingleTextState};
+use edit_text::view_text::ui::{ViewTextAction, ViewTextState};
 use edit_text::ui::{EditTextAction, EditTextState};
 use templates::create_template::ui::{CreateTemplateAction, CreateTemplateState};
 use templates::edit_single_category::ui::{EditSingleCategoryAction, EditSingleCategoryState};
@@ -23,7 +24,7 @@ use zutil_db::helpers::category::{TYPE_META, TYPE_NORMAL, category_col, category
 use zutil_db::helpers::new_row::{new_row_template, new_row_text_with_category};
 use zutil_db::helpers::project::new_row_project;
 use zutil_db::helpers::edit::{edit_template_content, edit_template_example, edit_template_instructions, edit_template_title};
-use zutil_db::helpers::read::{read_all_templates, read_template_by_id};
+use zutil_db::helpers::read::{read_all_templates, read_all_texts, read_template_by_id};
 use zutil_db::helpers::read::read_text_by_id;
 
 pub fn run(db: LiveForever) -> eframe::Result<()> {
@@ -56,8 +57,6 @@ struct FadingPopup {
     body: String,
 }
 
-const AI_PROMPT_PLACEHOLDERS: &[&str] = &["Placeholder 1", "Placeholder 2", "Placeholder 3"];
-const TEXT_PLACEHOLDERS: &[&str] = &["Placeholder A", "Placeholder B", "Placeholder C"];
 
 enum Page {
     CircleMenu,
@@ -96,24 +95,16 @@ pub struct App {
 enum EditorOverlay {
     Template(EditSingleTemplateState),
     Category(EditSingleCategoryState),
+    Text(EditSingleTextState),
+    ViewText(ViewTextState),
 }
 
 impl App {
     fn new(db: LiveForever) -> Self {
         crate::globals::init_menu(vec![
             MenuItem { label: "Templates".to_string(), kind: ItemKind::PushTemplatesCategories },
-            MenuItem {
-                label: "AI Prompts".to_string(),
-                kind: ItemKind::PushPlaceholder(
-                    AI_PROMPT_PLACEHOLDERS.iter().map(|s| s.to_string()).collect(),
-                ),
-            },
-            MenuItem {
-                label: "Text".to_string(),
-                kind: ItemKind::PushPlaceholder(
-                    TEXT_PLACEHOLDERS.iter().map(|s| s.to_string()).collect(),
-                ),
-            },
+            MenuItem { label: "AI Prompts".to_string(), kind: ItemKind::PushPromptCategories },
+            MenuItem { label: "Text".to_string(), kind: ItemKind::PushTextCategories },
         ]);
         Self {
             db,
@@ -504,6 +495,7 @@ impl App {
         let inner = crate::components::page_frame::ui::page_frame_opaque_ui(ui);
         let mut close = false;
         let mut save: Option<EditorOverlay> = None;
+        let mut text_save = false;
 
         let overlay = match self.editor_overlay.as_mut() {
             Some(o) => o,
@@ -539,8 +531,40 @@ impl App {
                         EditSingleCategoryAction::None => {}
                     }
                 }
+                EditorOverlay::Text(state) => {
+                    match edit_text::edit_single_text::ui::edit_single_text_ui(
+                        ui,
+                        state,
+                        &self.available_normal_categories,
+                        &self.available_meta_categories,
+                    ) {
+                        EditSingleTextAction::Back => close = true,
+                        EditSingleTextAction::Save => {
+                            text_save = true;
+                        }
+                        EditSingleTextAction::None => {}
+                    }
+                }
+                EditorOverlay::ViewText(state) => {
+                    match edit_text::view_text::ui::view_text_ui(ui, state) {
+                        ViewTextAction::Back => close = true,
+                        ViewTextAction::None => {}
+                    }
+                }
             }
         });
+
+        if text_save {
+            if let Some(EditorOverlay::Text(state)) = self.editor_overlay.as_ref() {
+                let id = state.id;
+                let title = state.title.clone();
+                let body = state.body.clone();
+                let type_of_text = state.type_of_text.clone();
+                let cat = state.category_picker.current.clone();
+                let meta = state.meta_category_picker.current.clone();
+                self.save_edit_single_text(id, title, body, type_of_text, cat, meta);
+            }
+        }
 
         if let Some(EditorOverlay::Category(state)) = &save {
             let result = self.db.edit_col_in_row(
@@ -558,6 +582,259 @@ impl App {
     }
 }
 
+impl App {
+    fn push_all_prompts(&mut self) {
+        let texts = match read_all_texts(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &texts {
+            let is_prompt = row
+                .cols
+                .get(5)
+                .and_then(|c| c.as_str().ok())
+                .map(|s| s == "prompt")
+                .unwrap_or(false);
+            if !is_prompt {
+                continue;
+            }
+            let id = row.cols.first().and_then(|c| c.as_int().ok()).copied().unwrap_or(0);
+            let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+            items.push(MenuItem { label: title, kind: ItemKind::CopyPrompt(id) });
+        }
+        crate::globals::push_menu(items);
+    }
+
+    fn push_text_categories(&mut self) {
+        self.push_categories_for_kind(false);
+    }
+
+    fn push_categories_for_kind(&mut self, prompt: bool) {
+        let texts = match read_all_texts(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let categories = match read_all_categories_with_ids(&self.db) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let name_by_id: HashMap<i64, String> = categories
+            .into_iter()
+            .map(|(id, name, _)| (id, name))
+            .collect();
+
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &texts {
+            let is_prompt = row
+                .cols
+                .get(5)
+                .and_then(|c| c.as_str().ok())
+                .map(|s| s == "prompt")
+                .unwrap_or(false);
+            if is_prompt != prompt {
+                continue;
+            }
+            if let Some(cid) = row.cols.get(3).and_then(|c| c.as_int().ok()).copied() {
+                if seen.insert(cid) {
+                    if let Some(name) = name_by_id.get(&cid) {
+                        let kind = if prompt {
+                            ItemKind::PushPromptsInCategory(cid)
+                        } else {
+                            ItemKind::PushTextsInCategory(cid)
+                        };
+                        items.push(MenuItem { label: name.clone(), kind });
+                    }
+                }
+            }
+        }
+        crate::globals::push_menu(items);
+    }
+
+    fn push_prompts_in_category(&mut self, target_cid: i64) {
+        self.push_texts_in_category_filtered(target_cid, true);
+    }
+
+    fn push_texts_in_category(&mut self, target_cid: i64) {
+        self.push_texts_in_category_filtered(target_cid, false);
+    }
+
+    fn push_texts_in_category_filtered(&mut self, target_cid: i64, prompt: bool) {
+        let texts = match read_all_texts(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &texts {
+            let is_prompt = row
+                .cols
+                .get(5)
+                .and_then(|c| c.as_str().ok())
+                .map(|s| s == "prompt")
+                .unwrap_or(false);
+            if is_prompt != prompt {
+                continue;
+            }
+            let cid = row.cols.get(3).and_then(|c| c.as_int().ok()).copied();
+            if cid == Some(target_cid) {
+                let id = row.cols.first().and_then(|c| c.as_int().ok()).copied().unwrap_or(0);
+                let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+                let kind = if prompt {
+                    ItemKind::CopyPrompt(id)
+                } else {
+                    ItemKind::ViewText(id)
+                };
+                items.push(MenuItem { label: title, kind });
+            }
+        }
+        crate::globals::push_menu(items);
+    }
+
+    fn copy_prompt(&mut self, ui: &mut eframe::egui::Ui, tid: i64) {
+        let row_opt = match read_text_by_id(&self.db, tid) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let row = match row_opt {
+            Some(r) => r,
+            None => return,
+        };
+        let body = row.cols.get(2).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        ui.ctx().copy_text(body);
+
+        let (tx, rx) = channel();
+        let (ticker_stop, ticker_rx) = channel::<()>();
+        let ctx = ui.ctx().clone();
+        std::thread::spawn(move || loop {
+            if ticker_rx.try_recv().is_ok() {
+                break;
+            }
+            ctx.request_repaint();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
+        self.fading_popup = Some(FadingPopup {
+            state: FadingPopupState::new(),
+            rx,
+            tx,
+            ticker_stop,
+            id: format!("copied_{}", tid),
+            title: None,
+            body: "copied".to_string(),
+        });
+    }
+
+    fn open_view_text_overlay(&mut self, tid: i64) {
+        let row_opt = match read_text_by_id(&self.db, tid) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let row = match row_opt {
+            Some(r) => r,
+            None => return,
+        };
+        let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let body = row.cols.get(2).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        self.editor_overlay = Some(EditorOverlay::ViewText(ViewTextState { title, body }));
+    }
+
+    fn open_edit_text_overlay(&mut self, tid: i64) {
+        let row_opt = match read_text_by_id(&self.db, tid) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let row = match row_opt {
+            Some(r) => r,
+            None => return,
+        };
+        let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let body = row.cols.get(2).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let category = match row.cols.get(3).and_then(|c| c.as_int().ok()).copied() {
+            Some(cid) => read_category_name_by_id(&self.db, cid).ok().flatten().unwrap_or_default(),
+            None => String::new(),
+        };
+        let meta_category = match row.cols.get(4).and_then(|c| c.as_int().ok()).copied() {
+            Some(cid) => read_category_name_by_id(&self.db, cid).ok().flatten().unwrap_or_default(),
+            None => String::new(),
+        };
+        let type_of_text = row.cols.get(5).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+
+        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        picker.current = category;
+        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        meta_picker.current = meta_category;
+
+        if let Ok((n, m)) = load_category_lists(&self.db) {
+            self.available_normal_categories = n;
+            self.available_meta_categories = m;
+        }
+
+        self.editor_overlay = Some(EditorOverlay::Text(EditSingleTextState {
+            id: tid,
+            title,
+            body,
+            type_of_text,
+            category_picker: picker,
+            meta_category_picker: meta_picker,
+        }));
+    }
+
+    fn save_edit_single_text(
+        &mut self,
+        id: i64,
+        title: String,
+        body: String,
+        type_of_text: String,
+        cat: String,
+        meta: String,
+    ) {
+        let result = self.db.edit_col_in_row(edit_text_title(id, title));
+        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_text_title");
+        let result = self.db.edit_col_in_row(edit_text_body(id, body));
+        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_text_body");
+
+        let type_value = if type_of_text.is_empty() {
+            protocol::row_col::Col::Null
+        } else {
+            protocol::row_col::Col::Text(type_of_text)
+        };
+        let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
+            table_name: "texts".to_string(),
+            row_id: id.to_string(),
+            column: "type_of_text".to_string(),
+            new_value: type_value,
+        });
+        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_type_of_text");
+
+        let category_col_value = unwrap_or_bail!(
+            category_col(&self.db, &cat, TYPE_NORMAL).map_err(|e| e.to_string()),
+            "edit_single_text",
+            "category_col"
+        );
+        let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
+            table_name: "texts".to_string(),
+            row_id: id.to_string(),
+            column: "category_id".to_string(),
+            new_value: category_col_value,
+        });
+        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_category_id");
+
+        let meta_col_value = unwrap_or_bail!(
+            category_col(&self.db, &meta, TYPE_META).map_err(|e| e.to_string()),
+            "edit_single_text",
+            "category_col"
+        );
+        let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
+            table_name: "texts".to_string(),
+            row_id: id.to_string(),
+            column: "meta_category_id".to_string(),
+            new_value: meta_col_value,
+        });
+        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_meta_category_id");
+    }
+}
+
+impl eframe::App for App {
     fn clear_color(&self, _visuals: &eframe::egui::Visuals) -> [f32; 4] {
         design::colors::BACKDROP
     }
@@ -616,7 +893,7 @@ impl App {
                 ui.painter().rect_filled(
                     screen,
                     0.0,
-                    eframe::egui::Color32::from_rgba_premultiplied(0, 0, 0, 200),
+                    design::colors::BACKDROP_OPAQUE,
                 );
 
                 let close_center =
@@ -655,6 +932,27 @@ impl App {
                         &texts,
                     );
 
+                    if ui.input(|i| i.pointer.secondary_clicked()) {
+                        if self.open_template.is_some() {
+                            self.open_template = None;
+                        } else if self.editor_overlay.is_some() {
+                            self.editor_overlay = None;
+                        }
+                    }
+
+                    if self.open_template.is_none()
+                        && self.editor_overlay.is_none()
+                        && response.right_clicked.is_none()
+                        && ui.input(|i| i.pointer.secondary_clicked())
+                        && crate::globals::depth() > 1
+                        && !crate::globals::disable_rightclick()
+                    {
+                        crate::globals::pop_menu();
+                    }
+
+                    if self.open_template.is_none()
+                        && self.editor_overlay.is_none()
+                    {
                     if let Some(i) = response.right_clicked {
                         let items = crate::globals::current_items();
                         if let Some(item) = items.get(i) {
@@ -665,30 +963,33 @@ impl App {
                                 ItemKind::PushTemplatesInCategory(cid) => {
                                     self.open_edit_category_overlay(cid);
                                 }
+                                ItemKind::CopyPrompt(tid) => {
+                                    self.open_edit_text_overlay(tid);
+                                }
+                                ItemKind::OpenTextEditor(tid) => {
+                                    self.open_edit_text_overlay(tid);
+                                }
+                                ItemKind::ViewText(tid) => {
+                                    self.open_edit_text_overlay(tid);
+                                }
                                 _ => {}
                             }
                         }
                     }
 
-                    if response.right_clicked.is_none()
-                        && ui.input(|i| i.pointer.secondary_clicked())
-                        && crate::globals::depth() > 1
-                        && !crate::globals::disable_rightclick()
-                    {
-                        crate::globals::pop_menu();
                     }
 
                     if let Some(i) = response.clicked {
-                        if self.bounces.is_empty() {
-                            let r = response.rects.get(i).copied().unwrap_or(eframe::egui::Rect::NOTHING);
-                            if r != eframe::egui::Rect::NOTHING {
-                                self.bounces.push(BounceTextState::new(
-                                    ui,
-                                    r.center(),
-                                    r.size(),
-                                    texts.get(i).cloned().unwrap_or_default(),
-                                ));
-                            }
+                        let r = response.rects.get(i).copied().unwrap_or(eframe::egui::Rect::NOTHING);
+                        if self.bounces.is_empty() && r != eframe::egui::Rect::NOTHING {
+                            self.bounces.push(BounceTextState::new(
+                                ui,
+                                r.center(),
+                                r.size(),
+                                texts.get(i).cloned().unwrap_or_default(),
+                            ));
+                        }
+                        {
                             let items = crate::globals::current_items();
                             if let Some(item) = items.get(i) {
                                 match item.kind.clone() {
@@ -701,12 +1002,26 @@ impl App {
                                     ItemKind::OpenTemplate(tid) => {
                                         self.open_template_overlay(tid);
                                     }
-                                    ItemKind::PushPlaceholder(labels) => {
-                                        let items: Vec<MenuItem> = labels
-                                            .into_iter()
-                                            .map(|l| MenuItem { label: l, kind: ItemKind::None })
-                                            .collect();
-                                        crate::globals::push_menu(items);
+                                    ItemKind::PushPromptCategories => {
+                                        self.push_all_prompts();
+                                    }
+                                    ItemKind::PushPromptsInCategory(cid) => {
+                                        self.push_prompts_in_category(cid);
+                                    }
+                                    ItemKind::CopyPrompt(tid) => {
+                                        self.copy_prompt(ui, tid);
+                                    }
+                                    ItemKind::PushTextCategories => {
+                                        self.push_text_categories();
+                                    }
+                                    ItemKind::PushTextsInCategory(cid) => {
+                                        self.push_texts_in_category(cid);
+                                    }
+                                    ItemKind::OpenTextEditor(tid) => {
+                                        self.open_edit_text_overlay(tid);
+                                    }
+                                    ItemKind::ViewText(tid) => {
+                                        self.open_view_text_overlay(tid);
                                     }
                                     ItemKind::None => {}
                                 }

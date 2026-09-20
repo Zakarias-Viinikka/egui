@@ -111,7 +111,12 @@ pub fn circle_menu_ui(
         best
     });
 
-    crate::globals::set_disable_rightclick(closest.is_some());
+    let on_a_box = ui
+        .ctx()
+        .input(|i| i.pointer.latest_pos())
+        .map(|p| rects.iter().any(|r| *r != egui::Rect::NOTHING && r.contains(p)))
+        .unwrap_or(false);
+    crate::globals::set_disable_rightclick(on_a_box);
 
     if menu_changed {
         state.last_highlighted = closest;
@@ -163,7 +168,7 @@ pub fn circle_menu_ui(
     }
     if pointer_secondary && !modal {
         if let (Some(pos), Some(i)) = (pointer_pos, closest) {
-            if rect.contains(pos) {
+            if rects[i] != egui::Rect::NOTHING && rects[i].contains(pos) {
                 right_clicked = Some(i);
             }
         }

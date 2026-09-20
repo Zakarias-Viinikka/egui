@@ -2,6 +2,7 @@ use eframe::egui::Color32;
 
 // screen backdrop
 pub const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 0.8];
+pub const BACKDROP_OPAQUE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 200);
 
 // surfaces
 pub const SURFACE: Color32 = Color32::from_rgba_premultiplied(230, 230, 230, 230);
