@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use eframe::egui;
 use json_parsing::parse::{ParsedPayload, parse_pasted_json};
 
@@ -84,10 +85,10 @@ pub fn json_example_ui(ui: &mut egui::Ui, state: &mut JsonExampleState) -> JsonE
             egui::ScrollArea::vertical()
                 .id_salt("example_left")
                 .show(&mut cols[0], |ui| {
-                    ui.add_sized(
-                        [ui.available_width(), content_height],
-                        egui::TextEdit::multiline(&mut state.text).desired_width(f32::INFINITY),
-                    );
+                    let _ = content_height;
+                    TextInput::plain_multi("json_example_text")
+                        .desired_rows(20)
+                        .show(ui, &mut state.text);
                 });
             egui::ScrollArea::vertical()
                 .id_salt("example_right")

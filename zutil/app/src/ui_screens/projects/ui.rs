@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use db_wrapper::mascot::LiveForever;
 use eframe::egui;
 use error_stuff::unwrap_or_bail;
@@ -175,9 +176,9 @@ pub fn projects_ui(
             });
             ui.separator();
             ui.label("Title");
-            ui.text_edit_singleline(&mut state.form_title);
+            TextInput::single("project_form_title").show(ui, &mut state.form_title);
             ui.label("Path");
-            ui.text_edit_singleline(&mut state.form_path);
+            TextInput::single("project_form_path").show(ui, &mut state.form_path);
             ui.checkbox(&mut state.form_launch_zed, "Launch zed");
             ui.checkbox(&mut state.form_launch_adstud, "Launch adstud");
             ui.separator();

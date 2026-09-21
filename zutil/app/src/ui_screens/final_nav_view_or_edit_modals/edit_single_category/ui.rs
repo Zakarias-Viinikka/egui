@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use eframe::egui;
 
 pub struct EditSingleCategoryState {
@@ -49,7 +50,7 @@ pub fn edit_single_category_ui(
             egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
         v.widgets.active.bg_stroke =
             egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
-        ui.add(egui::TextEdit::singleline(&mut state.name).desired_width(f32::INFINITY));
+        TextInput::single("edit_category_name").show(ui, &mut state.name);
     });
 
     ui.add_space(16.0);

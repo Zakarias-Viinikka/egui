@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use eframe::egui;
 use json_parsing::template_markers::{extract_markers, fill_markers};
 use std::collections::HashMap;
@@ -133,7 +134,7 @@ pub fn fill_template_ui(
                                 egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
                             v.widgets.active.bg_stroke =
                                 egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
-                            ui.text_edit_singleline(entry)
+                            TextInput::single(&format!("fill_marker_{}", m)).show(ui, entry)
                         })
                         .inner
                     };
@@ -160,11 +161,9 @@ pub fn fill_template_ui(
                 ui.separator();
                 ui.label("Result:");
                 let mut display = result.clone();
-                ui.add(
-                    egui::TextEdit::multiline(&mut display)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(10),
-                );
+                TextInput::multi("fill_result_display", 300.0)
+                    .read_only()
+                    .show(ui, &mut display);
                 if ui.button("Copy result").clicked() {
                     ui.ctx().copy_text(result.clone());
                 }

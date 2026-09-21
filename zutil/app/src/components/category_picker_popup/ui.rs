@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use eframe::egui;
 
 pub struct CategoryPickerState {
@@ -5,6 +6,7 @@ pub struct CategoryPickerState {
     pub creating_new: bool,
     pub new_name: String,
     pub current: String,
+    pub id: String,
 }
 
 impl Default for CategoryPickerState {
@@ -14,6 +16,16 @@ impl Default for CategoryPickerState {
             creating_new: false,
             new_name: String::new(),
             current: String::new(),
+            id: String::new(),
+        }
+    }
+}
+
+impl CategoryPickerState {
+    pub fn with_id(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            ..Default::default()
         }
     }
 }
@@ -43,13 +55,13 @@ pub fn category_picker_trigger(
     }
 
     if state.show {
-        egui::Modal::new(egui::Id::new("category_picker")).show(ui.ctx(), |ui| {
+        egui::Modal::new(egui::Id::new(&state.id)).show(ui.ctx(), |ui| {
             ui.set_width(360.0);
 
             if state.creating_new {
                 ui.heading("New category");
                 ui.separator();
-                ui.text_edit_singleline(&mut state.new_name);
+                TextInput::single("new_category_name").show(ui, &mut state.new_name);
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Confirm").clicked() && !state.new_name.is_empty() {

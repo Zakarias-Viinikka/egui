@@ -226,9 +226,9 @@ impl App {
             None => String::new(),
         };
 
-        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_text_category");
         picker.current = category;
-        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_text_meta_category");
         meta_picker.current = meta_category;
 
         self.edit_single_template_state = EditSingleTemplateState {
@@ -294,9 +294,9 @@ impl App {
             None => String::new(),
         };
 
-        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_template_category");
         picker.current = category;
-        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
+        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_template_meta_category");
         meta_picker.current = meta_category;
 
         self.edit_single_text_state = EditSingleTextState {
@@ -612,78 +612,14 @@ impl App {
                     }
                 }
                 EditorOverlay::Projects => {
-                    match projects::ui::projects_ui(ui, &self.db, &mut self.projects_state) {
-                        ProjectsAction::Back => close = true,
-                        ProjectsAction::Create { title, path, launch_zed, launch_adstud } => {
-                            let result = self.db.insert_data(new_row_project(
-                                title, path, launch_zed, launch_adstud,
-                            ));
-                            unwrap_or_bail!(result.map_err(|e| e.to_string()), "projects", "insert_project");
-                            self.projects_state.reload(&self.db);
+                    let action = projects::ui::projects_ui(ui, &self.db, &mut self.projects_state);
+                    match handle_projects_action(&self.db, &mut self.projects_state, action) {
+                        Ok(true) => close = true,
+                        Ok(false) => {}
+                        Err(e) => {
+                            error_stuff::report_error(e);
+                            return;
                         }
-                        ProjectsAction::Update { id, title, path, launch_zed, launch_adstud } => {
-                            let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-                                table_name: "projects".to_string(),
-                                row_id: id.to_string(),
-                                column: "title".to_string(),
-                                new_value: protocol::row_col::Col::Text(title),
-                            });
-                            unwrap_or_bail!(result.map_err(|e| e.to_string()), "projects", "update_title");
-                            let clean_path = zutil_db::helpers::project::normalize_path(&path);
-                            let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-                                table_name: "projects".to_string(),
-                                row_id: id.to_string(),
-                                column: "path".to_string(),
-                                new_value: protocol::row_col::Col::Text(clean_path),
-                            });
-                            unwrap_or_bail!(result.map_err(|e| e.to_string()), "projects", "update_path");
-                            for (col, val) in [
-                                ("launch_zed", launch_zed),
-                                ("launch_adstud", launch_adstud),
-                            ] {
-                                let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-                                    table_name: "projects".to_string(),
-                                    row_id: id.to_string(),
-                                    column: col.to_string(),
-                                    new_value: protocol::row_col::Col::Integer(if val { 1 } else { 0 }),
-                                });
-                                unwrap_or_bail!(result.map_err(|e| e.to_string()), "projects", "update_flag");
-                            }
-                            self.projects_state.reload(&self.db);
-                        }
-                        ProjectsAction::Delete(id) => {
-                            let result = self.db.delete_row(DeleteRowIn {
-                                table_name: "projects".to_string(),
-                                row_id: id.to_string(),
-                            });
-                            unwrap_or_bail!(result.map_err(|e| e.to_string()), "projects", "delete_project");
-                            self.projects_state.reload(&self.db);
-                        }
-                        ProjectsAction::OpenTerminal { path } => {
-                            let expanded = zutil_db::helpers::project::normalize_path(&path);
-                            let _ = std::process::Command::new("x-terminal-emulator").current_dir(&expanded).spawn();
-                        }
-                        ProjectsAction::LaunchZed { path } => {
-                            let expanded = zutil_db::helpers::project::normalize_path(&path);
-                            let _ = std::process::Command::new("bash")
-                                .arg("-ic").arg("zed .")
-                                .current_dir(&expanded)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                        }
-                        ProjectsAction::LaunchAdstud { path } => {
-                            let expanded = zutil_db::helpers::project::normalize_path(&path);
-                            let _ = std::process::Command::new("bash")
-                                .arg("-ic").arg("adstud")
-                                .current_dir(&expanded)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                        }
-                        ProjectsAction::None => {}
                     }
                 }
             }
@@ -691,63 +627,53 @@ impl App {
         });
 
         if text_save {
-            if let Some(EditorOverlay::Text(state)) = self.editor_overlay.as_ref() {
-                let id = state.id;
-                let title = state.title.clone();
-                let body = state.body.clone();
-                let type_of_text = state.type_of_text.clone();
-                let cat = state.category_picker.current.clone();
-                let meta = state.meta_category_picker.current.clone();
-                self.save_edit_single_text(id, title, body, type_of_text, cat, meta);
+            let save_result =
+                if let Some(EditorOverlay::Text(state)) = self.editor_overlay.as_ref() {
+                    let id = state.id;
+                    let title = state.title.clone();
+                    let body = state.body.clone();
+                    let type_of_text = state.type_of_text.clone();
+                    let cat = state.category_picker.current.clone();
+                    let meta = state.meta_category_picker.current.clone();
+                    Some(self.save_edit_single_text(id, title, body, type_of_text, cat, meta))
+                } else {
+                    None
+                };
+            if let Some(Err(e)) = save_result {
+                error_stuff::report_error(error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Col(e),
+                    screen: "edit_single_text".to_string(),
+                    location: "save".to_string(),
+                });
+                return;
             }
             close = true;
             self.rebuild_menu_stack();
         }
 
         if template_save {
-            if let Some(EditorOverlay::Template(state)) = self.editor_overlay.as_ref() {
-                let id = state.id;
-                let title = state.title.clone();
-                let content = state.content.clone();
-                let instructions = state.instructions.clone();
-                let example = state.example.clone();
-                let cat = state.category_picker.current.clone();
-                let meta = state.meta_category_picker.current.clone();
-
-                let result = self.db.edit_col_in_row(edit_template_title(id, title));
-                unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_template_title");
-                let result = self.db.edit_col_in_row(edit_template_content(id, content));
-                unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_template_content");
-                let result = self.db.edit_col_in_row(edit_template_instructions(id, instructions));
-                unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_template_instructions");
-                let result = self.db.edit_col_in_row(edit_template_example(id, example));
-                unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_template_example");
-
-                let category_col_value = unwrap_or_bail!(
-                    category_col(&self.db, &cat, TYPE_NORMAL).map_err(|e| e.to_string()),
-                    "edit_single_template",
-                    "category_col"
-                );
-                let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-                    table_name: "templates".to_string(),
-                    row_id: id.to_string(),
-                    column: "category_id".to_string(),
-                    new_value: category_col_value,
+            let save_result =
+                if let Some(EditorOverlay::Template(state)) = self.editor_overlay.as_ref() {
+                    let id = state.id;
+                    let title = state.title.clone();
+                    let content = state.content.clone();
+                    let instructions = state.instructions.clone();
+                    let example = state.example.clone();
+                    let cat = state.category_picker.current.clone();
+                    let meta = state.meta_category_picker.current.clone();
+                    Some(self.save_edit_single_template(
+                        id, title, content, instructions, example, cat, meta,
+                    ))
+                } else {
+                    None
+                };
+            if let Some(Err(e)) = save_result {
+                error_stuff::report_error(error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Col(e),
+                    screen: "edit_single_template".to_string(),
+                    location: "save".to_string(),
                 });
-                unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_category_id");
-
-                let meta_col_value = unwrap_or_bail!(
-                    category_col(&self.db, &meta, TYPE_META).map_err(|e| e.to_string()),
-                    "edit_single_template",
-                    "category_col"
-                );
-                let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-                    table_name: "templates".to_string(),
-                    row_id: id.to_string(),
-                    column: "meta_category_id".to_string(),
-                    new_value: meta_col_value,
-                });
-                unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_meta_category_id");
+                return;
             }
             close = true;
             self.rebuild_menu_stack();
@@ -871,31 +797,37 @@ impl App {
         }
     }
 
-    // NOTE: If you add, rename, or remove a main-nav item here, you MUST also
-    // update MAIN_NAV_NAMES in db/src/helpers/popularity.rs. init_db uses that
-    // list to pre-create the main_nav_clicks rows, and every counter lookup is
-    // keyed by the label you pass to mk_root below.
     fn init_root_menu(&mut self) {
-        let mk_root = |label: &str, kind: ItemKind| MenuItem {
-            label: label.to_string(),
-            kind,
-            counter: popularity::read_main_nav_counter(&self.db, label).unwrap_or(0) as u32,
-            shortcut: zutil_db::helpers::shortcuts::read_shortcut(
-                &self.db,
-                zutil_db::helpers::shortcuts::OWNER_MAIN_NAV,
-                label,
-            )
-            .ok()
-            .flatten(),
-            owner: (zutil_db::helpers::shortcuts::OWNER_MAIN_NAV, label.to_string()),
-        };
-        crate::globals::init_menu(vec![
-            mk_root("Templates", ItemKind::PushTemplatesCategories),
-            mk_root("AI Prompts", ItemKind::PushPromptCategories),
-            mk_root("Text", ItemKind::PushTextCategories),
-            mk_root("Terminal Commands", ItemKind::PushTerminalCategories),
-            mk_root("Projects", ItemKind::PushProjects),
-        ]);
+        let db = &self.db;
+        let items: Vec<MenuItem> = popularity::MAIN_NAV_NAMES
+            .iter()
+            .map(|name| {
+                let kind = match *name {
+                    "Templates" => ItemKind::PushTemplatesCategories,
+                    "AI Prompts" => ItemKind::PushPromptCategories,
+                    "Text" => ItemKind::PushTextCategories,
+                    "Terminal Commands" => ItemKind::PushTerminalCategories,
+                    "Projects" => ItemKind::PushProjects,
+                    _ => ItemKind::None,
+                };
+                let counter = popularity::read_main_nav_counter(db, name).unwrap_or(0) as u32;
+                let shortcut = zutil_db::helpers::shortcuts::read_shortcut(
+                    db,
+                    zutil_db::helpers::shortcuts::OWNER_MAIN_NAV,
+                    name,
+                )
+                .ok()
+                .flatten();
+                MenuItem {
+                    label: (*name).to_string(),
+                    kind,
+                    counter,
+                    shortcut,
+                    owner: (zutil_db::helpers::shortcuts::OWNER_MAIN_NAV, (*name).to_string()),
+                }
+            })
+            .collect();
+        crate::globals::init_menu(items);
     }
 
     fn push_projects(&mut self) {
@@ -955,7 +887,7 @@ impl App {
             ItemKind::PushTemplatesInCategory(cid) => self.push_templates_in_category(cid),
             ItemKind::OpenTemplate(tid) => self.open_template_overlay(tid),
             ItemKind::PushPromptCategories => self.push_all_prompts(),
-            ItemKind::PushPromptsInCategory(cid) => self.push_prompts_in_category(cid),
+            ItemKind::PushPromptsInCategory(_) => {}
             ItemKind::CopyPrompt(tid) => self.copy_prompt(ui, tid),
             ItemKind::PushTextCategories => self.push_text_categories(),
             ItemKind::PushTextsInCategory(cid) => self.push_texts_in_category(cid),
@@ -1078,18 +1010,31 @@ impl App {
     }
 
     fn push_terminal_categories(&mut self) {
-        self.push_categories_for_type("terminal command", ItemKind::PushTerminalsInCategory);
+        self.push_categories_for_texts(
+            |t| t == "terminal command",
+            ItemKind::PushTerminalsInCategory,
+            crate::globals::RebuildKind::TerminalCategories,
+        );
     }
 
     fn push_terminals_in_category(&mut self, cid: i64) {
-        self.push_texts_in_category_by_type(cid, "terminal command", ItemKind::CopyPrompt);
+        self.push_texts_in_category_for(
+            cid,
+            |t| t == "terminal command",
+            ItemKind::CopyPrompt,
+            crate::globals::RebuildKind::TerminalsInCategory(cid),
+        );
     }
 
-    fn push_categories_for_type(
+    fn push_categories_for_texts<F>(
         &mut self,
-        type_of_text: &str,
+        matches: F,
         mk_kind: fn(i64) -> ItemKind,
-    ) {
+        rebuild_kind: crate::globals::RebuildKind,
+    )
+    where
+        F: Fn(&str) -> bool,
+    {
         let texts = match read_all_texts(&self.db) {
             Ok(t) => t,
             Err(_) => return,
@@ -1107,7 +1052,7 @@ impl App {
         let mut items: Vec<MenuItem> = Vec::new();
         for row in &texts {
             let t = row.cols.get(5).and_then(|c| c.as_str().ok()).unwrap_or("");
-            if t != type_of_text {
+            if !matches(t) {
                 continue;
             }
             if let Some(cid) = row.cols.get(3).and_then(|c| c.as_int().ok()).copied() {
@@ -1129,20 +1074,19 @@ impl App {
                 }
             }
         }
-        let kind = match type_of_text {
-            "prompt" => crate::globals::RebuildKind::Prompts,
-            "terminal command" => crate::globals::RebuildKind::TerminalCategories,
-            _ => crate::globals::RebuildKind::TextCategories,
-        };
-        crate::globals::push_menu(kind, items);
+        crate::globals::push_menu(rebuild_kind, items);
     }
 
-    fn push_texts_in_category_by_type(
+    fn push_texts_in_category_for<F>(
         &mut self,
         target_cid: i64,
-        type_of_text: &str,
+        matches: F,
         mk_kind: fn(i64) -> ItemKind,
-    ) {
+        rebuild_kind: crate::globals::RebuildKind,
+    )
+    where
+        F: Fn(&str) -> bool,
+    {
         let texts = match read_all_texts(&self.db) {
             Ok(t) => t,
             Err(_) => return,
@@ -1150,7 +1094,7 @@ impl App {
         let mut items: Vec<MenuItem> = Vec::new();
         for row in &texts {
             let t = row.cols.get(5).and_then(|c| c.as_str().ok()).unwrap_or("");
-            if t != type_of_text {
+            if !matches(t) {
                 continue;
             }
             let cid = row.cols.get(3).and_then(|c| c.as_int().ok()).copied();
@@ -1170,12 +1114,7 @@ impl App {
                 });
             }
         }
-        let kind = match type_of_text {
-            "prompt" => crate::globals::RebuildKind::Prompts,
-            "terminal command" => crate::globals::RebuildKind::TerminalsInCategory(target_cid),
-            _ => crate::globals::RebuildKind::TextsInCategory(target_cid),
-        };
-        crate::globals::push_menu(kind, items);
+        crate::globals::push_menu(rebuild_kind, items);
     }
 
     fn push_all_prompts(&mut self) {
@@ -1212,119 +1151,20 @@ impl App {
     }
 
     fn push_text_categories(&mut self) {
-        self.push_categories_for_kind(false);
-    }
-
-    fn push_categories_for_kind(&mut self, prompt: bool) {
-        let texts = match read_all_texts(&self.db) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let categories = match read_all_categories_with_ids(&self.db) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let name_by_id: HashMap<i64, String> = categories
-            .into_iter()
-            .map(|(id, name, _)| (id, name))
-            .collect();
-
-        let mut seen: HashSet<i64> = HashSet::new();
-        let mut items: Vec<MenuItem> = Vec::new();
-        for row in &texts {
-            let is_prompt = row
-                .cols
-                .get(5)
-                .and_then(|c| c.as_str().ok())
-                .map(|s| s == "prompt")
-                .unwrap_or(false);
-            if is_prompt != prompt {
-                continue;
-            }
-            if let Some(cid) = row.cols.get(3).and_then(|c| c.as_int().ok()).copied() {
-                if seen.insert(cid) {
-                    if let Some(name) = name_by_id.get(&cid) {
-                        let kind = if prompt {
-                            ItemKind::PushPromptsInCategory(cid)
-                        } else {
-                            ItemKind::PushTextsInCategory(cid)
-                        };
-                        let key = cid.to_string();
-                        items.push(MenuItem {
-                            label: name.clone(),
-                            kind,
-                            counter: popularity::read_counter(&self.db, "categories", cid)
-                                .unwrap_or(0),
-                            shortcut: self.read_shortcut_for(
-                                zutil_db::helpers::shortcuts::OWNER_CATEGORY,
-                                &key,
-                            ),
-                            owner: (zutil_db::helpers::shortcuts::OWNER_CATEGORY, key),
-                        });
-                    }
-                }
-            }
-        }
-        let kind = if prompt {
-            crate::globals::RebuildKind::Prompts
-        } else {
-            crate::globals::RebuildKind::TextCategories
-        };
-        crate::globals::push_menu(kind, items);
-    }
-
-    fn push_prompts_in_category(&mut self, target_cid: i64) {
-        self.push_texts_in_category_filtered(target_cid, true);
+        self.push_categories_for_texts(
+            |t| t != "prompt",
+            ItemKind::PushTextsInCategory,
+            crate::globals::RebuildKind::TextCategories,
+        );
     }
 
     fn push_texts_in_category(&mut self, target_cid: i64) {
-        self.push_texts_in_category_filtered(target_cid, false);
-    }
-
-    fn push_texts_in_category_filtered(&mut self, target_cid: i64, prompt: bool) {
-        let texts = match read_all_texts(&self.db) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let mut items: Vec<MenuItem> = Vec::new();
-        for row in &texts {
-            let is_prompt = row
-                .cols
-                .get(5)
-                .and_then(|c| c.as_str().ok())
-                .map(|s| s == "prompt")
-                .unwrap_or(false);
-            if is_prompt != prompt {
-                continue;
-            }
-            let cid = row.cols.get(3).and_then(|c| c.as_int().ok()).copied();
-            if cid == Some(target_cid) {
-                let id = row.cols.first().and_then(|c| c.as_int().ok()).copied().unwrap_or(0);
-                let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
-                let kind = if prompt {
-                    ItemKind::CopyPrompt(id)
-                } else {
-                    ItemKind::ViewText(id)
-                };
-                let key = id.to_string();
-                items.push(MenuItem {
-                    label: title,
-                    kind,
-                    counter: popularity::read_counter(&self.db, "texts", id).unwrap_or(0),
-                    shortcut: self.read_shortcut_for(
-                        zutil_db::helpers::shortcuts::OWNER_TEXT,
-                        &key,
-                    ),
-                    owner: (zutil_db::helpers::shortcuts::OWNER_TEXT, key),
-                });
-            }
-        }
-        let kind = if prompt {
-            crate::globals::RebuildKind::Prompts
-        } else {
-            crate::globals::RebuildKind::TextsInCategory(target_cid)
-        };
-        crate::globals::push_menu(kind, items);
+        self.push_texts_in_category_for(
+            target_cid,
+            |t| t != "prompt",
+            ItemKind::ViewText,
+            crate::globals::RebuildKind::TextsInCategory(target_cid),
+        );
     }
 
     fn copy_prompt(&mut self, ui: &mut eframe::egui::Ui, tid: i64) {
@@ -1397,57 +1237,243 @@ impl App {
     }
 
     fn save_edit_single_text(
-        &mut self,
+        &self,
         id: i64,
         title: String,
         body: String,
         type_of_text: String,
         cat: String,
         meta: String,
-    ) {
-        let result = self.db.edit_col_in_row(edit_text_title(id, title));
-        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_text_title");
-        let result = self.db.edit_col_in_row(edit_text_body(id, body));
-        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_text_body");
+    ) -> Result<(), String> {
+        let db = &self.db;
+        db.begin_all_or_nothing().map_err(|e| e.to_string())?;
+        let result: Result<(), String> = (|| {
+            db.edit_col_in_row(edit_text_title(id, title))
+                .map_err(|e| e.to_string())?;
+            db.edit_col_in_row(edit_text_body(id, body))
+                .map_err(|e| e.to_string())?;
+            let type_value = if type_of_text.is_empty() {
+                protocol::row_col::Col::Null
+            } else {
+                protocol::row_col::Col::Text(type_of_text)
+            };
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "texts".to_string(),
+                row_id: id.to_string(),
+                column: "type_of_text".to_string(),
+                new_value: type_value,
+            })
+            .map_err(|e| e.to_string())?;
+            let category_col_value =
+                category_col(db, &cat, TYPE_NORMAL).map_err(|e| e.to_string())?;
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "texts".to_string(),
+                row_id: id.to_string(),
+                column: "category_id".to_string(),
+                new_value: category_col_value,
+            })
+            .map_err(|e| e.to_string())?;
+            let meta_col_value =
+                category_col(db, &meta, TYPE_META).map_err(|e| e.to_string())?;
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "texts".to_string(),
+                row_id: id.to_string(),
+                column: "meta_category_id".to_string(),
+                new_value: meta_col_value,
+            })
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.everything_went_perfectly().map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = db.regret_everything();
+                Err(e)
+            }
+        }
+    }
 
-        let type_value = if type_of_text.is_empty() {
-            protocol::row_col::Col::Null
-        } else {
-            protocol::row_col::Col::Text(type_of_text)
-        };
-        let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-            table_name: "texts".to_string(),
-            row_id: id.to_string(),
-            column: "type_of_text".to_string(),
-            new_value: type_value,
-        });
-        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_type_of_text");
+    fn save_edit_single_template(
+        &self,
+        id: i64,
+        title: String,
+        content: String,
+        instructions: String,
+        example: String,
+        cat: String,
+        meta: String,
+    ) -> Result<(), String> {
+        let db = &self.db;
+        db.begin_all_or_nothing().map_err(|e| e.to_string())?;
+        let result: Result<(), String> = (|| {
+            db.edit_col_in_row(edit_template_title(id, title))
+                .map_err(|e| e.to_string())?;
+            db.edit_col_in_row(edit_template_content(id, content))
+                .map_err(|e| e.to_string())?;
+            db.edit_col_in_row(edit_template_instructions(id, instructions))
+                .map_err(|e| e.to_string())?;
+            db.edit_col_in_row(edit_template_example(id, example))
+                .map_err(|e| e.to_string())?;
+            let category_col_value =
+                category_col(db, &cat, TYPE_NORMAL).map_err(|e| e.to_string())?;
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "templates".to_string(),
+                row_id: id.to_string(),
+                column: "category_id".to_string(),
+                new_value: category_col_value,
+            })
+            .map_err(|e| e.to_string())?;
+            let meta_col_value =
+                category_col(db, &meta, TYPE_META).map_err(|e| e.to_string())?;
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "templates".to_string(),
+                row_id: id.to_string(),
+                column: "meta_category_id".to_string(),
+                new_value: meta_col_value,
+            })
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.everything_went_perfectly().map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = db.regret_everything();
+                Err(e)
+            }
+        }
+    }
+}
 
-        let category_col_value = unwrap_or_bail!(
-            category_col(&self.db, &cat, TYPE_NORMAL).map_err(|e| e.to_string()),
-            "edit_single_text",
-            "category_col"
-        );
-        let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-            table_name: "texts".to_string(),
-            row_id: id.to_string(),
-            column: "category_id".to_string(),
-            new_value: category_col_value,
-        });
-        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_category_id");
 
-        let meta_col_value = unwrap_or_bail!(
-            category_col(&self.db, &meta, TYPE_META).map_err(|e| e.to_string()),
-            "edit_single_text",
-            "category_col"
-        );
-        let result = self.db.edit_col_in_row(protocol::payload::EditColInRowIn {
-            table_name: "texts".to_string(),
-            row_id: id.to_string(),
-            column: "meta_category_id".to_string(),
-            new_value: meta_col_value,
-        });
-        unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_text", "edit_meta_category_id");
+fn handle_projects_action(
+    db: &LiveForever,
+    state: &mut ProjectsState,
+    action: ProjectsAction,
+) -> Result<bool, error_stuff::AppError> {
+    match action {
+        ProjectsAction::Back => Ok(true),
+        ProjectsAction::Create { title, path, launch_zed, launch_adstud } => {
+            db.insert_data(new_row_project(title, path, launch_zed, launch_adstud))
+                .map_err(|e| error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Db(e),
+                    screen: "projects".to_string(),
+                    location: "insert_project".to_string(),
+                })?;
+            state.reload(db);
+            Ok(false)
+        }
+        ProjectsAction::Update { id, title, path, launch_zed, launch_adstud } => {
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "projects".to_string(),
+                row_id: id.to_string(),
+                column: "title".to_string(),
+                new_value: protocol::row_col::Col::Text(title),
+            })
+            .map_err(|e| error_stuff::AppError {
+                detail: error_stuff::ErrorDetail::Db(e),
+                screen: "projects".to_string(),
+                location: "update_title".to_string(),
+            })?;
+            let clean_path = zutil_db::helpers::project::normalize_path(&path);
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "projects".to_string(),
+                row_id: id.to_string(),
+                column: "path".to_string(),
+                new_value: protocol::row_col::Col::Text(clean_path),
+            })
+            .map_err(|e| error_stuff::AppError {
+                detail: error_stuff::ErrorDetail::Db(e),
+                screen: "projects".to_string(),
+                location: "update_path".to_string(),
+            })?;
+            for (col, val) in [("launch_zed", launch_zed), ("launch_adstud", launch_adstud)] {
+                db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                    table_name: "projects".to_string(),
+                    row_id: id.to_string(),
+                    column: col.to_string(),
+                    new_value: protocol::row_col::Col::Integer(if val { 1 } else { 0 }),
+                })
+                .map_err(|e| error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Db(e),
+                    screen: "projects".to_string(),
+                    location: format!("update_{}", col),
+                })?;
+            }
+            state.reload(db);
+            Ok(false)
+        }
+        ProjectsAction::Delete(id) => {
+            db.delete_row(DeleteRowIn {
+                table_name: "projects".to_string(),
+                row_id: id.to_string(),
+            })
+            .map_err(|e| error_stuff::AppError {
+                detail: error_stuff::ErrorDetail::Db(e),
+                screen: "projects".to_string(),
+                location: "delete_project".to_string(),
+            })?;
+            state.reload(db);
+            Ok(false)
+        }
+        ProjectsAction::OpenTerminal { path } => {
+            let expanded = zutil_db::helpers::project::normalize_path(&path);
+            if let Err(e) = std::process::Command::new("x-terminal-emulator")
+                .current_dir(&expanded)
+                .spawn()
+            {
+                error_stuff::report_error(error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Col(e.to_string()),
+                    screen: "projects".to_string(),
+                    location: "open_terminal".to_string(),
+                });
+            }
+            Ok(false)
+        }
+        ProjectsAction::LaunchZed { path } => {
+            let expanded = zutil_db::helpers::project::normalize_path(&path);
+            if let Err(e) = std::process::Command::new("bash")
+                .arg("-ic")
+                .arg("zed .")
+                .current_dir(&expanded)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                error_stuff::report_error(error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Col(e.to_string()),
+                    screen: "projects".to_string(),
+                    location: "launch_zed".to_string(),
+                });
+            }
+            Ok(false)
+        }
+        ProjectsAction::LaunchAdstud { path } => {
+            let expanded = zutil_db::helpers::project::normalize_path(&path);
+            if let Err(e) = std::process::Command::new("bash")
+                .arg("-ic")
+                .arg("adstud")
+                .current_dir(&expanded)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                error_stuff::report_error(error_stuff::AppError {
+                    detail: error_stuff::ErrorDetail::Col(e.to_string()),
+                    screen: "projects".to_string(),
+                    location: "launch_adstud".to_string(),
+                });
+            }
+            Ok(false)
+        }
+        ProjectsAction::None => Ok(false),
     }
 }
 
@@ -1685,9 +1711,7 @@ impl eframe::App for App {
                                     ItemKind::PushPromptCategories => {
                                         self.push_all_prompts();
                                     }
-                                    ItemKind::PushPromptsInCategory(cid) => {
-                                        self.push_prompts_in_category(cid);
-                                    }
+                                    ItemKind::PushPromptsInCategory(_) => {}
                                     ItemKind::CopyPrompt(tid) => {
                                         self.copy_prompt(ui, tid);
                                     }
@@ -2223,146 +2247,14 @@ impl App {
                     }
                 }
                 Page::Projects => {
-                    match projects::ui::projects_ui(ui, &self.db, &mut self.projects_state) {
-                        ProjectsAction::Back => self.page = Page::CircleMenu,
-                        ProjectsAction::Create { title, path, launch_zed, launch_adstud } => {
-                            let result = self.db.insert_data(new_row_project(
-                                title,
-                                path,
-                                launch_zed,
-                                launch_adstud,
-                            ));
-                            unwrap_or_bail!(
-                                result.map_err(|e| e.to_string()),
-                                "projects",
-                                "insert_project"
-                            );
-                            self.projects_state.reload(&self.db);
+                    let action = projects::ui::projects_ui(ui, &self.db, &mut self.projects_state);
+                    match handle_projects_action(&self.db, &mut self.projects_state, action) {
+                        Ok(true) => self.page = Page::CircleMenu,
+                        Ok(false) => {}
+                        Err(e) => {
+                            error_stuff::report_error(e);
+                            return;
                         }
-                        ProjectsAction::Update { id, title, path, launch_zed, launch_adstud } => {
-                            let result = self.db.edit_col_in_row(
-                                protocol::payload::EditColInRowIn {
-                                    table_name: "projects".to_string(),
-                                    row_id: id.to_string(),
-                                    column: "title".to_string(),
-                                    new_value: protocol::row_col::Col::Text(title),
-                                },
-                            );
-                            unwrap_or_bail!(
-                                result.map_err(|e| e.to_string()),
-                                "projects",
-                                "update_title"
-                            );
-                            let clean_path =
-                                zutil_db::helpers::project::normalize_path(&path);
-                            let result = self.db.edit_col_in_row(
-                                protocol::payload::EditColInRowIn {
-                                    table_name: "projects".to_string(),
-                                    row_id: id.to_string(),
-                                    column: "path".to_string(),
-                                    new_value: protocol::row_col::Col::Text(clean_path),
-                                },
-                            );
-                            unwrap_or_bail!(
-                                result.map_err(|e| e.to_string()),
-                                "projects",
-                                "update_path"
-                            );
-                            let result = self.db.edit_col_in_row(
-                                protocol::payload::EditColInRowIn {
-                                    table_name: "projects".to_string(),
-                                    row_id: id.to_string(),
-                                    column: "launch_zed".to_string(),
-                                    new_value: protocol::row_col::Col::Integer(
-                                        if launch_zed { 1 } else { 0 },
-                                    ),
-                                },
-                            );
-                            unwrap_or_bail!(
-                                result.map_err(|e| e.to_string()),
-                                "projects",
-                                "update_launch_zed"
-                            );
-                            let result = self.db.edit_col_in_row(
-                                protocol::payload::EditColInRowIn {
-                                    table_name: "projects".to_string(),
-                                    row_id: id.to_string(),
-                                    column: "launch_adstud".to_string(),
-                                    new_value: protocol::row_col::Col::Integer(
-                                        if launch_adstud { 1 } else { 0 },
-                                    ),
-                                },
-                            );
-                            unwrap_or_bail!(
-                                result.map_err(|e| e.to_string()),
-                                "projects",
-                                "update_launch_adstud"
-                            );
-                            self.projects_state.reload(&self.db);
-                        }
-                        ProjectsAction::Delete(id) => {
-                            let result = self.db.delete_row(DeleteRowIn {
-                                table_name: "projects".to_string(),
-                                row_id: id.to_string(),
-                            });
-                            unwrap_or_bail!(
-                                result.map_err(|e| e.to_string()),
-                                "projects",
-                                "delete_project"
-                            );
-                            self.projects_state.reload(&self.db);
-                        }
-                        ProjectsAction::OpenTerminal { path } => {
-                            let expanded =
-                                zutil_db::helpers::project::normalize_path(&path);
-                            let spawn_result = std::process::Command::new("x-terminal-emulator")
-                                .current_dir(&expanded)
-                                .spawn();
-                            if let Err(e) = spawn_result {
-                                error_stuff::report_error(error_stuff::AppError {
-                                    detail: error_stuff::ErrorDetail::Col(e.to_string()),
-                                    screen: "projects".to_string(),
-                                    location: "open_terminal".to_string(),
-                                });
-                            }
-                        }
-                        ProjectsAction::LaunchZed { path } => {
-                            let expanded = zutil_db::helpers::project::normalize_path(&path);
-                            let spawn_result = std::process::Command::new("bash")
-                                .arg("-ic")
-                                .arg("zed .")
-                                .current_dir(&expanded)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                            if let Err(e) = spawn_result {
-                                error_stuff::report_error(error_stuff::AppError {
-                                    detail: error_stuff::ErrorDetail::Col(e.to_string()),
-                                    screen: "projects".to_string(),
-                                    location: "launch_zed".to_string(),
-                                });
-                            }
-                        }
-                        ProjectsAction::LaunchAdstud { path } => {
-                            let expanded = zutil_db::helpers::project::normalize_path(&path);
-                            let spawn_result = std::process::Command::new("bash")
-                                .arg("-ic")
-                                .arg("adstud")
-                                .current_dir(&expanded)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                            if let Err(e) = spawn_result {
-                                error_stuff::report_error(error_stuff::AppError {
-                                    detail: error_stuff::ErrorDetail::Col(e.to_string()),
-                                    screen: "projects".to_string(),
-                                    location: "launch_adstud".to_string(),
-                                });
-                            }
-                        }
-                        ProjectsAction::None => {}
                     }
                 }
                 Page::JsonExample => {

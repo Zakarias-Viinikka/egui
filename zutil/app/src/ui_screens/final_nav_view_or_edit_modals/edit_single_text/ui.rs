@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use crate::components::category_picker_popup::ui::{CategoryPickerState, category_picker_trigger};
 use eframe::egui;
 
@@ -41,13 +42,13 @@ pub fn edit_single_text_ui(
     ui.separator();
 
     ui.label("Title");
-    ui.add(egui::TextEdit::singleline(&mut state.title).desired_width(f32::INFINITY));
+    TextInput::single("edit_text_title").show(ui, &mut state.title);
 
     ui.label("Body");
-    ui.add(egui::TextEdit::multiline(&mut state.body).desired_width(f32::INFINITY).desired_rows(10));
+    TextInput::multi("edit_text_body", 250.0).show(ui, &mut state.body);
 
     ui.label("Type of text (optional)");
-    ui.add(egui::TextEdit::singleline(&mut state.type_of_text).desired_width(f32::INFINITY));
+    TextInput::single("edit_text_type").show(ui, &mut state.type_of_text);
 
     ui.label("Category (optional)");
     let _ = category_picker_trigger(ui, &mut state.category_picker, existing_normal_categories);

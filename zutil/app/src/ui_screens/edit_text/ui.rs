@@ -1,3 +1,4 @@
+use crate::components::text_input::ui::TextInput;
 use db_wrapper::mascot::LiveForever;
 use eframe::egui;
 use error_stuff::unwrap_or_bail;
@@ -65,7 +66,7 @@ pub fn edit_text_ui(
         if ui.button("Back").clicked() {
             action = EditTextAction::Back;
         }
-        if ui.text_edit_singleline(&mut state.search_query).changed() {
+        if TextInput::single("edit_text_search").hint("search").show(ui, &mut state.search_query).changed() {
             state.reload(db);
         }
     });

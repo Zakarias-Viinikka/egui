@@ -14,6 +14,8 @@ pub enum PopupAction {
     Confirm,
     Cancel,
     CopyText,
+    Replace,
+    KeepBoth,
 }
 
 pub struct PopupParams<'a> {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["fading_popup", "popup", "textbox", "pulse", "bounce_text", "close_button", "debug_log"]
+members = ["fading_popup", "popup", "textbox", "pulse", "bounce_text", "close_button", "debug_log", "scrollable_text_input"]
 resolver = "2"
 
 [workspace.package]

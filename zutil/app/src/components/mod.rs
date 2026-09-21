@@ -8,3 +8,4 @@ pub mod top_menu;
 pub mod circle_menu;
 pub mod page_frame;
 pub mod shortcut_picker;
+pub mod text_input;

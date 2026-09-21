@@ -1,0 +1,10 @@
+[package]
+name = "scrollable_text_input"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+
+[lints]
+workspace = true
