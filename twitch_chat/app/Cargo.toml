@@ -1,0 +1,21 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "chat"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+notes_core = { path = "../core" }
+twitch-irc = { version = "5", default-features = false, features = ["transport-tcp", "transport-tcp-rustls-native-roots"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
+x11rb = "0.13"
+
+[package.metadata.deb]
+maintainer = "zakke"
+section = "utils"
+priority = "optional"
+depends = "$auto"
