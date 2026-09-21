@@ -1,9 +1,11 @@
+use db_wrapper::mascot::LiveForever;
 use eframe::egui;
 use json_parsing::new_category::NewCategory;
 use json_parsing::new_template::NewTemplate;
 use json_parsing::new_text::NewText;
 use json_parsing::parse::{ParsedPayload, parse_pasted_json};
 use popup::ui::{PopupAction, PopupButton, PopupParams, popup};
+use zutil_db::helpers::import::{ImportMode, title_exists};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum JsonMode {
@@ -34,6 +36,7 @@ pub struct JsonState {
     pub mode: Option<JsonMode>,
     pub content: String,
     pub popup_payloads: Option<Vec<ParsedPayload>>,
+    pub popup_collisions: Vec<String>,
     pub popup_error: Option<String>,
 }
 
@@ -43,6 +46,7 @@ impl Default for JsonState {
             mode: Some(JsonMode::Import),
             content: String::new(),
             popup_payloads: None,
+            popup_collisions: Vec::new(),
             popup_error: None,
         }
     }
@@ -53,10 +57,10 @@ pub enum JsonAction {
     Back,
     Example,
     Do,
-    ImportConfirmed(Vec<ParsedPayload>),
+    ImportConfirmed(Vec<ParsedPayload>, ImportMode),
 }
 
-pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
+pub fn json_ui(ui: &mut egui::Ui, db: &LiveForever, state: &mut JsonState) -> JsonAction {
     let mut action = JsonAction::None;
     let mut try_parse = false;
 
@@ -139,6 +143,7 @@ pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
     if try_parse {
         match parse_pasted_json(&state.content) {
             Ok(payloads) => {
+                state.popup_collisions = collect_collisions(db, &payloads);
                 state.popup_payloads = Some(payloads);
                 state.popup_error = None;
             }
@@ -150,6 +155,31 @@ pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
 
     if let Some(payloads) = state.popup_payloads.clone() {
         let for_confirm = payloads.clone();
+        let collisions = state.popup_collisions.clone();
+        let has_collisions = !collisions.is_empty();
+
+        let mut buttons = Vec::new();
+        if has_collisions {
+            buttons.push(PopupButton {
+                label: "Replace existing".to_string(),
+                action: PopupAction::Replace,
+            });
+            buttons.push(PopupButton {
+                label: "Keep both".to_string(),
+                action: PopupAction::KeepBoth,
+            });
+        } else {
+            buttons.push(PopupButton {
+                label: "Confirm".to_string(),
+                action: PopupAction::Confirm,
+            });
+        }
+        buttons.push(PopupButton {
+            label: "Cancel".to_string(),
+            action: PopupAction::Cancel,
+        });
+
+        let body_collisions = collisions.clone();
         let popup_action = popup(
             ui,
             PopupParams {
@@ -158,11 +188,18 @@ pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
                 page_label: None,
                 show_nav: false,
                 copy_text: None,
-                buttons: vec![
-                    PopupButton { label: "Confirm".to_string(), action: PopupAction::Confirm },
-                    PopupButton { label: "Cancel".to_string(), action: PopupAction::Cancel },
-                ],
+                buttons,
                 body: Box::new(move |ui| {
+                    if !body_collisions.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} item(s) collide with existing rows by title",
+                                body_collisions.len()
+                            ))
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                        );
+                        ui.separator();
+                    }
                     egui::ScrollArea::vertical()
                         .max_height(400.0)
                         .show(ui, |ui| {
@@ -171,13 +208,19 @@ pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
                                     ParsedPayload::NewTexts(texts) => {
                                         ui.heading("new_texts");
                                         for nt in texts {
-                                            render_new_text(ui, nt);
+                                            let collides = body_collisions
+                                                .iter()
+                                                .any(|k| k == &format!("text:{}", nt.title));
+                                            render_new_text(ui, nt, collides);
                                         }
                                     }
                                     ParsedPayload::NewTemplates(templates) => {
                                         ui.heading("new_templates");
                                         for nt in templates {
-                                            render_new_template(ui, nt);
+                                            let collides = body_collisions
+                                                .iter()
+                                                .any(|k| k == &format!("template:{}", nt.title));
+                                            render_new_template(ui, nt, collides);
                                         }
                                     }
                                     ParsedPayload::NewCategories(cats) => {
@@ -197,10 +240,17 @@ pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
         match popup_action {
             PopupAction::Cancel => {
                 state.popup_payloads = None;
+                state.popup_collisions.clear();
             }
-            PopupAction::Confirm => {
-                action = JsonAction::ImportConfirmed(for_confirm);
+            PopupAction::Confirm | PopupAction::KeepBoth => {
+                action = JsonAction::ImportConfirmed(for_confirm, ImportMode::KeepBoth);
                 state.popup_payloads = None;
+                state.popup_collisions.clear();
+            }
+            PopupAction::Replace => {
+                action = JsonAction::ImportConfirmed(for_confirm, ImportMode::Replace);
+                state.popup_payloads = None;
+                state.popup_collisions.clear();
             }
             _ => {}
         }
@@ -231,8 +281,38 @@ pub fn json_ui(ui: &mut egui::Ui, state: &mut JsonState) -> JsonAction {
     action
 }
 
-fn render_new_text(ui: &mut egui::Ui, nt: &NewText) {
+fn collect_collisions(db: &LiveForever, payloads: &[ParsedPayload]) -> Vec<String> {
+    let mut out = Vec::new();
+    for payload in payloads {
+        match payload {
+            ParsedPayload::NewTexts(items) => {
+                for nt in items {
+                    if title_exists(db, "texts", &nt.title).unwrap_or(false) {
+                        out.push(format!("text:{}", nt.title));
+                    }
+                }
+            }
+            ParsedPayload::NewTemplates(items) => {
+                for nt in items {
+                    if title_exists(db, "templates", &nt.title).unwrap_or(false) {
+                        out.push(format!("template:{}", nt.title));
+                    }
+                }
+            }
+            ParsedPayload::NewCategories(_) => {}
+        }
+    }
+    out
+}
+
+fn render_new_text(ui: &mut egui::Ui, nt: &NewText, collides: bool) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
+        if collides {
+            ui.label(
+                egui::RichText::new("⚠ collides with existing row")
+                    .color(egui::Color32::from_rgb(220, 120, 120)),
+            );
+        }
         ui.label(format!("title: {}", nt.title));
         ui.label(format!("body: {}", nt.body));
         if let Some(t) = &nt.type_of_text {
@@ -254,8 +334,14 @@ fn render_new_category(ui: &mut egui::Ui, c: &NewCategory) {
     });
 }
 
-fn render_new_template(ui: &mut egui::Ui, nt: &NewTemplate) {
+fn render_new_template(ui: &mut egui::Ui, nt: &NewTemplate, collides: bool) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
+        if collides {
+            ui.label(
+                egui::RichText::new("⚠ collides with existing row")
+                    .color(egui::Color32::from_rgb(220, 120, 120)),
+            );
+        }
         ui.label(format!("title: {}", nt.title));
         ui.label(format!("content: {}", nt.content));
         if let Some(i) = &nt.instructions {

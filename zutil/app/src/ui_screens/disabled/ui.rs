@@ -2,6 +2,9 @@ use db_wrapper::mascot::LiveForever;
 use eframe::egui;
 use error_stuff::{ErrorDetail, current_error};
 use protocol::row_col::Row;
+use std::sync::Mutex;
+
+static LAST_COPIED: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn disabled_ui(ui: &mut egui::Ui, db: &LiveForever) {
     ui.vertical_centered(|ui| {
@@ -53,7 +56,14 @@ pub fn disabled_ui(ui: &mut egui::Ui, db: &LiveForever) {
 
         ui.add_space(16.0);
         if ui.button("Copy error").clicked() {
-            ui.ctx().copy_text(copy_text);
+            ui.ctx().copy_text(copy_text.clone());
+        }
+
+        // auto-copy once, when this error first shows
+        let mut last = LAST_COPIED.lock().unwrap();
+        if last.as_deref() != Some(copy_text.as_str()) {
+            ui.ctx().copy_text(copy_text.clone());
+            *last = Some(copy_text);
         }
     });
 }

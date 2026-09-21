@@ -38,7 +38,10 @@ impl CircleMenuState {
 pub struct CircleMenuResponse {
     pub clicked: Option<usize>,
     pub right_clicked: Option<usize>,
+    pub clicked_shortcut: Option<usize>,
+    pub right_clicked_shortcut: Option<usize>,
     pub rects: Vec<egui::Rect>,
+    pub shortcut_rects: Vec<egui::Rect>,
 }
 
 pub fn circle_menu_ui(
@@ -48,15 +51,18 @@ pub fn circle_menu_ui(
 ) -> CircleMenuResponse {
     let mut clicked: Option<usize> = None;
     let mut right_clicked: Option<usize> = None;
+    let mut right_clicked_shortcut: Option<usize> = None;
+    let mut clicked_shortcut: Option<usize> = None;
     let n = items.len();
     let mut rects: Vec<egui::Rect> = vec![egui::Rect::NOTHING; n];
+    let mut shortcut_rects: Vec<egui::Rect> = vec![egui::Rect::NOTHING; n];
 
     if crate::globals::modal_open() {
         if !state.pulses.is_empty() {
             ui.ctx().request_repaint();
         }
         state.pulses.retain(|p| !crate::components::pulse::ui::pulse_ui(ui, p));
-        return CircleMenuResponse { clicked, right_clicked, rects };
+        return CircleMenuResponse { clicked, right_clicked, clicked_shortcut, right_clicked_shortcut, rects, shortcut_rects };
     }
 
     let screen = ui.available_rect_before_wrap();
@@ -99,7 +105,7 @@ pub fn circle_menu_ui(
 
     if n == 0 {
         state.pulses.retain(|p| !crate::components::pulse::ui::pulse_ui(ui, p));
-        return CircleMenuResponse { clicked, right_clicked, rects };
+        return CircleMenuResponse { clicked, right_clicked, clicked_shortcut, right_clicked_shortcut, rects, shortcut_rects };
     }
 
     let start = -std::f32::consts::FRAC_PI_2;
@@ -157,6 +163,7 @@ pub fn circle_menu_ui(
             alpha,
         );
         draw_counter(ui, rects[i], item.counter, alpha);
+        shortcut_rects[i] = draw_shortcut_box(ui, i, rects[i], item.shortcut.as_deref(), alpha);
     }
 
     if closest != state.last_highlighted {
@@ -171,17 +178,37 @@ pub fn circle_menu_ui(
     let pointer_secondary = ui.input(|i| i.pointer.secondary_clicked());
     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
     if pointer_clicked {
-        if let (Some(pos), Some(i)) = (pointer_pos, closest) {
-            if rect.contains(pos) {
-                clicked = Some(i);
-                crate::globals::record_click(pos);
+        if let Some(pos) = pointer_pos {
+            for i in 0..n {
+                if shortcut_rects[i] != egui::Rect::NOTHING && shortcut_rects[i].contains(pos) {
+                    clicked_shortcut = Some(i);
+                    break;
+                }
+            }
+            if clicked_shortcut.is_none() {
+                if let Some(i) = closest {
+                    if rect.contains(pos) {
+                        clicked = Some(i);
+                        crate::globals::record_click(pos);
+                    }
+                }
             }
         }
     }
     if pointer_secondary {
-        if let (Some(pos), Some(i)) = (pointer_pos, closest) {
-            if rects[i] != egui::Rect::NOTHING && rects[i].contains(pos) {
-                right_clicked = Some(i);
+        if let Some(pos) = pointer_pos {
+            for i in 0..n {
+                if shortcut_rects[i] != egui::Rect::NOTHING && shortcut_rects[i].contains(pos) {
+                    right_clicked_shortcut = Some(i);
+                    break;
+                }
+            }
+            if right_clicked_shortcut.is_none() {
+                if let Some(i) = closest {
+                    if rects[i] != egui::Rect::NOTHING && rects[i].contains(pos) {
+                        right_clicked = Some(i);
+                    }
+                }
             }
         }
     }
@@ -191,7 +218,79 @@ pub fn circle_menu_ui(
     }
     state.pulses.retain(|p| !crate::components::pulse::ui::pulse_ui(ui, p));
 
-    CircleMenuResponse { clicked, right_clicked, rects }
+    CircleMenuResponse { clicked, right_clicked, clicked_shortcut, right_clicked_shortcut, rects, shortcut_rects }
+}
+
+const SHORTCUT_BOX_MIN_W: f32 = 20.0;
+const SHORTCUT_BOX_MIN_H: f32 = 20.0;
+const SHORTCUT_GAP: f32 = 6.0;
+
+fn draw_shortcut_box(
+    ui: &mut egui::Ui,
+    index: usize,
+    label_rect: egui::Rect,
+    shortcut: Option<&str>,
+    alpha: f32,
+) -> egui::Rect {
+    if label_rect == egui::Rect::NOTHING {
+        return egui::Rect::NOTHING;
+    }
+    let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+
+    let text = shortcut.unwrap_or("");
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(12.0),
+        egui::Color32::from_rgba_premultiplied(a, a, a, a),
+    );
+    let w = if text.is_empty() {
+        SHORTCUT_BOX_MIN_W
+    } else {
+        (galley.size().x + 12.0).max(SHORTCUT_BOX_MIN_W)
+    };
+    let h = if text.is_empty() {
+        SHORTCUT_BOX_MIN_H
+    } else {
+        SHORTCUT_BOX_MIN_H.max(galley.size().y + 6.0)
+    };
+
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(label_rect.left() - SHORTCUT_GAP - w, label_rect.center().y - h / 2.0),
+        egui::vec2(w, h),
+    );
+
+    let hovered = ui
+        .ctx()
+        .input(|i| i.pointer.latest_pos())
+        .map(|p| rect.contains(p))
+        .unwrap_or(false);
+
+    let bg = egui::Color32::from_rgba_premultiplied(40, 40, 40, a);
+    ui.painter().rect_filled(rect, 4.0, bg);
+
+    if hovered {
+        ui.painter().rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(a, a, a, a)),
+            egui::StrokeKind::Outside,
+        );
+    }
+
+    let _ = index;
+
+    if !text.is_empty() {
+        ui.painter().galley(
+            egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            egui::Color32::from_rgba_premultiplied(a, a, a, a),
+        );
+    }
+
+    rect
 }
 
 fn light_ring(alpha: u8) -> egui::Color32 {

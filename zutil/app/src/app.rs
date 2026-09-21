@@ -18,6 +18,7 @@ use json::example::ui::{JsonExampleAction, JsonExampleState, default_example_jso
 use json::ui::JsonState;
 use crate::components::bounce_text::ui::{BounceTextState, bounce_text_ui};
 use crate::components::circle_menu::ui::CircleMenuState;
+use crate::components::shortcut_picker::ui::{ShortcutPickerAction, ShortcutPickerState, shortcut_picker_ui};
 use crate::globals::{ItemKind, MenuItem};
 use std::collections::{HashMap, HashSet};
 use protocol::payload::DeleteRowIn;
@@ -93,6 +94,8 @@ pub struct App {
     bounces: Vec<BounceTextState>,
     open_template: Option<FillTemplateState>,
     editor_overlay: Option<EditorOverlay>,
+    shortcut_picker: Option<ShortcutPickerState>,
+    last_logged_error: Option<String>,
 }
 
 enum EditorOverlay {
@@ -125,6 +128,8 @@ impl App {
             bounces: Vec::new(),
             open_template: None,
             editor_overlay: None,
+            shortcut_picker: None,
+            last_logged_error: None,
         };
         app.init_root_menu();
         app
@@ -327,6 +332,12 @@ fn load_category_lists(db: &LiveForever) -> Result<(Vec<String>, Vec<String>), S
 }
 
 impl App {
+    fn read_shortcut_for(&self, kind: &'static str, id: &str) -> Option<String> {
+        zutil_db::helpers::shortcuts::read_shortcut(&self.db, kind, id)
+            .ok()
+            .flatten()
+    }
+
     fn push_template_categories(&mut self) {
         let templates = match read_all_templates(&self.db) {
             Ok(t) => t,
@@ -347,11 +358,17 @@ impl App {
             if let Some(cid) = row.cols.get(5).and_then(|c| c.as_int().ok()).copied() {
                 if seen.insert(cid) {
                     if let Some(name) = name_by_id.get(&cid) {
+                        let key = cid.to_string();
                         items.push(MenuItem {
                             label: name.clone(),
                             kind: ItemKind::PushTemplatesInCategory(cid),
                             counter: popularity::read_counter(&self.db, "categories", cid)
                                 .unwrap_or(0),
+                            shortcut: self.read_shortcut_for(
+                                zutil_db::helpers::shortcuts::OWNER_CATEGORY,
+                                &key,
+                            ),
+                            owner: (zutil_db::helpers::shortcuts::OWNER_CATEGORY, key),
                         });
                     }
                 }
@@ -381,10 +398,16 @@ impl App {
                     .and_then(|c| c.as_str().ok())
                     .unwrap_or("")
                     .to_string();
+                let key = id.to_string();
                 items.push(MenuItem {
                     label: title,
                     kind: ItemKind::OpenTemplate(id),
                     counter: popularity::read_counter(&self.db, "templates", id).unwrap_or(0),
+                    shortcut: self.read_shortcut_for(
+                        zutil_db::helpers::shortcuts::OWNER_TEMPLATE,
+                        &key,
+                    ),
+                    owner: (zutil_db::helpers::shortcuts::OWNER_TEMPLATE, key),
                 });
             }
         }
@@ -768,6 +791,10 @@ impl App {
     }
 
     fn show_copied_popup(&mut self, ui: &mut eframe::egui::Ui, tag: &str) {
+        self.show_popup(ui, &format!("copied_{}", tag), "copied");
+    }
+
+    fn show_popup(&mut self, ui: &mut eframe::egui::Ui, id: &str, body: &str) {
         let (tx, rx) = channel();
         let (ticker_stop, ticker_rx) = channel::<()>();
         let ctx = ui.ctx().clone();
@@ -783,10 +810,42 @@ impl App {
             rx,
             tx,
             ticker_stop,
-            id: format!("copied_{}", tag),
+            id: id.to_string(),
             title: None,
-            body: "copied".to_string(),
+            body: body.to_string(),
         });
+    }
+
+    fn log_error_once(&mut self, _ui: &mut eframe::egui::Ui) {
+        if let Some(err) = error_stuff::current_error() {
+            let detail = match &err.detail {
+                error_stuff::ErrorDetail::Db(e) => format!("db: {}", e),
+                error_stuff::ErrorDetail::Col(s) => s.clone(),
+            };
+            let key = format!("{}::{}::{}", err.screen, err.location, detail);
+            if self.last_logged_error.as_deref() == Some(key.as_str()) {
+                return;
+            }
+            let _ = zutil_db::helpers::error_log::insert_error(
+                &self.db,
+                &err.screen,
+                &err.location,
+                &detail,
+            );
+            self.last_logged_error = Some(key);
+        }
+    }
+
+    fn notify_error(&mut self, ui: &mut eframe::egui::Ui, msg: String) {
+        // clipboard (may or may not stick depending on WM)
+        ui.ctx().copy_text(msg.clone());
+
+        // also write to a file — this always works
+        let path = "/tmp/zutil_last_error.txt";
+        let _ = std::fs::write(path, &msg);
+
+        let tag = format!("err_{}", msg.len());
+        self.show_popup(ui, &tag, &msg);
     }
 }
 
@@ -806,20 +865,35 @@ impl App {
                 RebuildKind::TextCategories => self.push_text_categories(),
                 RebuildKind::TextsInCategory(cid) => self.push_texts_in_category(cid),
                 RebuildKind::Projects => self.push_projects(),
+                RebuildKind::TerminalCategories => self.push_terminal_categories(),
+                RebuildKind::TerminalsInCategory(cid) => self.push_terminals_in_category(cid),
             }
         }
     }
 
+    // NOTE: If you add, rename, or remove a main-nav item here, you MUST also
+    // update MAIN_NAV_NAMES in db/src/helpers/popularity.rs. init_db uses that
+    // list to pre-create the main_nav_clicks rows, and every counter lookup is
+    // keyed by the label you pass to mk_root below.
     fn init_root_menu(&mut self) {
         let mk_root = |label: &str, kind: ItemKind| MenuItem {
             label: label.to_string(),
             kind,
             counter: popularity::read_main_nav_counter(&self.db, label).unwrap_or(0) as u32,
+            shortcut: zutil_db::helpers::shortcuts::read_shortcut(
+                &self.db,
+                zutil_db::helpers::shortcuts::OWNER_MAIN_NAV,
+                label,
+            )
+            .ok()
+            .flatten(),
+            owner: (zutil_db::helpers::shortcuts::OWNER_MAIN_NAV, label.to_string()),
         };
         crate::globals::init_menu(vec![
             mk_root("Templates", ItemKind::PushTemplatesCategories),
             mk_root("AI Prompts", ItemKind::PushPromptCategories),
             mk_root("Text", ItemKind::PushTextCategories),
+            mk_root("Terminal Commands", ItemKind::PushTerminalCategories),
             mk_root("Projects", ItemKind::PushProjects),
         ]);
     }
@@ -830,10 +904,18 @@ impl App {
             .projects_state
             .rows
             .iter()
-            .map(|r| MenuItem {
-                label: r.title.clone(),
-                kind: ItemKind::OpenProjectTerminal(r.id),
-                counter: popularity::read_counter(&self.db, "projects", r.id).unwrap_or(0),
+            .map(|r| {
+                let key = r.id.to_string();
+                MenuItem {
+                    label: r.title.clone(),
+                    kind: ItemKind::OpenProjectTerminal(r.id),
+                    counter: popularity::read_counter(&self.db, "projects", r.id).unwrap_or(0),
+                    shortcut: self.read_shortcut_for(
+                        zutil_db::helpers::shortcuts::OWNER_PROJECT,
+                        &key,
+                    ),
+                    owner: (zutil_db::helpers::shortcuts::OWNER_PROJECT, key),
+                }
             })
             .collect();
         crate::globals::push_menu(crate::globals::RebuildKind::Projects, items);
@@ -867,17 +949,41 @@ impl App {
         self.editor_overlay = Some(EditorOverlay::Projects);
     }
 
+    fn dispatch_by_kind(&mut self, ui: &mut eframe::egui::Ui, item: &MenuItem) {
+        match item.kind.clone() {
+            ItemKind::PushTemplatesCategories => self.push_template_categories(),
+            ItemKind::PushTemplatesInCategory(cid) => self.push_templates_in_category(cid),
+            ItemKind::OpenTemplate(tid) => self.open_template_overlay(tid),
+            ItemKind::PushPromptCategories => self.push_all_prompts(),
+            ItemKind::PushPromptsInCategory(cid) => self.push_prompts_in_category(cid),
+            ItemKind::CopyPrompt(tid) => self.copy_prompt(ui, tid),
+            ItemKind::PushTextCategories => self.push_text_categories(),
+            ItemKind::PushTextsInCategory(cid) => self.push_texts_in_category(cid),
+            ItemKind::OpenTextEditor(tid) => self.open_edit_text_overlay(tid),
+            ItemKind::ViewText(tid) => self.open_view_text_overlay(tid),
+            ItemKind::PushProjects => self.push_projects(),
+            ItemKind::OpenProjectTerminal(id) => self.open_project_terminal(id),
+            ItemKind::EditProject(id) => self.edit_project_overlay(id),
+            ItemKind::NewPlus => self.editor_overlay = Some(EditorOverlay::NewPlus),
+            ItemKind::PushTerminalCategories => self.push_terminal_categories(),
+            ItemKind::PushTerminalsInCategory(cid) => self.push_terminals_in_category(cid),
+            ItemKind::None => {}
+        }
+    }
+
     fn bump_counter_for(&mut self, item: &MenuItem) {
         let r = match &item.kind {
             ItemKind::PushTemplatesCategories
             | ItemKind::PushPromptCategories
             | ItemKind::PushTextCategories
+            | ItemKind::PushTerminalCategories
             | ItemKind::PushProjects => {
                 popularity::increment_main_nav(&self.db, &item.label)
             }
             ItemKind::PushTemplatesInCategory(cid)
             | ItemKind::PushPromptsInCategory(cid)
-            | ItemKind::PushTextsInCategory(cid) => {
+            | ItemKind::PushTextsInCategory(cid)
+            | ItemKind::PushTerminalsInCategory(cid) => {
                 popularity::increment_category(&self.db, *cid)
             }
             ItemKind::OpenTemplate(id) => popularity::increment_template(&self.db, *id),
@@ -891,6 +997,64 @@ impl App {
         };
         if r.is_ok() {
             self.rebuild_menu_stack();
+        }
+    }
+
+    fn draw_shortcut_picker(&mut self, ui: &mut eframe::egui::Ui) {
+        let mut done: Option<ShortcutPickerAction> = None;
+        if let Some(state) = self.shortcut_picker.as_mut() {
+            let action = shortcut_picker_ui(ui, state);
+            if !matches!(action, ShortcutPickerAction::None) {
+                done = Some(action);
+            }
+        }
+        match done {
+            Some(ShortcutPickerAction::Cancel) => {
+                self.shortcut_picker = None;
+            }
+            Some(ShortcutPickerAction::Save { owner_kind, owner_id, combo }) => {
+                // reject if another item in the *current* circle already uses it
+                let items = crate::globals::current_items();
+                let mut taken = false;
+                for item in &items {
+                    if item.owner.0 == owner_kind && item.owner.1 == owner_id {
+                        continue;
+                    }
+                    if item.shortcut.as_deref() == Some(combo.as_str()) {
+                        taken = true;
+                        break;
+                    }
+                }
+                if taken {
+                    let msg = "already used in this menu".to_string();
+                    self.notify_error(ui, msg.clone());
+                    if let Some(state) = self.shortcut_picker.as_mut() {
+                        state.error = Some(msg);
+                    }
+                } else {
+                    let res = zutil_db::helpers::shortcuts::set_shortcut(
+                        &self.db,
+                        owner_kind,
+                        &owner_id,
+                        &combo,
+                    );
+                    match res {
+                        Ok(()) => {
+                            self.shortcut_picker = None;
+                            self.rebuild_menu_stack();
+                        }
+                        Err(e) => {
+                            let msg = format!("save failed: {}", e);
+                            self.notify_error(ui, msg.clone());
+                            if let Some(state) = self.shortcut_picker.as_mut() {
+                                state.error = Some(msg);
+                            }
+                        }
+                    }
+                }
+            }
+            None => {}
+            Some(ShortcutPickerAction::None) => {}
         }
     }
 
@@ -913,6 +1077,107 @@ impl App {
         false
     }
 
+    fn push_terminal_categories(&mut self) {
+        self.push_categories_for_type("terminal command", ItemKind::PushTerminalsInCategory);
+    }
+
+    fn push_terminals_in_category(&mut self, cid: i64) {
+        self.push_texts_in_category_by_type(cid, "terminal command", ItemKind::CopyPrompt);
+    }
+
+    fn push_categories_for_type(
+        &mut self,
+        type_of_text: &str,
+        mk_kind: fn(i64) -> ItemKind,
+    ) {
+        let texts = match read_all_texts(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let categories = match read_all_categories_with_ids(&self.db) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let name_by_id: HashMap<i64, String> = categories
+            .into_iter()
+            .map(|(id, name, _)| (id, name))
+            .collect();
+
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &texts {
+            let t = row.cols.get(5).and_then(|c| c.as_str().ok()).unwrap_or("");
+            if t != type_of_text {
+                continue;
+            }
+            if let Some(cid) = row.cols.get(3).and_then(|c| c.as_int().ok()).copied() {
+                if seen.insert(cid) {
+                    if let Some(name) = name_by_id.get(&cid) {
+                        let key = cid.to_string();
+                        items.push(MenuItem {
+                            label: name.clone(),
+                            kind: mk_kind(cid),
+                            counter: popularity::read_counter(&self.db, "categories", cid)
+                                .unwrap_or(0),
+                            shortcut: self.read_shortcut_for(
+                                zutil_db::helpers::shortcuts::OWNER_CATEGORY,
+                                &key,
+                            ),
+                            owner: (zutil_db::helpers::shortcuts::OWNER_CATEGORY, key),
+                        });
+                    }
+                }
+            }
+        }
+        let kind = match type_of_text {
+            "prompt" => crate::globals::RebuildKind::Prompts,
+            "terminal command" => crate::globals::RebuildKind::TerminalCategories,
+            _ => crate::globals::RebuildKind::TextCategories,
+        };
+        crate::globals::push_menu(kind, items);
+    }
+
+    fn push_texts_in_category_by_type(
+        &mut self,
+        target_cid: i64,
+        type_of_text: &str,
+        mk_kind: fn(i64) -> ItemKind,
+    ) {
+        let texts = match read_all_texts(&self.db) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let mut items: Vec<MenuItem> = Vec::new();
+        for row in &texts {
+            let t = row.cols.get(5).and_then(|c| c.as_str().ok()).unwrap_or("");
+            if t != type_of_text {
+                continue;
+            }
+            let cid = row.cols.get(3).and_then(|c| c.as_int().ok()).copied();
+            if cid == Some(target_cid) {
+                let id = row.cols.first().and_then(|c| c.as_int().ok()).copied().unwrap_or(0);
+                let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+                let key = id.to_string();
+                items.push(MenuItem {
+                    label: title,
+                    kind: mk_kind(id),
+                    counter: popularity::read_counter(&self.db, "texts", id).unwrap_or(0),
+                    shortcut: self.read_shortcut_for(
+                        zutil_db::helpers::shortcuts::OWNER_TEXT,
+                        &key,
+                    ),
+                    owner: (zutil_db::helpers::shortcuts::OWNER_TEXT, key),
+                });
+            }
+        }
+        let kind = match type_of_text {
+            "prompt" => crate::globals::RebuildKind::Prompts,
+            "terminal command" => crate::globals::RebuildKind::TerminalsInCategory(target_cid),
+            _ => crate::globals::RebuildKind::TextsInCategory(target_cid),
+        };
+        crate::globals::push_menu(kind, items);
+    }
+
     fn push_all_prompts(&mut self) {
         let texts = match read_all_texts(&self.db) {
             Ok(t) => t,
@@ -931,10 +1196,16 @@ impl App {
             }
             let id = row.cols.first().and_then(|c| c.as_int().ok()).copied().unwrap_or(0);
             let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+            let key = id.to_string();
             items.push(MenuItem {
                 label: title,
                 kind: ItemKind::CopyPrompt(id),
                 counter: popularity::read_counter(&self.db, "texts", id).unwrap_or(0),
+                shortcut: self.read_shortcut_for(
+                    zutil_db::helpers::shortcuts::OWNER_TEXT,
+                    &key,
+                ),
+                owner: (zutil_db::helpers::shortcuts::OWNER_TEXT, key),
             });
         }
         crate::globals::push_menu(crate::globals::RebuildKind::Prompts, items);
@@ -978,11 +1249,17 @@ impl App {
                         } else {
                             ItemKind::PushTextsInCategory(cid)
                         };
+                        let key = cid.to_string();
                         items.push(MenuItem {
                             label: name.clone(),
                             kind,
                             counter: popularity::read_counter(&self.db, "categories", cid)
                                 .unwrap_or(0),
+                            shortcut: self.read_shortcut_for(
+                                zutil_db::helpers::shortcuts::OWNER_CATEGORY,
+                                &key,
+                            ),
+                            owner: (zutil_db::helpers::shortcuts::OWNER_CATEGORY, key),
                         });
                     }
                 }
@@ -1029,10 +1306,16 @@ impl App {
                 } else {
                     ItemKind::ViewText(id)
                 };
+                let key = id.to_string();
                 items.push(MenuItem {
                     label: title,
                     kind,
                     counter: popularity::read_counter(&self.db, "texts", id).unwrap_or(0),
+                    shortcut: self.read_shortcut_for(
+                        zutil_db::helpers::shortcuts::OWNER_TEXT,
+                        &key,
+                    ),
+                    owner: (zutil_db::helpers::shortcuts::OWNER_TEXT, key),
                 });
             }
         }
@@ -1202,26 +1485,17 @@ impl eframe::App for App {
             .frame(eframe::egui::Frame::new().fill(eframe::egui::Color32::TRANSPARENT))
             .show(ui, |ui| {
                 if is_disabled() {
+                    self.log_error_once(ui);
                     disabled::ui::disabled_ui(ui, &self.db);
                     return;
                 }
 
                 crate::globals::set_modal_open(
-                    self.open_template.is_some() || self.editor_overlay.is_some(),
+                    self.open_template.is_some()
+                        || self.editor_overlay.is_some()
+                        || self.shortcut_picker.is_some(),
                 );
 
-                let typing = ui.ctx().egui_wants_keyboard_input();
-                if !typing
-                    && ui.input(|i| {
-                        i.key_pressed(eframe::egui::Key::Q)
-                            && !i.modifiers.ctrl
-                            && !i.modifiers.alt
-                            && !i.modifiers.shift
-                    })
-                {
-                    ui.ctx()
-                        .send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
-                }
                 crate::globals::set_disable_rightclick(false);
 
                 if ui.input(|i| i.pointer.secondary_clicked())
@@ -1274,6 +1548,50 @@ impl eframe::App for App {
                 }
 
                 if matches!(self.page, Page::CircleMenu) {
+                    if !crate::globals::modal_open()
+                        && self.shortcut_picker.is_none()
+                        && self.open_template.is_none()
+                        && self.editor_overlay.is_none()
+                    {
+                        let mut fired: Option<usize> = None;
+                        let current = crate::globals::current_items();
+                        ui.input(|i| {
+                            for ev in &i.events {
+                                if let eframe::egui::Event::Key {
+                                    key,
+                                    pressed: true,
+                                    modifiers,
+                                    ..
+                                } = ev
+                                {
+                                    if crate::components::shortcut_picker::ui::is_modifier(*key) {
+                                        continue;
+                                    }
+                                    let combo =
+                                        crate::components::shortcut_picker::ui::build_combo(
+                                            *key, modifiers,
+                                        );
+                                    for (idx, it) in current.iter().enumerate() {
+                                        if it.shortcut.as_deref() == Some(combo.as_str()) {
+                                            fired = Some(idx);
+                                            break;
+                                        }
+                                    }
+                                    if fired.is_some() {
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                        if let Some(i) = fired {
+                            // reuse the same code path as a click
+                            let item = current[i].clone();
+                            self.bump_counter_for(&item);
+                            self.dispatch_by_kind(ui, &item);
+                            return;
+                        }
+                    }
+
                     let items = crate::globals::current_items();
                     let response = crate::components::circle_menu::ui::circle_menu_ui(
                         ui,
@@ -1295,6 +1613,22 @@ impl eframe::App for App {
                     if self.open_template.is_none()
                         && self.editor_overlay.is_none()
                     {
+                    let shortcut_open = response
+                        .clicked_shortcut
+                        .or(response.right_clicked_shortcut);
+                    if let Some(i) = shortcut_open {
+                        if let Some(item) = items.get(i) {
+                            let existing = item.shortcut.clone();
+                            self.shortcut_picker = Some(ShortcutPickerState {
+                                owner_kind: item.owner.0,
+                                owner_id: item.owner.1.clone(),
+                                owner_label: item.label.clone(),
+                                combo: existing,
+                                error: None,
+                            });
+                        }
+                    }
+
                     if let Some(i) = response.right_clicked {
                         let items = crate::globals::current_items();
                         if let Some(item) = items.get(i) {
@@ -1363,6 +1697,12 @@ impl eframe::App for App {
                                     ItemKind::PushTextsInCategory(cid) => {
                                         self.push_texts_in_category(cid);
                                     }
+                                    ItemKind::PushTerminalCategories => {
+                                        self.push_terminal_categories();
+                                    }
+                                    ItemKind::PushTerminalsInCategory(cid) => {
+                                        self.push_terminals_in_category(cid);
+                                    }
                                     ItemKind::OpenTextEditor(tid) => {
                                         self.open_edit_text_overlay(tid);
                                     }
@@ -1407,6 +1747,9 @@ impl eframe::App for App {
                     }
                     if self.editor_overlay.is_some() {
                         self.draw_editor_overlay(ui);
+                    }
+                    if self.shortcut_picker.is_some() {
+                        self.draw_shortcut_picker(ui);
                     }
 
                     return;
@@ -1668,12 +2011,12 @@ impl App {
                     }
                 }
                 Page::Json => {
-                    match json::ui::json_ui(ui, &mut self.json_state) {
+                    match json::ui::json_ui(ui, &self.db, &mut self.json_state) {
                         json::ui::JsonAction::Back => self.page = Page::CircleMenu,
                         json::ui::JsonAction::Do => {}
-                        json::ui::JsonAction::ImportConfirmed(payloads) => {
+                        json::ui::JsonAction::ImportConfirmed(payloads, mode) => {
                             let (text_count, tpl_count, _cat_count) = unwrap_or_bail!(
-                                zutil_db::helpers::import::import_payloads(&self.db, payloads)
+                                zutil_db::helpers::import::import_payloads(&self.db, payloads, mode)
                                     .map_err(|e| e.to_string()),
                                 "json",
                                 "import_confirm"

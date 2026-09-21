@@ -11,6 +11,8 @@ pub enum ItemKind {
     CopyPrompt(i64),
     PushTextCategories,
     PushTextsInCategory(i64),
+    PushTerminalCategories,
+    PushTerminalsInCategory(i64),
     OpenTextEditor(i64),
     ViewText(i64),
     PushProjects,
@@ -25,6 +27,9 @@ pub struct MenuItem {
     pub label: String,
     pub kind: ItemKind,
     pub counter: u32,
+    pub shortcut: Option<String>,
+    /// What this item is in the `shortcuts` table, e.g. ("main_nav", "Templates").
+    pub owner: (&'static str, String),
 }
 
 #[derive(Clone)]
@@ -35,6 +40,8 @@ pub enum RebuildKind {
     Prompts,
     TextCategories,
     TextsInCategory(i64),
+    TerminalCategories,
+    TerminalsInCategory(i64),
     Projects,
 }
 

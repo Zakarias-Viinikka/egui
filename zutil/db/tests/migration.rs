@@ -6,7 +6,7 @@ use zutil_db::migration::helpers::{
     assert_migrated_db_matches_fresh_db, create_table_from_scratch,
 };
 use zutil_db::migration::schema_versions::{CURRENT_VERSION, SchemaVersion};
-use zutil_db::migration::schemas::{current, version0, version3};
+use zutil_db::migration::schemas::{current, version0, version3, version4, version5};
 use zutil_db::migration::update_from_old_schema::update_until_newest_version;
 
 #[test]
@@ -69,6 +69,40 @@ fn migration_v3_to_v4_adds_popularity_and_main_nav_clicks() {
         names.contains(&"main_nav_clicks".to_string()),
         "main_nav_clicks missing"
     );
+
+    assert_migrated_db_matches_fresh_db(current::entire_table(), &db);
+}
+
+#[test]
+fn migration_v4_to_v5_creates_shortcuts_table() {
+    let db = setup_fresh_db("test_migration_v4_to_v5.sqlite");
+    create_table_from_scratch(version4::entire_table(), &db).unwrap();
+    update_until_newest_version(SchemaVersion::Version4, &db);
+
+    let names = db.list_tables().unwrap().table_names;
+    assert!(names.contains(&"shortcuts".to_string()), "shortcuts missing");
+
+    let cols = check_table(CheckTable { table_name: "shortcuts", db: &db });
+    let expected: Vec<&str> = vec!["id", "owner_kind", "owner_id", "combo"];
+    let got: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(got, expected);
+
+    assert_migrated_db_matches_fresh_db(current::entire_table(), &db);
+}
+
+#[test]
+fn migration_v5_to_v6_creates_error_log() {
+    let db = setup_fresh_db("test_migration_v5_to_v6.sqlite");
+    create_table_from_scratch(version5::entire_table(), &db).unwrap();
+    update_until_newest_version(SchemaVersion::Version5, &db);
+
+    let names = db.list_tables().unwrap().table_names;
+    assert!(names.contains(&"error_log".to_string()), "error_log missing");
+
+    let cols = check_table(CheckTable { table_name: "error_log", db: &db });
+    let expected: Vec<&str> = vec!["id", "timestamp", "screen", "location", "detail"];
+    let got: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(got, expected);
 
     assert_migrated_db_matches_fresh_db(current::entire_table(), &db);
 }

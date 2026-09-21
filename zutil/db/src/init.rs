@@ -37,6 +37,7 @@ pub fn init_db() -> LiveForever {
     }
 
     setup_fts5(&db);
+    crate::helpers::popularity::ensure_main_nav_rows(&db).unwrap();
 
     db
 }

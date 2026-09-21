@@ -49,3 +49,6 @@ pub const SCREEN_CORNER: f32 = 20.0;
 // circle menu fade-in
 pub const FADE_RADIUS: f32 = 150.0;
 pub const FADE_DURATION: f64 = 0.35;
+// shortcut picker
+pub const SHORTCUT_PICKER_INSTRUCTION_SIZE: f32 = 22.0;
+pub const SHORTCUT_PICKER_COMBO_SIZE: f32 = 28.0;

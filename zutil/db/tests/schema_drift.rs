@@ -76,3 +76,24 @@ fn version4_main_nav_clicks_shape_is_unchanged() {
     assert_eq!(cols[2].column_type, "INTEGER");
     assert!(cols[2].not_null);
 }
+
+#[test]
+fn version5_shortcuts_shape_is_unchanged() {
+    use zutil_db::migration::schemas::version5;
+
+    let cols = version5::shortcuts_columns();
+    assert_eq!(cols.len(), 4);
+    assert_eq!(cols[0].name, "id");
+    assert_eq!(cols[1].name, "owner_kind");
+    assert_eq!(cols[2].name, "owner_id");
+    assert_eq!(cols[3].name, "combo");
+}
+
+#[test]
+fn version6_error_log_shape_is_unchanged() {
+    use zutil_db::migration::schemas::version6;
+
+    let cols = version6::error_log_columns();
+    let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["id", "timestamp", "screen", "location", "detail"]);
+}

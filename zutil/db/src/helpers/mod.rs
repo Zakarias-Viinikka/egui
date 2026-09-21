@@ -7,3 +7,5 @@ pub mod search;
 pub mod import;
 pub mod project;
 pub mod popularity;
+pub mod shortcuts;
+pub mod error_log;

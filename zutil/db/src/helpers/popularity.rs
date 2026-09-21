@@ -21,6 +21,46 @@ pub fn increment_category(db: &LiveForever, id: i64) -> Result<(), DbError> {
     bump_existing(db, "categories", id)
 }
 
+pub const MAIN_NAV_NAMES: &[&str] = &[
+    "Templates",
+    "AI Prompts",
+    "Text",
+    "Terminal Commands",
+    "Projects",
+];
+
+/// Creates a main_nav_clicks row at counter 0 for each name in MAIN_NAV_NAMES
+/// if it isn't there yet. init_db calls this so every main-nav item has a row
+/// to increment, even before its first click.
+pub fn ensure_main_nav_rows(db: &LiveForever) -> Result<(), DbError> {
+    for name in MAIN_NAV_NAMES {
+        let out = db.get_data(GetDataIn {
+            table_name: "main_nav_clicks".to_string(),
+            arguments: SelectArguments::Single(SelectArgument::XEqualY {
+                x: "name".to_string(),
+                y: name.to_string(),
+            }),
+            columns_to_read: vec!["id".to_string()],
+        })?;
+        if out.rows.is_empty() {
+            db.insert_data(InsertDataIn {
+                table_name: "main_nav_clicks".to_string(),
+                values: vec![
+                    ColumnValue {
+                        column_name: "name".to_string(),
+                        value: Col::Text(name.to_string()),
+                    },
+                    ColumnValue {
+                        column_name: "popularity_ctr".to_string(),
+                        value: Col::Integer(0),
+                    },
+                ],
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub fn read_main_nav_counter(db: &LiveForever, name: &str) -> Result<i64, DbError> {
     let out = db.get_data(GetDataIn {
         table_name: "main_nav_clicks".to_string(),
