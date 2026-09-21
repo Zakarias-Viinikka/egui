@@ -84,7 +84,6 @@ pub struct App {
     shortcut_picker: Option<ShortcutPickerState>,
     last_logged_error: Option<String>,
     hide_on_copy: bool,
-    shortcut_repeat: Option<(String, std::time::Instant)>,
 }
 
 enum EditorOverlay {
@@ -119,7 +118,6 @@ impl App {
             shortcut_picker: None,
             last_logged_error: None,
             hide_on_copy: true,
-            shortcut_repeat: None,
         };
         app.init_root_menu();
         app
@@ -440,17 +438,20 @@ impl App {
 
     fn draw_template_overlay(&mut self, ui: &mut eframe::egui::Ui) {
         let mut close = false;
+        let mut copy_text: Option<String> = None;
         if let Some(state) = self.open_template.as_mut() {
-            let inner = crate::components::page_frame::ui::page_frame_opaque_ui(ui);
-            ui.scope_builder(
-                eframe::egui::UiBuilder::new().max_rect(inner),
-                |ui| {
-                    match final_nav_view_or_edit_modals::fill_template::ui::fill_template_ui(ui, state) {
-                        FillTemplateAction::Back => close = true,
-                        FillTemplateAction::None => {}
-                    }
-                },
-            );
+            match final_nav_view_or_edit_modals::fill_template::ui::fill_template_ui(ui, state) {
+                FillTemplateAction::Back => close = true,
+                FillTemplateAction::Confirm(text) => {
+                    copy_text = Some(text);
+                    close = true;
+                }
+                FillTemplateAction::None => {}
+            }
+        }
+        if let Some(t) = copy_text {
+            ui.ctx().copy_text(t);
+            self.show_copied_popup(ui, "template_fill");
         }
         if close {
             self.open_template = None;
@@ -1614,55 +1615,7 @@ impl eframe::App for App {
                             }
                         });
 
-                        // auto-repeat: if no fresh press, see what's still held
-                        if fired.is_none() {
-                            let mut held: Option<(usize, String)> = None;
-                            ui.input(|i| {
-                                for key in i.keys_down.iter() {
-                                    if crate::components::shortcut_picker::ui::is_modifier(*key) {
-                                        continue;
-                                    }
-                                    let combo =
-                                        crate::components::shortcut_picker::ui::build_combo(
-                                            *key, &i.modifiers,
-                                        );
-                                    for (idx, it) in current.iter().enumerate() {
-                                        if it.shortcut.as_deref() == Some(combo.as_str()) {
-                                            held = Some((idx, combo.clone()));
-                                            break;
-                                        }
-                                    }
-                                    if held.is_some() {
-                                        break;
-                                    }
-                                }
-                            });
-                            match held {
-                                Some((idx, combo)) => {
-                                    let should_fire = match &self.shortcut_repeat {
-                                        Some((c, t)) if c == &combo => {
-                                            t.elapsed()
-                                                >= std::time::Duration::from_millis(50)
-                                        }
-                                        _ => false,
-                                    };
-                                    if should_fire {
-                                        fired = Some(idx);
-                                        fired_combo = Some(combo);
-                                    }
-                                }
-                                None => {
-                                    self.shortcut_repeat = None;
-                                }
-                            }
-                        }
-
                         if let Some(i) = fired {
-                            if let Some(c) = fired_combo.clone() {
-                                self.shortcut_repeat =
-                                    Some((c, std::time::Instant::now()));
-                            }
-
                             if descend {
                                 // Keep firing the same combo down through the
                                 // menu until the menu stops changing (an
@@ -1712,6 +1665,7 @@ impl eframe::App for App {
 
                     // pressing ctrl acts as "go back one nav level"
                     if crate::globals::depth() > 1
+                        && !crate::globals::modal_open()
                         && ui.input(|i| {
                             i.key_pressed(eframe::egui::Key::ControlLeft)
                                 || i.key_pressed(eframe::egui::Key::ControlRight)
@@ -2311,6 +2265,11 @@ impl App {
                         &mut self.fill_template_state,
                     ) {
                         FillTemplateAction::Back => {
+                            self.edit_text_state.reload(&self.db);
+                            self.page = Page::EditText;
+                        }
+                        FillTemplateAction::Confirm(text) => {
+                            ui.ctx().copy_text(text);
                             self.edit_text_state.reload(&self.db);
                             self.page = Page::EditText;
                         }

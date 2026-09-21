@@ -9,3 +9,4 @@ pub mod circle_menu;
 pub mod page_frame;
 pub mod shortcut_picker;
 pub mod text_input;
+pub mod scrollable_panel;
