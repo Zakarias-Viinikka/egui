@@ -3,8 +3,13 @@ name = "fading_popup"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "fading_popup"
+path = "src/main.rs"
+
 [dependencies]
-eframe.workspace = true
+x11rb = { workspace = true, features = ["shape"] }
+fontdue = "0.9"
 
 [lints]
 workspace = true

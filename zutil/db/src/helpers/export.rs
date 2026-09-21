@@ -57,12 +57,19 @@ fn row_to_new_text(r: &Row, name_by_id: &HashMap<i64, String>) -> NewText {
         .get(5)
         .and_then(|c| c.as_str().ok())
         .map(|s| s.to_string());
+    let copy_instead_of_view = r
+        .cols
+        .get(6)
+        .and_then(|c| c.as_int().ok().copied())
+        .map(|v| v != 0)
+        .unwrap_or(false);
     NewText {
         title,
         body,
         category,
         meta_category,
         type_of_text,
+        copy_instead_of_view: if copy_instead_of_view { Some(true) } else { None },
     }
 }
 

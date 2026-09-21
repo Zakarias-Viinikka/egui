@@ -9,6 +9,9 @@ pub struct EditSingleTextState {
     pub type_of_text: String,
     pub category_picker: CategoryPickerState,
     pub meta_category_picker: CategoryPickerState,
+    /// If true, clicking this text in a circle nav copies it to the clipboard
+    /// instead of opening the view overlay.
+    pub copy_instead_of_view: bool,
 }
 
 impl Default for EditSingleTextState {
@@ -20,6 +23,7 @@ impl Default for EditSingleTextState {
             type_of_text: String::new(),
             category_picker: CategoryPickerState::default(),
             meta_category_picker: CategoryPickerState::default(),
+            copy_instead_of_view: false,
         }
     }
 }
@@ -49,6 +53,11 @@ pub fn edit_single_text_ui(
 
     ui.label("Type of text (optional)");
     TextInput::single("edit_text_type").show(ui, &mut state.type_of_text);
+
+    ui.checkbox(
+        &mut state.copy_instead_of_view,
+        "Copy on click instead of opening to view",
+    );
 
     ui.label("Category (optional)");
     let _ = category_picker_trigger(ui, &mut state.category_picker, existing_normal_categories);

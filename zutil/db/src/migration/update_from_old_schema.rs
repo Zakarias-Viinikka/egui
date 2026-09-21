@@ -1,7 +1,7 @@
 use db_wrapper::mascot::LiveForever;
 
 use crate::migration::schema_versions::SchemaVersion;
-use crate::migration::schemas::{version1, version2, version3, version4, version5, version6};
+use crate::migration::schemas::{version1, version2, version3, version4, version5, version6, version7};
 
 pub fn update_once(current: SchemaVersion, db_wrapper: &LiveForever) -> SchemaVersion {
     match current {
@@ -29,7 +29,11 @@ pub fn update_once(current: SchemaVersion, db_wrapper: &LiveForever) -> SchemaVe
             version6::update_from_old_version(db_wrapper);
             SchemaVersion::Version6
         }
-        SchemaVersion::Version6 => SchemaVersion::Version6,
+        SchemaVersion::Version6 => {
+            version7::update_from_old_version(db_wrapper);
+            SchemaVersion::Version7
+        }
+        SchemaVersion::Version7 => SchemaVersion::Version7,
     }
 }
 

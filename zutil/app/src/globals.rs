@@ -87,6 +87,13 @@ pub fn pop_menu() -> bool {
     }
 }
 
+pub fn pop_to_root() {
+    let mut s = MENU_STACK.lock().unwrap();
+    if s.len() > 1 {
+        s.truncate(1);
+    }
+}
+
 pub fn depth() -> usize {
     MENU_STACK.lock().unwrap().len()
 }

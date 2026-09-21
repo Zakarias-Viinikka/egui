@@ -40,6 +40,7 @@ pub struct JsonState {
     pub popup_collisions: Vec<String>,
     pub popup_error: Option<String>,
     pub popup_info: Option<String>,
+    pub pending_popup: Option<String>,
 }
 
 impl Default for JsonState {
@@ -51,6 +52,7 @@ impl Default for JsonState {
             popup_collisions: Vec::new(),
             popup_error: None,
             popup_info: None,
+            pending_popup: None,
         }
     }
 }
@@ -115,6 +117,7 @@ pub fn json_ui(ui: &mut egui::Ui, db: &LiveForever, state: &mut JsonState) -> Js
                     .clicked()
                 {
                     ui.ctx().copy_text(json_parsing::prompt::prompt().to_string());
+                    state.pending_popup = Some("copied".to_string());
                 }
             });
         } else if has_do {
@@ -130,6 +133,7 @@ pub fn json_ui(ui: &mut egui::Ui, db: &LiveForever, state: &mut JsonState) -> Js
                 .clicked()
             {
                 ui.ctx().copy_text(json_parsing::prompt::prompt().to_string());
+                state.pending_popup = Some("copied".to_string());
             }
         }
 
@@ -392,12 +396,19 @@ fn build_export(db: &LiveForever) -> Result<String, String> {
                 .and_then(|c| c.as_str().ok())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let copy_instead_of_view = r
+                .cols
+                .get(6)
+                .and_then(|c| c.as_int().ok().copied())
+                .map(|v| v != 0)
+                .unwrap_or(false);
             Some(NewText {
                 title,
                 body,
                 category,
                 meta_category,
                 type_of_text,
+                copy_instead_of_view: if copy_instead_of_view { Some(true) } else { None },
             })
         })
         .collect();

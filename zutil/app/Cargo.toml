@@ -2,6 +2,7 @@
 name = "app"
 version.workspace = true
 edition.workspace = true
+default-run = "app"
 
 [dependencies]
 eframe.workspace = true
@@ -10,7 +11,6 @@ zutil_db = { path = "../db" }
 json_parsing = { path = "../json_parsing" }
 ui_math = { path = "../ui_math" }
 logging = { path = "../logging" }
-fading_popup = { path = "/home/zakke/ProgStuff/egui/reusable_components/fading_popup" }
 popup = { path = "/home/zakke/ProgStuff/egui/reusable_components/popup" }
 error_stuff = { path = "../error_stuff" }
 design = { path = "../design" }

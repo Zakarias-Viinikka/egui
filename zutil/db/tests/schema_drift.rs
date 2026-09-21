@@ -97,3 +97,20 @@ fn version6_error_log_shape_is_unchanged() {
     let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["id", "timestamp", "screen", "location", "detail"]);
 }
+
+#[test]
+fn version7_texts_gains_copy_instead_of_view() {
+    use zutil_db::migration::schemas::{version6, version7};
+
+    let v6 = version6::entire_table();
+    let v7 = version7::entire_table();
+
+    let texts6 = v6.iter().find(|t| t.table_name == "texts").unwrap();
+    let texts7 = v7.iter().find(|t| t.table_name == "texts").unwrap();
+    assert_eq!(texts7.columns.len(), texts6.columns.len() + 1);
+
+    let last = texts7.columns.last().unwrap();
+    assert_eq!(last.name, "copy_instead_of_view");
+    assert_eq!(last.column_type, "INTEGER");
+    assert!(last.not_null);
+}

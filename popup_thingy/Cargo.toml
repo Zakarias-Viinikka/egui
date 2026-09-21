@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "popup_demo/app",
+    "popup_demo/core",
+    "popup_host/app",
+    "popup_host/core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+eframe = "0.36.2"
+
+[workspace.lints.rust]
+warnings = "allow"

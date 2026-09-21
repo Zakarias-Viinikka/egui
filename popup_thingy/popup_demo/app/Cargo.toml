@@ -1,0 +1,11 @@
+[package]
+name = "popup_demo_app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+x11rb = { version = "0.13", features = ["shape"] }
+fontdue = "0.9"
+
+[lints]
+workspace = true

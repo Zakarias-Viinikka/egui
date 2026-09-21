@@ -6,7 +6,7 @@ use db_wrapper::mascot::LiveForever;
 use protocol::error::DbError;
 
 pub fn new_row_text(title: String, body: String) -> InsertDataIn {
-    new_row_text_with_category(title, body, None, None, None)
+    new_row_text_with_category(title, body, None, None, None, false)
 }
 
 pub fn new_row_text_with_category(
@@ -15,6 +15,7 @@ pub fn new_row_text_with_category(
     category_id: Option<i64>,
     meta_category_id: Option<i64>,
     type_of_text: Option<String>,
+    copy_instead_of_view: bool,
 ) -> InsertDataIn {
     let category_value = match category_id {
         Some(id) => Col::Integer(id),
@@ -51,6 +52,10 @@ pub fn new_row_text_with_category(
             ColumnValue {
                 column_name: "type_of_text".to_string(),
                 value: type_value,
+            },
+            ColumnValue {
+                column_name: "copy_instead_of_view".to_string(),
+                value: Col::Integer(if copy_instead_of_view { 1 } else { 0 }),
             },
         ],
     }
@@ -138,6 +143,7 @@ pub fn create_text_from_new_text(
         category_id,
         meta_category_id,
         nt.type_of_text,
+        nt.copy_instead_of_view.unwrap_or(false),
     ))
 }
 

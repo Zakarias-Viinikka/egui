@@ -12,8 +12,7 @@ use final_nav_view_or_edit_modals::edit_single_template::ui::{EditSingleTemplate
 use final_nav_view_or_edit_modals::fill_template::ui::{FillTemplateAction, FillTemplateState};
 use projects::ui::{ProjectsAction, ProjectsState};
 use error_stuff::{is_disabled, unwrap_or_bail};
-use fading_popup::ui::{FadingPopupParams, FadingPopupState, PopupScreenPosition, fading_popup};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::channel;
 use json::example::ui::{JsonExampleAction, JsonExampleState, default_example_json};
 use json::ui::JsonState;
 use crate::components::bounce_text::ui::{BounceTextState, bounce_text_ui};
@@ -51,17 +50,6 @@ pub fn run(db: LiveForever) -> eframe::Result<()> {
     )
 }
 
-struct FadingPopup {
-    state: FadingPopupState,
-    rx: Receiver<()>,
-    tx: Sender<()>,
-    ticker_stop: Sender<()>,
-    id: String,
-    title: Option<String>,
-    body: String,
-}
-
-
 enum Page {
     CircleMenu,
     EditText,
@@ -83,7 +71,6 @@ pub struct App {
     edit_single_text_state: EditSingleTextState,
     json_state: JsonState,
     json_example_state: JsonExampleState,
-    fading_popup: Option<FadingPopup>,
     available_normal_categories: Vec<String>,
     available_meta_categories: Vec<String>,
     create_template_state: CreateTemplateState,
@@ -96,6 +83,8 @@ pub struct App {
     editor_overlay: Option<EditorOverlay>,
     shortcut_picker: Option<ShortcutPickerState>,
     last_logged_error: Option<String>,
+    hide_on_copy: bool,
+    shortcut_repeat: Option<(String, std::time::Instant)>,
 }
 
 enum EditorOverlay {
@@ -117,7 +106,6 @@ impl App {
             edit_single_text_state: EditSingleTextState::default(),
             json_state: JsonState::default(),
             json_example_state: JsonExampleState::default(),
-            fading_popup: None,
             available_normal_categories: Vec::new(),
             available_meta_categories: Vec::new(),
             create_template_state: CreateTemplateState::default(),
@@ -130,6 +118,8 @@ impl App {
             editor_overlay: None,
             shortcut_picker: None,
             last_logged_error: None,
+            hide_on_copy: true,
+            shortcut_repeat: None,
         };
         app.init_root_menu();
         app
@@ -293,10 +283,16 @@ impl App {
             Some(s) => s.to_string(),
             None => String::new(),
         };
+        let copy_instead_of_view = row
+            .cols
+            .get(6)
+            .and_then(|c| c.as_int().ok().copied())
+            .map(|v| v != 0)
+            .unwrap_or(false);
 
-        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_template_category");
+        let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_text_category");
         picker.current = category;
-        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_template_meta_category");
+        let mut meta_picker = crate::components::category_picker_popup::ui::CategoryPickerState::with_id("edit_single_text_meta_category");
         meta_picker.current = meta_category;
 
         self.edit_single_text_state = EditSingleTextState {
@@ -306,6 +302,7 @@ impl App {
             type_of_text,
             category_picker: picker,
             meta_category_picker: meta_picker,
+            copy_instead_of_view,
         };
         {
         let (n, m) = unwrap_or_bail!(load_category_lists(&self.db), "edit_text", "load_category_lists");
@@ -635,7 +632,8 @@ impl App {
                     let type_of_text = state.type_of_text.clone();
                     let cat = state.category_picker.current.clone();
                     let meta = state.meta_category_picker.current.clone();
-                    Some(self.save_edit_single_text(id, title, body, type_of_text, cat, meta))
+                    let civ = state.copy_instead_of_view;
+                    Some(self.save_edit_single_text(id, title, body, type_of_text, cat, meta, civ))
                 } else {
                     None
                 };
@@ -720,26 +718,14 @@ impl App {
         self.show_popup(ui, &format!("copied_{}", tag), "copied");
     }
 
-    fn show_popup(&mut self, ui: &mut eframe::egui::Ui, id: &str, body: &str) {
-        let (tx, rx) = channel();
-        let (ticker_stop, ticker_rx) = channel::<()>();
-        let ctx = ui.ctx().clone();
-        std::thread::spawn(move || loop {
-            if ticker_rx.try_recv().is_ok() {
-                break;
-            }
-            ctx.request_repaint();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        });
-        self.fading_popup = Some(FadingPopup {
-            state: FadingPopupState::new(),
-            rx,
-            tx,
-            ticker_stop,
-            id: id.to_string(),
-            title: None,
-            body: body.to_string(),
-        });
+    fn show_popup(&mut self, ui: &mut eframe::egui::Ui, _id: &str, body: &str) {
+        let monitor_width = ui
+            .ctx()
+            .input(|i| i.viewport().monitor_size.map(|v| v.x))
+            .unwrap_or(1920.0);
+        let x = ((monitor_width - 360.0) / 2.0).max(0.0) as i16;
+        let y = 10i16;
+        spawn_popup(body, x, y);
     }
 
     fn log_error_once(&mut self, _ui: &mut eframe::egui::Ui) {
@@ -927,9 +913,7 @@ impl App {
             }
             _ => return,
         };
-        if r.is_ok() {
-            self.rebuild_menu_stack();
-        }
+        let _ = r;
     }
 
     fn draw_shortcut_picker(&mut self, ui: &mut eframe::egui::Ui) {
@@ -1101,10 +1085,17 @@ impl App {
             if cid == Some(target_cid) {
                 let id = row.cols.first().and_then(|c| c.as_int().ok()).copied().unwrap_or(0);
                 let title = row.cols.get(1).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+                let civ = row
+                    .cols
+                    .get(6)
+                    .and_then(|c| c.as_int().ok().copied())
+                    .map(|v| v != 0)
+                    .unwrap_or(false);
+                let kind = if civ { ItemKind::CopyPrompt(id) } else { mk_kind(id) };
                 let key = id.to_string();
                 items.push(MenuItem {
                     label: title,
-                    kind: mk_kind(id),
+                    kind,
                     counter: popularity::read_counter(&self.db, "texts", id).unwrap_or(0),
                     shortcut: self.read_shortcut_for(
                         zutil_db::helpers::shortcuts::OWNER_TEXT,
@@ -1179,6 +1170,15 @@ impl App {
         let body = row.cols.get(2).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
         ui.ctx().copy_text(body);
         self.show_copied_popup(ui, &format!("prompt_{}", tid));
+
+        // copy is a "done" action: go back to the root circle and get out of
+        // the user's way. hide can be turned off via the top menu checkbox.
+        crate::globals::pop_to_root();
+        self.circle_menu_state.reset();
+        if self.hide_on_copy {
+            ui.ctx()
+                .send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
+        }
     }
 
     fn open_view_text_overlay(&mut self, tid: i64) {
@@ -1215,6 +1215,12 @@ impl App {
             None => String::new(),
         };
         let type_of_text = row.cols.get(5).and_then(|c| c.as_str().ok()).unwrap_or("").to_string();
+        let copy_instead_of_view = row
+            .cols
+            .get(6)
+            .and_then(|c| c.as_int().ok().copied())
+            .map(|v| v != 0)
+            .unwrap_or(false);
 
         let mut picker = crate::components::category_picker_popup::ui::CategoryPickerState::default();
         picker.current = category;
@@ -1233,6 +1239,7 @@ impl App {
             type_of_text,
             category_picker: picker,
             meta_category_picker: meta_picker,
+            copy_instead_of_view,
         }));
     }
 
@@ -1244,6 +1251,7 @@ impl App {
         type_of_text: String,
         cat: String,
         meta: String,
+        copy_instead_of_view: bool,
     ) -> Result<(), String> {
         let db = &self.db;
         db.begin_all_or_nothing().map_err(|e| e.to_string())?;
@@ -1280,6 +1288,13 @@ impl App {
                 row_id: id.to_string(),
                 column: "meta_category_id".to_string(),
                 new_value: meta_col_value,
+            })
+            .map_err(|e| e.to_string())?;
+            db.edit_col_in_row(protocol::payload::EditColInRowIn {
+                table_name: "texts".to_string(),
+                row_id: id.to_string(),
+                column: "copy_instead_of_view".to_string(),
+                new_value: protocol::row_col::Col::Integer(if copy_instead_of_view { 1 } else { 0 }),
             })
             .map_err(|e| e.to_string())?;
             Ok(())
@@ -1483,30 +1498,6 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-        let mut popup_finished = false;
-        if let Some(p) = &mut self.fading_popup {
-            if p.rx.try_recv().is_ok() {
-                popup_finished = true;
-            } else {
-                fading_popup(
-                    ui.ctx(),
-                    &mut p.state,
-                    FadingPopupParams {
-                        id: p.id.clone(),
-                        title: p.title.clone(),
-                        body: p.body.clone(),
-                        position: PopupScreenPosition::TopCenter { y_offset: 10.0 },
-                        done_tx: p.tx.clone(),
-                    },
-                );
-            }
-        }
-        if popup_finished {
-            if let Some(p) = self.fading_popup.take() {
-                let _ = p.ticker_stop.send(());
-            }
-        }
-
         eframe::egui::CentralPanel::default()
             .frame(eframe::egui::Frame::new().fill(eframe::egui::Color32::TRANSPARENT))
             .show(ui, |ui| {
@@ -1550,7 +1541,7 @@ impl eframe::App for App {
 
                 if !crate::globals::modal_open() {
                     use crate::components::top_menu::ui::TopMenuAction;
-                    match crate::components::top_menu::ui::top_menu_ui(ui) {
+                    match crate::components::top_menu::ui::top_menu_ui(ui, &mut self.hide_on_copy) {
                         TopMenuAction::GoToViewAll => {
                             self.edit_text_state.reload(&self.db);
                             self.page = Page::EditText;
@@ -1580,7 +1571,11 @@ impl eframe::App for App {
                         && self.editor_overlay.is_none()
                     {
                         let mut fired: Option<usize> = None;
+                        let mut fired_combo: Option<String> = None;
                         let current = crate::globals::current_items();
+
+                        // fresh key press events
+                        let mut descend = false;
                         ui.input(|i| {
                             for ev in &i.events {
                                 if let eframe::egui::Event::Key {
@@ -1593,13 +1588,22 @@ impl eframe::App for App {
                                     if crate::components::shortcut_picker::ui::is_modifier(*key) {
                                         continue;
                                     }
+                                    // if ctrl is held, treat it as "descend":
+                                    // match the combo without ctrl, so a
+                                    // shortcut of "c" fires on ctrl+c too.
+                                    let mut mods = modifiers.clone();
+                                    if mods.ctrl {
+                                        descend = true;
+                                        mods.ctrl = false;
+                                    }
                                     let combo =
                                         crate::components::shortcut_picker::ui::build_combo(
-                                            *key, modifiers,
+                                            *key, &mods,
                                         );
                                     for (idx, it) in current.iter().enumerate() {
                                         if it.shortcut.as_deref() == Some(combo.as_str()) {
                                             fired = Some(idx);
+                                            fired_combo = Some(combo.clone());
                                             break;
                                         }
                                     }
@@ -1609,13 +1613,114 @@ impl eframe::App for App {
                                 }
                             }
                         });
+
+                        // auto-repeat: if no fresh press, see what's still held
+                        if fired.is_none() {
+                            let mut held: Option<(usize, String)> = None;
+                            ui.input(|i| {
+                                for key in i.keys_down.iter() {
+                                    if crate::components::shortcut_picker::ui::is_modifier(*key) {
+                                        continue;
+                                    }
+                                    let combo =
+                                        crate::components::shortcut_picker::ui::build_combo(
+                                            *key, &i.modifiers,
+                                        );
+                                    for (idx, it) in current.iter().enumerate() {
+                                        if it.shortcut.as_deref() == Some(combo.as_str()) {
+                                            held = Some((idx, combo.clone()));
+                                            break;
+                                        }
+                                    }
+                                    if held.is_some() {
+                                        break;
+                                    }
+                                }
+                            });
+                            match held {
+                                Some((idx, combo)) => {
+                                    let should_fire = match &self.shortcut_repeat {
+                                        Some((c, t)) if c == &combo => {
+                                            t.elapsed()
+                                                >= std::time::Duration::from_millis(50)
+                                        }
+                                        _ => false,
+                                    };
+                                    if should_fire {
+                                        fired = Some(idx);
+                                        fired_combo = Some(combo);
+                                    }
+                                }
+                                None => {
+                                    self.shortcut_repeat = None;
+                                }
+                            }
+                        }
+
                         if let Some(i) = fired {
-                            // reuse the same code path as a click
-                            let item = current[i].clone();
-                            self.bump_counter_for(&item);
-                            self.dispatch_by_kind(ui, &item);
+                            if let Some(c) = fired_combo.clone() {
+                                self.shortcut_repeat =
+                                    Some((c, std::time::Instant::now()));
+                            }
+
+                            if descend {
+                                // Keep firing the same combo down through the
+                                // menu until the menu stops changing (an
+                                // action happened) or a modal opens.
+                                let combo = fired_combo.unwrap_or_default();
+                                let mut idx = i;
+                                for _ in 0..16 {
+                                    let items_now = crate::globals::current_items();
+                                    if idx >= items_now.len() {
+                                        break;
+                                    }
+                                    let item = items_now[idx].clone();
+                                    let depth_before = crate::globals::depth();
+                                    self.bump_counter_for(&item);
+                                    self.dispatch_by_kind(ui, &item);
+
+                                    if crate::globals::modal_open() {
+                                        break;
+                                    }
+                                    let depth_after = crate::globals::depth();
+                                    if depth_after <= depth_before {
+                                        break;
+                                    }
+
+                                    // look for the same combo in the new circle
+                                    let items_next = crate::globals::current_items();
+                                    let mut next: Option<usize> = None;
+                                    for (ni, nit) in items_next.iter().enumerate() {
+                                        if nit.shortcut.as_deref() == Some(combo.as_str()) {
+                                            next = Some(ni);
+                                            break;
+                                        }
+                                    }
+                                    match next {
+                                        Some(ni) => idx = ni,
+                                        None => break,
+                                    }
+                                }
+                            } else {
+                                let item = current[i].clone();
+                                self.bump_counter_for(&item);
+                                self.dispatch_by_kind(ui, &item);
+                            }
                             return;
                         }
+                    }
+
+                    // pressing ctrl acts as "go back one nav level"
+                    if crate::globals::depth() > 1
+                        && ui.input(|i| {
+                            i.key_pressed(eframe::egui::Key::ControlLeft)
+                                || i.key_pressed(eframe::egui::Key::ControlRight)
+                        })
+                    {
+                        crate::globals::pop_menu();
+                        self.circle_menu_state.reset();
+                        ui.ctx().request_repaint();
+                        return;
                     }
 
                     let items = crate::globals::current_items();
@@ -1894,6 +1999,7 @@ impl App {
                                 category_id,
                                 meta_category_id,
                                 type_value,
+                                false,
                             ));
                             unwrap_or_bail!(
                                 result.map_err(|e| e.to_string()),
@@ -1902,28 +2008,7 @@ impl App {
                             );
                             self.create_text_state = CreateTextState::default();
 
-                            let (tx, rx) = channel();
-                            let (ticker_stop, ticker_rx) = channel::<()>();
-                            let ctx = ui.ctx().clone();
-                            std::thread::spawn(move || loop {
-                                if ticker_rx.try_recv().is_ok() {
-                                    break;
-                                }
-                                ctx.request_repaint();
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            });
-                            self.fading_popup = Some(FadingPopup {
-                                state: FadingPopupState::new(),
-                                rx,
-                                tx,
-                                ticker_stop,
-                                id: format!("created_{}", std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_nanos()),
-                                title: None,
-                                body: "created 1 text".to_string(),
-                            });
+                            self.show_popup(ui, "created", "created 1 text");
                         }
                         CreateTextAction::None => {}
                     }
@@ -2057,28 +2142,11 @@ impl App {
                             .ok();
                             self.edit_text_state.reload(&self.db);
 
-                            let (tx, rx) = channel();
-                            let (ticker_stop, ticker_rx) = channel::<()>();
-                            let ctx = ui.ctx().clone();
-                            std::thread::spawn(move || loop {
-                                if ticker_rx.try_recv().is_ok() {
-                                    break;
-                                }
-                                ctx.request_repaint();
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            });
-                            self.fading_popup = Some(FadingPopup {
-                                state: FadingPopupState::new(),
-                                rx,
-                                tx,
-                                ticker_stop,
-                                id: format!("import_{}_{}", text_count, tpl_count),
-                                title: None,
-                                body: format!(
-                                    "created {} text(s), {} template(s)",
-                                    text_count, tpl_count
-                                ),
-                            });
+                            self.show_popup(
+                                ui,
+                                &format!("import_{}_{}", text_count, tpl_count),
+                                &format!("created {} text(s), {} template(s)", text_count, tpl_count),
+                            );
                         }
                         json::ui::JsonAction::Example => {
                             if self.json_state.mode.is_some() {
@@ -2093,6 +2161,9 @@ impl App {
                             }
                         }
                         json::ui::JsonAction::None => {}
+                    }
+                    if self.json_state.pending_popup.take().is_some() {
+                        self.show_copied_popup(ui, "json_prompt");
                     }
                 }
                 Page::CreateTemplate => {
@@ -2269,4 +2340,30 @@ impl App {
                 }
             }
     }
+}
+
+fn spawn_popup(body: &str, x: i16, y: i16) {
+    let path = find_popup_binary();
+    let _ = std::process::Command::new(path)
+        .arg(body)
+        .arg(x.to_string())
+        .arg(y.to_string())
+        .spawn();
+}
+
+fn find_popup_binary() -> std::path::PathBuf {
+    let installed = std::path::PathBuf::from("/usr/bin/zutil_popup");
+    if installed.exists() {
+        return installed;
+    }
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    if let Some(root) = std::path::Path::new(manifest_dir).parent() {
+        for sub in ["target/debug/zutil_popup", "target/release/zutil_popup"] {
+            let p = root.join(sub);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    std::path::PathBuf::from("zutil_popup")
 }

@@ -17,8 +17,13 @@ Each item creates one text:
   "body": "required string",
   "category": "optional string",
   "meta_category": "optional string",
-  "type_of_text": "optional string"
+  "type_of_text": "optional string",
+  "copy_instead_of_view": "optional bool, default false"
 }
+
+If copy_instead_of_view is true, clicking this text in a circle nav copies
+it to the clipboard instead of opening the view overlay. Defaults to false
+(view).
 
 --- new_templates ---
 

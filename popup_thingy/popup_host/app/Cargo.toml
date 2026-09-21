@@ -1,0 +1,8 @@
+[package]
+name = "popup_host_app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+popup_host_core = { path = "../core" }

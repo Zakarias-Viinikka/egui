@@ -6,7 +6,7 @@ use zutil_db::migration::helpers::{
     assert_migrated_db_matches_fresh_db, create_table_from_scratch,
 };
 use zutil_db::migration::schema_versions::{CURRENT_VERSION, SchemaVersion};
-use zutil_db::migration::schemas::{current, version0, version3, version4, version5};
+use zutil_db::migration::schemas::{current, version0, version3, version4, version5, version6};
 use zutil_db::migration::update_from_old_schema::update_until_newest_version;
 
 #[test]
@@ -103,6 +103,21 @@ fn migration_v5_to_v6_creates_error_log() {
     let expected: Vec<&str> = vec!["id", "timestamp", "screen", "location", "detail"];
     let got: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(got, expected);
+
+    assert_migrated_db_matches_fresh_db(current::entire_table(), &db);
+}
+
+#[test]
+fn migration_v6_to_v7_adds_copy_instead_of_view() {
+    let db = setup_fresh_db("test_migration_v6_to_v7.sqlite");
+    create_table_from_scratch(version6::entire_table(), &db).unwrap();
+    update_until_newest_version(SchemaVersion::Version6, &db);
+
+    let cols = check_table(CheckTable { table_name: "texts", db: &db });
+    assert!(
+        cols.iter().any(|c| c.name == "copy_instead_of_view"),
+        "texts missing copy_instead_of_view"
+    );
 
     assert_migrated_db_matches_fresh_db(current::entire_table(), &db);
 }
