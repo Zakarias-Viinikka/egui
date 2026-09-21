@@ -120,3 +120,24 @@ pub fn read_counter(db: &LiveForever, table: &str, id: i64) -> Result<u32, DbErr
         .map(|v| v as u32)
         .unwrap_or(0))
 }
+
+pub fn halve_all(db: &LiveForever) -> Result<(), DbError> {
+    for table in ["texts", "templates", "projects", "categories", "main_nav_clicks"] {
+        let out = db.get_data(GetDataIn {
+            table_name: table.to_string(),
+            arguments: SelectArguments::Single(SelectArgument::All),
+            columns_to_read: vec!["id".to_string(), "popularity_ctr".to_string()],
+        })?;
+        for row in out.rows {
+            let id = row.cols.first().and_then(|c| c.as_int().ok().copied()).unwrap_or(0);
+            let ctr = row.cols.get(1).and_then(|c| c.as_int().ok().copied()).unwrap_or(0);
+            db.edit_col_in_row(EditColInRowIn {
+                table_name: table.to_string(),
+                row_id: id.to_string(),
+                column: "popularity_ctr".to_string(),
+                new_value: Col::Integer(ctr / 2),
+            })?;
+        }
+    }
+    Ok(())
+}

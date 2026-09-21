@@ -106,18 +106,7 @@ enum EditorOverlay {
 
 impl App {
     fn new(db: LiveForever) -> Self {
-        let mk_root = |label: &str, kind: ItemKind| MenuItem {
-            label: label.to_string(),
-            kind,
-            counter: popularity::read_main_nav_counter(&db, label).unwrap_or(0) as u32,
-        };
-        crate::globals::init_menu(vec![
-            mk_root("Templates", ItemKind::PushTemplatesCategories),
-            mk_root("AI Prompts", ItemKind::PushPromptCategories),
-            mk_root("Text", ItemKind::PushTextCategories),
-            mk_root("Projects", ItemKind::PushProjects),
-        ]);
-        Self {
+        let mut app = Self {
             db,
             page: Page::CircleMenu,
             edit_text_state: EditTextState::default(),
@@ -136,7 +125,9 @@ impl App {
             bounces: Vec::new(),
             open_template: None,
             editor_overlay: None,
-        }
+        };
+        app.init_root_menu();
+        app
     }
 
     fn open_fill_template(&mut self, id: i64) {
@@ -687,7 +678,7 @@ impl App {
                 self.save_edit_single_text(id, title, body, type_of_text, cat, meta);
             }
             close = true;
-            self.rebuild_current_menu();
+            self.rebuild_menu_stack();
         }
 
         if template_save {
@@ -736,7 +727,7 @@ impl App {
                 unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_single_template", "edit_meta_category_id");
             }
             close = true;
-            self.rebuild_current_menu();
+            self.rebuild_menu_stack();
         }
 
         if let Some(EditorOverlay::Category(state)) = &save {
@@ -745,7 +736,7 @@ impl App {
             );
             unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_category", "save");
             close = true;
-            self.rebuild_current_menu();
+            self.rebuild_menu_stack();
         }
 
         if view_text_copy {
@@ -800,18 +791,37 @@ impl App {
 }
 
 impl App {
-    fn rebuild_current_menu(&mut self) {
+    fn rebuild_menu_stack(&mut self) {
         use crate::globals::RebuildKind;
-        match crate::globals::current_rebuild_kind() {
-            Some(RebuildKind::Root) => {}
-            Some(RebuildKind::TemplatesCategories) => self.push_template_categories(),
-            Some(RebuildKind::TemplatesInCategory(cid)) => self.push_templates_in_category(cid),
-            Some(RebuildKind::Prompts) => self.push_all_prompts(),
-            Some(RebuildKind::TextCategories) => self.push_text_categories(),
-            Some(RebuildKind::TextsInCategory(cid)) => self.push_texts_in_category(cid),
-            Some(RebuildKind::Projects) => self.push_projects(),
-            None => {}
+        let kinds = crate::globals::stack_kinds();
+        if kinds.is_empty() {
+            return;
         }
+        for kind in kinds {
+            match kind {
+                RebuildKind::Root => self.init_root_menu(),
+                RebuildKind::TemplatesCategories => self.push_template_categories(),
+                RebuildKind::TemplatesInCategory(cid) => self.push_templates_in_category(cid),
+                RebuildKind::Prompts => self.push_all_prompts(),
+                RebuildKind::TextCategories => self.push_text_categories(),
+                RebuildKind::TextsInCategory(cid) => self.push_texts_in_category(cid),
+                RebuildKind::Projects => self.push_projects(),
+            }
+        }
+    }
+
+    fn init_root_menu(&mut self) {
+        let mk_root = |label: &str, kind: ItemKind| MenuItem {
+            label: label.to_string(),
+            kind,
+            counter: popularity::read_main_nav_counter(&self.db, label).unwrap_or(0) as u32,
+        };
+        crate::globals::init_menu(vec![
+            mk_root("Templates", ItemKind::PushTemplatesCategories),
+            mk_root("AI Prompts", ItemKind::PushPromptCategories),
+            mk_root("Text", ItemKind::PushTextCategories),
+            mk_root("Projects", ItemKind::PushProjects),
+        ]);
     }
 
     fn push_projects(&mut self) {
@@ -880,7 +890,7 @@ impl App {
             _ => return,
         };
         if r.is_ok() {
-            self.rebuild_current_menu();
+            self.rebuild_menu_stack();
         }
     }
 
@@ -1254,6 +1264,10 @@ impl eframe::App for App {
                         }
                         TopMenuAction::NewPlus => {
                             self.editor_overlay = Some(EditorOverlay::NewPlus);
+                        }
+                        TopMenuAction::HalveCounters => {
+                            let _ = popularity::halve_all(&self.db);
+                            self.rebuild_menu_stack();
                         }
                         TopMenuAction::None => {}
                     }

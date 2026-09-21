@@ -118,3 +118,12 @@ pub fn set_disable_rightclick(v: bool) {
 pub fn disable_rightclick() -> bool {
     DISABLE_RIGHTCLICK.load(Ordering::Relaxed)
 }
+
+pub fn stack_kinds() -> Vec<RebuildKind> {
+    MENU_STACK
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(k, _)| k.clone())
+        .collect()
+}
