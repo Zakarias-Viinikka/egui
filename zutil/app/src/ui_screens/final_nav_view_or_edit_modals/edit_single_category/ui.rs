@@ -49,7 +49,7 @@ pub fn edit_single_category_ui(
             egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
         v.widgets.active.bg_stroke =
             egui::Stroke::new(1.5, design::colors::FIELD_BORDER_HOVER);
-        ui.text_edit_singleline(&mut state.name);
+        ui.add(egui::TextEdit::singleline(&mut state.name).desired_width(f32::INFINITY));
     });
 
     ui.add_space(16.0);

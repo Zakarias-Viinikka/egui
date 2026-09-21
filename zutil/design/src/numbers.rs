@@ -34,6 +34,8 @@ pub const CIRCLE_BOX_WIDTH_FRACTION: f32 = 0.95;
 pub const CIRCLE_BOX_HEIGHT_FRACTION: f32 = 0.95;
 pub const CIRCLE_DIAMETER_FRACTION: f32 = 0.90;
 pub const CIRCLE_STROKE_WIDTH: f32 = 2.0;
+pub const CIRCLE_NEST_SCALE: f32 = 0.91;
+pub const CIRCLE_NEST_MIN_RADIUS: f32 = 40.0;
 pub const PULSE_CANCEL_WINDOW_SECS: f64 = 0.08;
 
 // pulse

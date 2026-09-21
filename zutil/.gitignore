@@ -1,2 +1,4 @@
 /target
 *.sqlite
+build_and_install.sh
+*.deb

@@ -41,13 +41,13 @@ pub fn edit_single_text_ui(
     ui.separator();
 
     ui.label("Title");
-    ui.text_edit_singleline(&mut state.title);
+    ui.add(egui::TextEdit::singleline(&mut state.title).desired_width(f32::INFINITY));
 
     ui.label("Body");
-    ui.text_edit_multiline(&mut state.body);
+    ui.add(egui::TextEdit::multiline(&mut state.body).desired_width(f32::INFINITY).desired_rows(10));
 
     ui.label("Type of text (optional)");
-    ui.text_edit_singleline(&mut state.type_of_text);
+    ui.add(egui::TextEdit::singleline(&mut state.type_of_text).desired_width(f32::INFINITY));
 
     ui.label("Category (optional)");
     let _ = category_picker_trigger(ui, &mut state.category_picker, existing_normal_categories);

@@ -6,3 +6,4 @@ pub mod read;
 pub mod search;
 pub mod import;
 pub mod project;
+pub mod popularity;

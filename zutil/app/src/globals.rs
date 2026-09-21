@@ -13,6 +13,10 @@ pub enum ItemKind {
     PushTextsInCategory(i64),
     OpenTextEditor(i64),
     ViewText(i64),
+    PushProjects,
+    OpenProjectTerminal(i64),
+    EditProject(i64),
+    NewPlus,
     None,
 }
 
@@ -20,10 +24,22 @@ pub enum ItemKind {
 pub struct MenuItem {
     pub label: String,
     pub kind: ItemKind,
+    pub counter: u32,
+}
+
+#[derive(Clone)]
+pub enum RebuildKind {
+    Root,
+    TemplatesCategories,
+    TemplatesInCategory(i64),
+    Prompts,
+    TextCategories,
+    TextsInCategory(i64),
+    Projects,
 }
 
 static LAST_CLICK: Mutex<Option<egui::Pos2>> = Mutex::new(None);
-static MENU_STACK: Mutex<Vec<Vec<MenuItem>>> = Mutex::new(Vec::new());
+static MENU_STACK: Mutex<Vec<(RebuildKind, Vec<MenuItem>)>> = Mutex::new(Vec::new());
 
 pub fn record_click(pos: egui::Pos2) {
     *LAST_CLICK.lock().unwrap() = Some(pos);
@@ -36,11 +52,22 @@ pub fn last_click() -> Option<egui::Pos2> {
 pub fn init_menu(items: Vec<MenuItem>) {
     let mut s = MENU_STACK.lock().unwrap();
     s.clear();
-    s.push(items);
+    s.push((RebuildKind::Root, items));
 }
 
-pub fn push_menu(items: Vec<MenuItem>) {
-    MENU_STACK.lock().unwrap().push(items);
+pub fn push_menu(kind: RebuildKind, items: Vec<MenuItem>) {
+    MENU_STACK.lock().unwrap().push((kind, items));
+}
+
+pub fn current_rebuild_kind() -> Option<RebuildKind> {
+    MENU_STACK.lock().unwrap().last().map(|(k, _)| k.clone())
+}
+
+pub fn set_top_items(items: Vec<MenuItem>) {
+    let mut s = MENU_STACK.lock().unwrap();
+    if let Some((_, top)) = s.last_mut() {
+        *top = items;
+    }
 }
 
 pub fn pop_menu() -> bool {
@@ -58,7 +85,12 @@ pub fn depth() -> usize {
 }
 
 pub fn current_items() -> Vec<MenuItem> {
-    MENU_STACK.lock().unwrap().last().cloned().unwrap_or_default()
+    MENU_STACK
+        .lock()
+        .unwrap()
+        .last()
+        .map(|(_, items)| items.clone())
+        .unwrap_or_default()
 }
 
 pub fn current_labels() -> Vec<String> {

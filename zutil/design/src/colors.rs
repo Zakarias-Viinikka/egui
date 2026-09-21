@@ -5,8 +5,8 @@ pub const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 0.8];
 pub const BACKDROP_OPAQUE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 200);
 
 // surfaces
-pub const SURFACE: Color32 = Color32::from_rgba_premultiplied(230, 230, 230, 230);
-pub const SURFACE_OPAQUE: Color32 = Color32::WHITE;
+pub const SURFACE: Color32 = Color32::from_rgba_premultiplied(215, 215, 215, 235);
+pub const SURFACE_OPAQUE: Color32 = Color32::from_rgba_premultiplied(240, 240, 240, 245);
 
 // text
 pub const TEXT: Color32 = Color32::from_gray(30);
@@ -35,6 +35,10 @@ pub const ICON_FG: Color32 = Color32::from_gray(70);
 
 // circle
 pub const CIRCLE_STROKE: Color32 = Color32::from_rgba_premultiplied(30, 30, 30, 128);
+pub const CIRCLE_STROKE_GRAY: u8 = 220;
+pub const CIRCLE_STROKE_BASE_ALPHA: u8 = 70;
+pub const CIRCLE_STROKE_FLOOR_ALPHA: u8 = 18;
+pub const CIRCLE_STROKE_DECAY: f32 = 0.45;
 
 // pulse
 pub const PULSE: Color32 = Color32::WHITE;

@@ -8,13 +8,14 @@ pub enum TopMenuAction {
     GoToViewAll,
     GoToProjects,
     GoToJson,
+    NewPlus,
 }
 
 pub fn top_menu_ui(ui: &mut egui::Ui) -> TopMenuAction {
     let mut action = TopMenuAction::None;
 
     let screen_width = ui.available_width();
-    let total = TOP_MENU_BUTTON_WIDTH * 3.0 + TOP_MENU_GAP * 2.0;
+    let total = TOP_MENU_BUTTON_WIDTH * 4.0 + TOP_MENU_GAP * 3.0;
     let left_pad = ((screen_width - total) / 2.0).max(0.0);
 
     ui.add_space(TOP_MENU_MARGIN);
@@ -31,6 +32,10 @@ pub fn top_menu_ui(ui: &mut egui::Ui) -> TopMenuAction {
         ui.add_space(TOP_MENU_GAP);
         if ui.add_sized([TOP_MENU_BUTTON_WIDTH, TOP_MENU_BUTTON_HEIGHT], egui::Button::new("Json")).clicked() {
             action = TopMenuAction::GoToJson;
+        }
+        ui.add_space(TOP_MENU_GAP);
+        if ui.add_sized([TOP_MENU_BUTTON_WIDTH, TOP_MENU_BUTTON_HEIGHT], egui::Button::new("New +")).clicked() {
+            action = TopMenuAction::NewPlus;
         }
     });
 

@@ -8,6 +8,7 @@ pub struct ViewTextState {
 pub enum ViewTextAction {
     None,
     Back,
+    Copy,
 }
 
 pub fn view_text_ui(ui: &mut egui::Ui, state: &ViewTextState) -> ViewTextAction {
@@ -31,7 +32,7 @@ pub fn view_text_ui(ui: &mut egui::Ui, state: &ViewTextState) -> ViewTextAction 
         ui.add_space(8.0);
         let width = ui.available_width();
         if ui.add_sized([width, 40.0], egui::Button::new("Copy")).clicked() {
-            ui.ctx().copy_text(state.body.clone());
+            action = ViewTextAction::Copy;
         }
     });
 

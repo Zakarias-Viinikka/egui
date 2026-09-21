@@ -1,5 +1,6 @@
 use eframe::egui;
 use crate::components::pulse::ui::PulseState;
+use crate::globals::MenuItem;
 use design::colors::{CIRCLE_STROKE, PULSE};
 use design::numbers::{
     CIRCLE_BOX_HEIGHT_FRACTION, CIRCLE_BOX_WIDTH_FRACTION, CIRCLE_DIAMETER_FRACTION,
@@ -43,12 +44,20 @@ pub struct CircleMenuResponse {
 pub fn circle_menu_ui(
     ui: &mut egui::Ui,
     state: &mut CircleMenuState,
-    texts: &[String],
+    items: &[MenuItem],
 ) -> CircleMenuResponse {
     let mut clicked: Option<usize> = None;
     let mut right_clicked: Option<usize> = None;
-    let n = texts.len();
+    let n = items.len();
     let mut rects: Vec<egui::Rect> = vec![egui::Rect::NOTHING; n];
+
+    if crate::globals::modal_open() {
+        if !state.pulses.is_empty() {
+            ui.ctx().request_repaint();
+        }
+        state.pulses.retain(|p| !crate::components::pulse::ui::pulse_ui(ui, p));
+        return CircleMenuResponse { clicked, right_clicked, rects };
+    }
 
     let screen = ui.available_rect_before_wrap();
     let width = screen.width() * CIRCLE_BOX_WIDTH_FRACTION;
@@ -57,15 +66,28 @@ pub fn circle_menu_ui(
     let y = screen.top() + (screen.height() - height) / 2.0;
     let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, height));
 
-    let radius = rect.width().min(rect.height()) * CIRCLE_DIAMETER_FRACTION / 2.0;
-    let stroke = egui::Stroke::new(CIRCLE_STROKE_WIDTH, CIRCLE_STROKE);
-    ui.painter().circle_stroke(rect.center(), radius, stroke);
+    let base_radius = rect.width().min(rect.height()) * CIRCLE_DIAMETER_FRACTION / 2.0;
+    let depth = crate::globals::depth().max(1);
+    let mut radius = base_radius;
+    let base = design::colors::CIRCLE_STROKE_BASE_ALPHA as f32;
+    let floor = design::colors::CIRCLE_STROKE_FLOOR_ALPHA as f32;
+    let decay = design::colors::CIRCLE_STROKE_DECAY;
+    for i in 0..depth {
+        let alpha = floor + (base - floor) * decay.powi(i as i32);
+        let stroke = egui::Stroke::new(CIRCLE_STROKE_WIDTH, light_ring(alpha as u8));
+        ui.painter().circle_stroke(rect.center(), radius, stroke);
+        radius *= design::numbers::CIRCLE_NEST_SCALE;
+        if radius < design::numbers::CIRCLE_NEST_MIN_RADIUS {
+            break;
+        }
+    }
 
     let now = ui.input(|i| i.time);
 
-    let menu_changed = texts != state.last_menu.as_slice();
+    let labels: Vec<String> = items.iter().map(|it| it.label.clone()).collect();
+    let menu_changed = labels != state.last_menu;
     if menu_changed {
-        state.last_menu = texts.to_vec();
+        state.last_menu = labels;
         state.fade_started = now;
         state.fade_from = if crate::globals::depth() > 1 {
             crate::globals::last_click()
@@ -91,12 +113,10 @@ pub fn circle_menu_ui(
         })
         .collect();
 
-    let modal = crate::globals::modal_open();
-
     let mouse = ui
         .ctx()
         .input(|i| i.pointer.latest_pos())
-        .filter(|p| !modal && p.y > screen.top() + TOP_MENU_ZONE);
+        .filter(|p| p.y > screen.top() + TOP_MENU_ZONE);
 
     let closest = mouse.and_then(|m| {
         let mut best: Option<usize> = None;
@@ -111,19 +131,12 @@ pub fn circle_menu_ui(
         best
     });
 
-    let on_a_box = ui
-        .ctx()
-        .input(|i| i.pointer.latest_pos())
-        .map(|p| rects.iter().any(|r| *r != egui::Rect::NOTHING && r.contains(p)))
-        .unwrap_or(false);
-    crate::globals::set_disable_rightclick(on_a_box);
-
     if menu_changed {
         state.last_highlighted = closest;
     }
 
     let mut any_fading = false;
-    for (i, text) in texts.iter().enumerate() {
+    for (i, item) in items.iter().enumerate() {
         let highlighted = closest == Some(i);
         let alpha = match state.fade_from {
             Some(from) if from.distance(points[i]) < FADE_RADIUS => {
@@ -138,19 +151,18 @@ pub fn circle_menu_ui(
         rects[i] = crate::components::textbox::ui::textbox_ui(
             ui,
             points[i],
-            text,
+            &item.label,
             TEXTBOX_MAX_WIDTH,
             highlighted,
             alpha,
         );
+        draw_counter(ui, rects[i], item.counter, alpha);
     }
 
     if closest != state.last_highlighted {
-        if !modal {
-            state.pulses.retain(|p| !p.is_cancellable(now));
-            if let Some(i) = closest {
-                state.pulses.push(PulseState::new(ui, rects[i], CORNER_SMALL, PULSE));
-            }
+        state.pulses.retain(|p| !p.is_cancellable(now));
+        if let Some(i) = closest {
+            state.pulses.push(PulseState::new(ui, rects[i], CORNER_SMALL, PULSE));
         }
     }
     state.last_highlighted = closest;
@@ -158,7 +170,7 @@ pub fn circle_menu_ui(
     let pointer_clicked = ui.input(|i| i.pointer.primary_clicked());
     let pointer_secondary = ui.input(|i| i.pointer.secondary_clicked());
     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-    if pointer_clicked && !modal {
+    if pointer_clicked {
         if let (Some(pos), Some(i)) = (pointer_pos, closest) {
             if rect.contains(pos) {
                 clicked = Some(i);
@@ -166,7 +178,7 @@ pub fn circle_menu_ui(
             }
         }
     }
-    if pointer_secondary && !modal {
+    if pointer_secondary {
         if let (Some(pos), Some(i)) = (pointer_pos, closest) {
             if rects[i] != egui::Rect::NOTHING && rects[i].contains(pos) {
                 right_clicked = Some(i);
@@ -180,4 +192,38 @@ pub fn circle_menu_ui(
     state.pulses.retain(|p| !crate::components::pulse::ui::pulse_ui(ui, p));
 
     CircleMenuResponse { clicked, right_clicked, rects }
+}
+
+fn light_ring(alpha: u8) -> egui::Color32 {
+    let a = alpha as f32 / 255.0;
+    let base = design::colors::CIRCLE_STROKE_GRAY as f32;
+    let r = (base * a) as u8;
+    let g = (base * a) as u8;
+    let b = (base * a) as u8;
+    egui::Color32::from_rgba_premultiplied(r, g, b, alpha)
+}
+
+const COUNTER_BOX_W: f32 = 30.0;
+const COUNTER_BOX_H: f32 = 20.0;
+const COUNTER_GAP: f32 = 6.0;
+
+fn draw_counter(ui: &mut egui::Ui, box_rect: egui::Rect, counter: u32, alpha: f32) {
+    if box_rect == egui::Rect::NOTHING {
+        return;
+    }
+    let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(box_rect.right() + COUNTER_GAP, box_rect.center().y - COUNTER_BOX_H / 2.0),
+        egui::vec2(COUNTER_BOX_W, COUNTER_BOX_H),
+    );
+    let bg = egui::Color32::from_rgba_premultiplied(40, 40, 40, a);
+    let fg = egui::Color32::from_rgba_premultiplied(a, a, a, a);
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        counter.to_string(),
+        egui::FontId::proportional(12.0),
+        fg,
+    );
 }

@@ -43,3 +43,36 @@ fn col(
         autoincrement,
     }
 }
+
+#[test]
+fn version4_adds_popularity_column_to_each_bumped_table() {
+    use zutil_db::migration::schemas::{version3, version4};
+
+    let v3_tables = version3::entire_table();
+    let v4_tables = version4::entire_table();
+
+    for name in ["texts", "templates", "projects", "categories"] {
+        let v3 = v3_tables.iter().find(|t| t.table_name == name).unwrap();
+        let v4 = v4_tables.iter().find(|t| t.table_name == name).unwrap();
+        assert_eq!(v4.columns.len(), v3.columns.len() + 1, "{}", name);
+        let last = v4.columns.last().unwrap();
+        assert_eq!(last.name, "popularity_ctr");
+        assert_eq!(last.column_type, "INTEGER");
+        assert!(last.not_null);
+        assert_eq!(last.default_value, "0");
+    }
+}
+
+#[test]
+fn version4_main_nav_clicks_shape_is_unchanged() {
+    use zutil_db::migration::schemas::version4;
+
+    let cols = version4::main_nav_clicks_columns();
+    assert_eq!(cols.len(), 3);
+    assert_eq!(cols[0].name, "id");
+    assert_eq!(cols[1].name, "name");
+    assert!(cols[1].unique);
+    assert_eq!(cols[2].name, "popularity_ctr");
+    assert_eq!(cols[2].column_type, "INTEGER");
+    assert!(cols[2].not_null);
+}

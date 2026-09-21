@@ -6,7 +6,7 @@ use zutil_db::migration::helpers::{
     assert_migrated_db_matches_fresh_db, create_table_from_scratch,
 };
 use zutil_db::migration::schema_versions::{CURRENT_VERSION, SchemaVersion};
-use zutil_db::migration::schemas::{current, version0};
+use zutil_db::migration::schemas::{current, version0, version3};
 use zutil_db::migration::update_from_old_schema::update_until_newest_version;
 
 #[test]
@@ -47,6 +47,30 @@ fn fresh_db_and_migrated_db_have_same_fts5() {
     let result = (has_fts5_table(&fresh), has_fts5_table(&migrated));
     let expected_result = (true, true);
     assert_eq!(result, expected_result);
+}
+
+#[test]
+fn migration_v3_to_v4_adds_popularity_and_main_nav_clicks() {
+    let db = setup_fresh_db("test_migration_v3_to_v4.sqlite");
+    create_table_from_scratch(version3::entire_table(), &db).unwrap();
+    update_until_newest_version(SchemaVersion::Version3, &db);
+
+    for table in ["texts", "templates", "projects", "categories"] {
+        let cols = check_table(CheckTable { table_name: table, db: &db });
+        assert!(
+            cols.iter().any(|c| c.name == "popularity_ctr"),
+            "{} missing popularity_ctr",
+            table
+        );
+    }
+
+    let names = db.list_tables().unwrap().table_names;
+    assert!(
+        names.contains(&"main_nav_clicks".to_string()),
+        "main_nav_clicks missing"
+    );
+
+    assert_migrated_db_matches_fresh_db(current::entire_table(), &db);
 }
 
 // HELPERS
