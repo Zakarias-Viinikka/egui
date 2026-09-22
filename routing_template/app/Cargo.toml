@@ -1,0 +1,9 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+notes_core = { path = "../core" }
+every_page_ever = { path = "../every_page_ever"}

@@ -1,0 +1,1 @@
+History is a Vec of pages, top one is what's shown. Each page owns a modal, modals chain into a linked list for nesting. The nav state needs to live somewhere reachable, static or Arc<Mutex>, undecided. You suspect page data can just live inside the page. Page jumping is unclear.
