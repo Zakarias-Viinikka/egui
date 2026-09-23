@@ -195,7 +195,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "notes_core",
+ "every_page_ever",
 ]
 
 [[package]]
@@ -1023,6 +1023,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "every_page_ever"
+version = "0.1.0"
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1840,10 +1844,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "notes_core"
-version = "0.1.0"
 
 [[package]]
 name = "num-traits"

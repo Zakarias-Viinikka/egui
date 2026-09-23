@@ -1,5 +1,5 @@
 [workspace]
-members = ["app", "core"]
+members = ["app", "every_page_ever"]
 resolver = "2"
 
 [workspace.package]
