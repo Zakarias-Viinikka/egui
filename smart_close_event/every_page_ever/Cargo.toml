@@ -1,8 +1,8 @@
 [package]
-name = "app"
+name = "every_page_ever"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 eframe.workspace = true
-every_page_ever = { path = "../every_page_ever"}
+#every_page_ever = {path = "../every_page_ever"}
