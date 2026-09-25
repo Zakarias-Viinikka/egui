@@ -9,7 +9,7 @@ use crate::egui_setup::{
 pub fn run() -> eframe::Result<()> {
     let options = config::normal_menu();
 
-    let egui_drawing_main = drawing_requirements::NecessaryStructForEgui {};
+    let egui_drawing_for_eternity_main = drawing_requirements::NecessaryStructForEgui {};
 
     let post_init_options = get_all_post_init_options();
 
@@ -25,7 +25,7 @@ pub fn run() -> eframe::Result<()> {
             draw_once_on_startup(&cc.egui_ctx, post_init_options);
             // runs ONE time. Hands the App to eframe.
             // After this, eframe calls App::ui every frame, forever.
-            Ok(Box::new(egui_drawing_main))
+            Ok(Box::new(egui_drawing_for_eternity_main))
         }),
     )
 }

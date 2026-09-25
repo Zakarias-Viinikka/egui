@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -10,6 +11,7 @@ const FADE_AFTER: Duration = Duration::from_secs(15);
 const FADE_DURATION: Duration = Duration::from_secs(2);
 const VISIBLE_MAX: usize = 10;
 const MAX_BOX_WIDTH: f32 = 400.0;
+const MAX_MESSAGES: usize = 30;
 
 const USER_COLOR: egui::Color32 = egui::Color32::from_rgb(180, 140, 255);
 const TEXT_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 230, 230);
@@ -17,15 +19,16 @@ const TEXT_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 230, 230);
 struct Message {
     user: String,
     text: String,
+    user_id: String,
     arrived: Instant,
 }
 
 pub struct App {
-    rx: Option<Receiver<(String, String)>>,
+    rx: Option<Receiver<(String, String, String)>>,
     cmds: Receiver<Cmd>,
-    messages: Vec<Message>,
-    show_history: bool,
+    messages: VecDeque<Message>,
     hotkey_hidden: bool,
+    history_child: Option<std::process::Child>,
 }
 
 impl App {
@@ -33,9 +36,9 @@ impl App {
         Self {
             rx: None,
             cmds,
-            messages: Vec::new(),
-            show_history: false,
+            messages: VecDeque::new(),
             hotkey_hidden: false,
+            history_child: None,
         }
     }
 }
@@ -56,18 +59,30 @@ impl eframe::App for App {
         }
 
         if let Some(rx) = &self.rx {
-            while let Ok((user, text)) = rx.try_recv() {
-                self.messages.push(Message {
+            while let Ok((user, text, user_id)) = rx.try_recv() {
+                self.messages.push_back(Message {
                     user,
                     text,
+                    user_id,
                     arrived: Instant::now(),
                 });
+                while self.messages.len() > MAX_MESSAGES {
+                    self.messages.pop_front();
+                }
             }
+        }
+
+        let exited = match self.history_child.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(Some(_)) | Err(_)),
+            None => false,
+        };
+        if exited {
+            self.history_child = None;
         }
 
         while let Ok(cmd) = self.cmds.try_recv() {
             match cmd {
-                Cmd::ToggleHistory => self.show_history = !self.show_history,
+                Cmd::SpawnHistory => self.toggle_history(),
                 Cmd::ToggleHidden => self.hotkey_hidden = !self.hotkey_hidden,
                 Cmd::Quit => std::process::exit(0),
             }
@@ -80,11 +95,7 @@ impl eframe::App for App {
             return;
         }
 
-        if self.show_history {
-            self.draw_history(ui);
-        } else {
-            self.draw_live(ui);
-        }
+        self.draw_live(ui);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -93,6 +104,56 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn toggle_history(&mut self) {
+        if let Some(mut child) = self.history_child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+
+        let snapshot: Vec<notes_core::Message> = self
+            .messages
+            .iter()
+            .map(|m| notes_core::Message {
+                user: m.user.clone(),
+                text: m.text.clone(),
+                user_id: m.user_id.clone(),
+            })
+            .collect();
+        let json = match serde_json::to_string(&snapshot) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("history: serialize failed: {e}");
+                return;
+            }
+        };
+        let path = std::env::temp_dir().join("twitch_chat_history.json");
+        if let Err(e) = std::fs::write(&path, json) {
+            eprintln!("history: write {} failed: {e}", path.display());
+            return;
+        }
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let viewer = match exe_dir {
+            Some(d) => d.join("history_viewer"),
+            None => {
+                eprintln!("history: cannot determine exe dir");
+                return;
+            }
+        };
+        if !viewer.exists() {
+            eprintln!("history: viewer not found at {}", viewer.display());
+            return;
+        }
+        match std::process::Command::new(&viewer).arg(&path).spawn() {
+            Ok(child) => {
+                self.history_child = Some(child);
+            }
+            Err(e) => eprintln!("history: spawn failed: {e}"),
+        }
+    }
+
     fn draw_live(&self, ui: &mut egui::Ui) {
         let now = Instant::now();
 
@@ -104,6 +165,10 @@ impl App {
 
         let start = visible.len().saturating_sub(VISIBLE_MAX);
         let visible = &visible[start..];
+
+        if visible.is_empty() {
+            return;
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
@@ -145,32 +210,6 @@ impl App {
                                 );
                             });
                         }
-                    });
-            });
-    }
-
-    fn draw_history(&self, ui: &mut egui::Ui) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
-            .show(ui, |ui| {
-                egui::Frame::default()
-                    .fill(egui::Color32::from_black_alpha(220))
-                    .shadow(egui::epaint::Shadow::NONE)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        ui.set_max_width(MAX_BOX_WIDTH - 16.0);
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for m in self.messages.iter() {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&m.user).color(USER_COLOR).size(18.0),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(&m.text).color(TEXT_COLOR).size(18.0),
-                                    );
-                                });
-                            }
-                        });
                     });
             });
     }

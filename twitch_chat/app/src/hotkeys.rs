@@ -8,7 +8,7 @@ const XK_DELETE: u32 = 0xFFFF;
 const XK_INSERT: u32 = 0xFF63;
 
 pub enum Cmd {
-    ToggleHistory,
+    SpawnHistory,
     ToggleHidden,
     Quit,
 }
@@ -110,7 +110,7 @@ pub fn spawn_hotkey_thread(tx: Sender<Cmd>) {
                             Cmd::Quit
                         }
                     } else if ev.detail == ins_kc {
-                        Cmd::ToggleHistory
+                        Cmd::SpawnHistory
                     } else {
                         continue;
                     };

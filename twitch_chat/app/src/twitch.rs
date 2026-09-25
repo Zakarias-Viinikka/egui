@@ -7,7 +7,7 @@ use twitch_irc::{ClientConfig, SecureTCPTransport, TwitchIRCClient};
 
 const CHANNEL: &str = "zakkeakke";
 
-pub fn spawn_reader(ctx: egui::Context) -> Receiver<(String, String)> {
+pub fn spawn_reader(ctx: egui::Context) -> Receiver<(String, String, String)> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -27,7 +27,7 @@ pub fn spawn_reader(ctx: egui::Context) -> Receiver<(String, String)> {
             }
             while let Some(msg) = incoming.recv().await {
                 if let ServerMessage::Privmsg(m) = msg {
-                    if tx.send((m.sender.name, m.message_text)).is_err() {
+                    if tx.send((m.sender.name, m.message_text, m.sender.id)).is_err() {
                         break;
                     }
                     ctx.request_repaint();

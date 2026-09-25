@@ -1,0 +1,14 @@
+[package]
+name = "history_viewer"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "history_viewer"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+notes_core = { path = "../core" }
+serde_json.workspace = true
+twitch_ban = { path = "../twitch_ban" }

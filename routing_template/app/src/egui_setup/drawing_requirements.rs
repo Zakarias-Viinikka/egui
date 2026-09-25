@@ -1,15 +1,17 @@
-use eframe::egui;
+use std::sync::Arc;
+
+use eframe::egui::{self, mutex::Mutex};
 
 use crate::router;
 
-pub struct NecessaryStructForEgui<'a> {
-    page_enum: &'a mut router::PageToRouteTo,
+pub struct NecessaryStructForEgui {
+    page_enum: Arc<Mutex<router::PageToRouteTo>>,
 }
 
-impl<'a> NecessaryStructForEgui<'a> {
+impl<'a> NecessaryStructForEgui {
     pub fn new() -> Self {
         Self {
-            page_enum: mut router::PageToRouteTo::Home,
+            page_enum: Arc::new(Mutex::new(router::PageToRouteTo::Home)),
         }
     }
 }
@@ -19,7 +21,7 @@ impl eframe::App for NecessaryStructForEgui {
         egui::CentralPanel::default().show(ui, |ui| {
             let ctx = CtxForActuallyDrawing {
                 ui: ui,
-                page_enum: self.page_enum.clone(),
+                page_enum: Arc::clone(&self.page_enum),
             };
             (Self::literally_draw_the_page)(ctx);
         });
@@ -39,5 +41,5 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
 pub struct CtxForActuallyDrawing<'a> {
     pub ui: &'a mut egui::Ui,
-    pub page_enum: router::PageToRouteTo,
+    pub page_enum: Arc<Mutex<router::PageToRouteTo>>,
 }
