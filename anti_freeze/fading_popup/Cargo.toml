@@ -1,0 +1,12 @@
+[package]
+name = "fading_popup"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "fading_popup"
+path = "src/main.rs"
+
+[dependencies]
+x11rb = { workspace = true }
+fontdue = "0.9"

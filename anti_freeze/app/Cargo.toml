@@ -1,0 +1,10 @@
+[package]
+name = "app"
+default-run = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+x11rb = { workspace = true }
+app_core = { path = "../app_core" }

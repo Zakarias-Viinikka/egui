@@ -1,0 +1,10 @@
+[package]
+name = "watchdog"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "watchdog"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "every_page_ever"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

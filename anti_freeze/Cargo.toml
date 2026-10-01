@@ -1,0 +1,12 @@
+[workspace]
+members = ["app", "app_core", "every_page_ever", "fading_popup", "watchdog"]
+resolver = "2"
+default-members = ["app", "fading_popup", "watchdog"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+eframe = "0.36.2"
+x11rb = "0.13"
