@@ -1,0 +1,25 @@
+[workspace]
+members = ["app", "every_page_ever", "app_core"]
+resolver = "2"
+default-members = ["app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+eframe = "0.36.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+similar = "2.6"
+
+[patch.crates-io]
+eframe = { path = "../egui-src/crates/eframe" }
+egui = { path = "../egui-src/crates/egui" }
+egui-winit = { path = "../egui-src/crates/egui-winit" }
+egui-wgpu = { path = "../egui-src/crates/egui-wgpu" }
+egui_glow = { path = "../egui-src/crates/egui_glow" }
+ecolor = { path = "../egui-src/crates/ecolor" }
+epaint = { path = "../egui-src/crates/epaint" }
+epaint_default_fonts = { path = "../egui-src/crates/epaint_default_fonts" }
+emath = { path = "../egui-src/crates/emath" }

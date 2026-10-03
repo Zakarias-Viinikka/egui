@@ -1,0 +1,1 @@
+/home/zakke/ProgStuff/egui/zapcli/build_both.sh

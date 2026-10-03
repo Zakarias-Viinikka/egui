@@ -1,0 +1,10 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+image.workspace = true
+every_page_ever = { path = "../every_page_ever" }
+app_core = { path = "../app_core" }
