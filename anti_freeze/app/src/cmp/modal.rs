@@ -184,6 +184,7 @@ pub fn draw(
                     eprintln!("{e2}");
                 }
                 data.visible = false;
+                crate::cmp::freeze_button::unfreeze_all(data);
                 crate::ram_monitor::restart(data, ui.ctx());
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Visible(false));

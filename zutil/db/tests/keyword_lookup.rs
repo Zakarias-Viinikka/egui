@@ -46,7 +46,7 @@ fn missing_fk_columns(params: MissingFkColumns) -> Vec<String> {
     });
     get_foreign_def_keyword_lookup()
         .iter()
-        .filter(|fk| !cols.iter().any(|c| c.name == fk.column))
-        .map(|fk| fk.column.clone())
+        .filter(|fk| !cols.iter().any(|c| c.name == fk.column_name))
+        .map(|fk| fk.column_name.clone())
         .collect()
 }

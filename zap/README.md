@@ -58,9 +58,14 @@ Two request shapes:
 
 `overwrite <path>` followed by a newline, then the content. Path is on the
 first line, content is everything after that first newline. Content can be
-multiline (paste in zapcli preserves newlines). zapgui reads the file at path,
-diffs old vs new, stashes the diff, replies empty. If the file can't be read,
-replies `zapgui: couldn't find <path>`.
+multiline (paste in zapcli preserves newlines). The path must be absolute;
+zapcli's overwrite verb resolves `~` and relative paths before sending, so
+this only fires on something else. zapgui reads the file at path, diffs old
+against new, stores a pending edit in the shared slot, and replies empty. If
+the file can't be read: `zapgui: couldn't find <path>`. If the new content
+matches the old file exactly: `zapgui: no change to <path>` and nothing is
+shown. If a different unconfirmed edit was already in the slot:
+`zapgui: replaced unconfirmed edit to <old path>`.
 
 `replace` or `replace <anything>` — zapgui brings itself to the front, replies
 empty.
@@ -80,8 +85,45 @@ the window. `wmctrl -a zapgui` does both. Called from the UI thread after
 egui only runs the app's `ui` function when something asks it to. A hidden
 window gets no input, so a hidden zapgui never runs `ui`, so it never learns a
 diff arrived. Fix: the listener thread stores the egui Context at startup
-(`set_ctx`), and calls `ctx.request_repaint()` after stashing a diff. That
-wakes the UI, which picks up the diff, shows the window, and raises it.
+(`set_ctx`), and calls `ctx.request_repaint()` after stashing an edit. That
+wakes the UI, which reads the slot at the top of its frame. If the slot holds
+a different edit than the one it last showed, it shows the window and raises
+it. The slot is read, not taken; it holds the edit until confirm or deny.
+
+## Confirm and deny
+
+The pending edit lives in one slot in terminal_router, as an `Arc<PendingOverwrite>`
+holding the path, the old content the diff was made against, the new content
+to write, and the diff rows. The UI reads the slot every frame and renders
+from the last Arc it saw. Two glass buttons on the right of the diff viewer do
+the work: a check on top for confirm, an X below for deny.
+
+Confirm re-reads the file and compares it with the stored old content. If the
+file is unreadable or different, it writes nothing and fails. Otherwise it
+overwrites in place with `std::fs::write` at the same path string, so
+permissions and symlinks survive.
+
+Deny copies `denied request to edit file <path>` to the clipboard and writes
+nothing.
+
+On success the slot empties — only if it still holds the same Arc, so a newer
+arrival survives — and the window hides with `ViewportCommand::Visible(false)`,
+not `Close`, so the process and its listener stay alive.
+
+On failure the diff and window stay, and a red line shows in the bottom margin.
+The same sentence is copied to the clipboard so it can be pasted back to the
+AI. The shape is `failed request to edit file <path>: <reason>`, where reason
+is `file changed since the diff was made`, `couldn't read the file: <io error>`,
+or `write failed: <io error>`. If the clipboard copy itself fails, the sentence
+is `couldn't copy to the clipboard: <reason>`.
+
+Clicks are ignored for 500 ms after a diff is shown, so a click meant for
+something else can't land on a freshly shown diff.
+
+A new overwrite while one is showing replaces it. If the displaced edit was for
+a different path, the reply is `zapgui: replaced unconfirmed edit to <old path>`,
+so it doesn't disappear silently. Nothing else goes over the socket on confirm
+or deny; the AI only sees what gets pasted back.
 
 ## Line styles
 
@@ -105,7 +147,12 @@ through. The `copy` command is the reliable way to copy everything.
 
 ## Where files go
 
-zapgui's `app_core/src/terminal_router/` — socket listener and route_requests.
+zapgui's `app_core/src/terminal_router/` — socket listener, route_requests,
+the shared slot in mod.rs, and pending_overwrite.rs (the PendingOverwrite
+struct with its confirm and deny methods).
+
+zapgui's `app_core/src/clipboard.rs` — the xclip helper, returning an error
+string when xclip can't start or exits non-zero.
 
 zapgui's `every_page_ever/src/ReusableComponents/` — close_button, glass_button,
 diff_viewer. Each component has a `mod.rs` and `ui.rs`.

@@ -6,6 +6,7 @@ default-run = "app"
 
 [dependencies]
 eframe.workspace = true
+image.workspace = true
 protocol = { path = "/home/zakke/ProgStuff/z_db/protocol" }
 zutil_db = { path = "../db" }
 json_parsing = { path = "../json_parsing" }

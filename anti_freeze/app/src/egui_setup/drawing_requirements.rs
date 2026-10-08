@@ -65,17 +65,13 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     }
                     crate::ram_monitor::restart(ctx.global_data, ui.ctx());
                 }
-                crate::hotkeys::Cmd::RamHigh => {
-                    ctx.global_data.visible = true;
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    crate::x11_window::raise_self();
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-                    crate::cmp::freeze_button::freeze_all(ctx.global_data);
+                crate::hotkeys::Cmd::CapFailed => {
+                    crate::ram_monitor::restart(ctx.global_data, ui.ctx());
                 }
                 crate::hotkeys::Cmd::ToggleVisible => {
                     ctx.global_data.visible = !ctx.global_data.visible;
                     if !ctx.global_data.visible {
+                        crate::cmp::freeze_button::unfreeze_all(ctx.global_data);
                         crate::ram_monitor::restart(ctx.global_data, ui.ctx());
                     }
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(
@@ -84,6 +80,22 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 }
             }
         }
+
+        let focused = ui.ctx().input(|i| i.focused);
+        let modal_open = ctx.global_data.confirm_target.is_some();
+        if !modal_open {
+            let focused_now = focused && !ctx.global_data.was_focused;
+            let elapsed = ctx.global_data.last_refresh.elapsed();
+            if focused_now || elapsed >= std::time::Duration::from_secs(5) {
+                match app_core::reading_ram::read_top_processes() {
+                    Ok(v) => ctx.global_data.ram_info = v,
+                    Err(e) => eprintln!("{e}"),
+                }
+                ctx.global_data.last_refresh = std::time::Instant::now();
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(5));
+        }
+        ctx.global_data.was_focused = focused;
 
         let screen = ui.ctx().input(|i| i.content_rect());
         let box_w = screen.width() * 0.6;

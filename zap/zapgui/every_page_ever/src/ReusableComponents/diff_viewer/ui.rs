@@ -57,7 +57,7 @@ pub fn diff_viewer_ui(ui: &mut egui::Ui, rect: egui::Rect, blocks: &[DiffRowProc
     );
     if ui.put(button_rect, egui::Button::new("copy")).clicked() {
         let s = app_core::text_diff::debug_format(blocks);
-        copy_to_clipboard(&s);
+        let _ = app_core::clipboard::copy_to_clipboard(&s);
     }
 
     let mut child = ui.new_child(
@@ -158,17 +158,3 @@ fn draw_side(
     }
 }
 
-fn copy_to_clipboard(s: &str) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    if let Ok(mut child) = Command::new("xclip")
-        .args(["-selection", "clipboard"])
-        .stdin(Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(s.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}

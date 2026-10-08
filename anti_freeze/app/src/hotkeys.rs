@@ -8,8 +8,8 @@ const XK_PAGE_UP: u32 = 0xFF55;
 
 pub enum Cmd {
     ToggleVisible,
-    RamHigh,
     CapOver,
+    CapFailed,
 }
 
 pub fn spawn_hotkey_thread(tx: Sender<Cmd>, ctx: eframe::egui::Context) {

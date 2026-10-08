@@ -7,12 +7,17 @@ pub struct ShortcutPickerState {
     pub owner_id: String,
     pub owner_label: String,
     pub combo: Option<String>,
+    /// True if this item already had a shortcut when the picker opened.
+    /// Used to distinguish "clear it" (had one, now empty, Enter) from
+    /// "do nothing" (never had one, still empty, Enter).
+    pub had_existing: bool,
     pub error: Option<String>,
 }
 
 pub enum ShortcutPickerAction {
     None,
     Save { owner_kind: &'static str, owner_id: String, combo: String },
+    Clear { owner_kind: &'static str, owner_id: String },
     Cancel,
 }
 
@@ -31,6 +36,7 @@ pub fn shortcut_picker_ui(
     let mut pressed: Option<String> = None;
     let mut enter = false;
     let mut escape = false;
+    let mut clear = false;
 
     ui.input(|i| {
         for ev in &i.events {
@@ -45,6 +51,14 @@ pub fn shortcut_picker_ui(
                         escape = true;
                     } else if *key == egui::Key::Enter {
                         enter = true;
+                    } else if (*key == egui::Key::Backspace || *key == egui::Key::Delete)
+                        && !modifiers.ctrl
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && !modifiers.mac_cmd
+                        && !modifiers.command
+                    {
+                        clear = true;
                     } else if is_modifier(*key) {
                         // ignore modifier-only presses
                     } else {
@@ -56,6 +70,10 @@ pub fn shortcut_picker_ui(
         }
     });
 
+    if clear {
+        state.combo = None;
+        state.error = None;
+    }
     if let Some(combo) = pressed {
         state.combo = Some(combo);
         state.error = None;
@@ -72,11 +90,16 @@ pub fn shortcut_picker_ui(
 
     // center content
     let center = screen.center();
+    let instruction = if state.combo.is_none() && state.had_existing {
+        "empty = clear. press enter to confirm"
+    } else {
+        "press enter to confirm, backspace to clear"
+    };
     let instruction_pos = egui::pos2(center.x, center.y - 40.0);
     ui.painter().text(
         instruction_pos,
         egui::Align2::CENTER_CENTER,
-        "press enter to confirm",
+        instruction,
         egui::FontId::proportional(SHORTCUT_PICKER_INSTRUCTION_SIZE),
         egui::Color32::from_gray(230),
     );
@@ -107,14 +130,24 @@ pub fn shortcut_picker_ui(
     }
 
     if enter {
-        if let Some(combo) = state.combo.clone() {
-            action = ShortcutPickerAction::Save {
-                owner_kind: state.owner_kind,
-                owner_id: state.owner_id.clone(),
-                combo,
-            };
+        match state.combo.clone() {
+            Some(combo) => {
+                action = ShortcutPickerAction::Save {
+                    owner_kind: state.owner_kind,
+                    owner_id: state.owner_id.clone(),
+                    combo,
+                };
+            }
+            None if state.had_existing => {
+                action = ShortcutPickerAction::Clear {
+                    owner_kind: state.owner_kind,
+                    owner_id: state.owner_id.clone(),
+                };
+            }
+            None => {
+                // never had one, still empty: nothing to do
+            }
         }
-        // if no combo yet, ignore enter
     }
 
     action

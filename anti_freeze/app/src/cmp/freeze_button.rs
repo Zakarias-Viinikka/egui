@@ -45,39 +45,30 @@ pub fn draw(ui: &mut egui::Ui, screen: egui::Rect, data: &mut GlobalData) {
 
     if resp.clicked() {
         if frozen {
-            let pids = std::mem::take(&mut data.frozen_pids);
-            if let Err(e) = app_core::killing::unfreeze_pids(&pids) {
-                eprintln!("{e}");
-                if let Err(e2) = app_core::popup::show(&e, 100, 100) {
-                    eprintln!("{e2}");
-                }
-                data.frozen_pids = pids;
-            } else {
-                crate::x11_window::raise_self();
-                if let Err(e) = app_core::watchdog::clear_frozen() {
-                    eprintln!("{e}");
-                }
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
+            unfreeze_all(data);
+            crate::x11_window::raise_self();
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
         } else {
-            match app_core::killing::freeze_other_processes() {
-                Ok(pids) => {
-                    if let Err(e) = app_core::watchdog::record_frozen(&pids) {
-                        eprintln!("{e}");
-                        if let Err(e2) = app_core::popup::show(&e, 100, 100) {
-                            eprintln!("{e2}");
-                        }
-                    }
-                    data.frozen_pids = pids;
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    if let Err(e2) = app_core::popup::show(&e, 100, 100) {
-                        eprintln!("{e2}");
-                    }
-                }
-            }
+            freeze_all(data);
         }
+    }
+}
+
+pub fn unfreeze_all(data: &mut GlobalData) {
+    let pids = std::mem::take(&mut data.frozen_pids);
+    if pids.is_empty() {
+        return;
+    }
+    if let Err(e) = app_core::killing::unfreeze_pids(&pids) {
+        eprintln!("{e}");
+        if let Err(e2) = app_core::popup::show(&e, 100, 100) {
+            eprintln!("{e2}");
+        }
+        data.frozen_pids = pids;
+        return;
+    }
+    if let Err(e) = app_core::watchdog::clear_frozen() {
+        eprintln!("{e}");
     }
 }
 

@@ -1,31 +1,11 @@
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub const WINDOW: Duration = Duration::from_secs(60);
-pub const CAP_DURATION: Duration = Duration::from_secs(60);
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(60);
+pub const LIFT_PERCENT: f64 = 75.0;
 pub const TOP_PROGRAMS: usize = 5;
-pub const LIMIT_PERCENT: u64 = 70;
 const HELPER: &str = "/usr/local/bin/anti_freeze_cap";
-
-pub enum Decision {
-    Normal,
-    Capped,
-    AlreadyCapped,
-}
-
-struct State {
-    last_trip: Option<Instant>,
-    hogs: Vec<String>,
-    cap_until: Option<Instant>,
-}
-
-static STATE: Mutex<State> = Mutex::new(State {
-    last_trip: None,
-    hogs: Vec::new(),
-    cap_until: None,
-});
 
 struct Proc {
     pid: u32,
@@ -163,53 +143,30 @@ fn run_helper(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn lock_err<T>(e: std::sync::PoisonError<T>, method: &str) -> String {
-    format!("err_msg: state lock poisoned: {e} | method: {method} | file: app_core/src/ram_cap.rs")
-}
-
-pub fn on_trip() -> Result<Decision, String> {
-    let mut st = STATE.lock().map_err(|e| lock_err(e, "on_trip"))?;
-    let now = Instant::now();
-
-    if let Some(until) = st.cap_until {
-        if now < until {
-            return Ok(Decision::AlreadyCapped);
-        }
-    }
-
-    let recent = match st.last_trip {
-        Some(t) => now.duration_since(t) < WINDOW,
-        None => false,
-    };
+pub fn on_trip() -> Result<(), String> {
     let procs = user_procs()?;
-
-    if recent && !st.hogs.is_empty() {
-        let pids: Vec<String> = procs
-            .iter()
-            .filter(|p| st.hogs.contains(&p.name))
-            .map(|p| p.pid.to_string())
-            .collect();
-        if !pids.is_empty() {
-            let limit = mem_available_bytes()? / 2;
-            let mut args = vec![String::from("apply"), limit.to_string()];
-            args.extend(pids);
-            run_helper(&args)?;
-            st.last_trip = Some(now);
-            st.cap_until = Some(now + CAP_DURATION);
-            return Ok(Decision::Capped);
-        }
+    let hogs = top_names(&procs);
+    let pids: Vec<String> = procs
+        .iter()
+        .filter(|p| hogs.contains(&p.name))
+        .map(|p| p.pid.to_string())
+        .collect();
+    if pids.is_empty() {
+        return Err(String::from(
+            "err_msg: no processes to cap | method: on_trip | file: app_core/src/ram_cap.rs",
+        ));
     }
-
-    st.hogs = top_names(&procs);
-    st.last_trip = Some(now);
-    Ok(Decision::Normal)
+    let limit = mem_available_bytes()? / 2;
+    let mut args = vec![String::from("apply"), limit.to_string()];
+    args.extend(pids);
+    run_helper(&args)
 }
 
 pub fn end_cap() -> Result<(), String> {
-    {
-        let mut st = STATE.lock().map_err(|e| lock_err(e, "end_cap"))?;
-        st.cap_until = None;
-        st.last_trip = Some(Instant::now());
-    }
     run_helper(&[String::from("release")])
+}
+
+pub fn is_safe_to_lift() -> Result<bool, String> {
+    let pct = crate::ram_monitor::used_percent()?;
+    Ok(pct < LIFT_PERCENT)
 }

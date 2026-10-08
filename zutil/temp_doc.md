@@ -52,10 +52,26 @@ Current version: 7. The enum lives in `db/src/migration/schema_versions.rs`. Eac
 
 `entire_table()` from the newest version defines what a fresh DB looks like. `update_from_old_version` on each intermediate version does the incremental upgrade.
 
+**The current shape lives in `db/src/tables/`**, one file per table. Each file
+exposes `TABLE_NAME`, a `new_table_<name>() -> Vec<ColumnDef>`, one
+`SchemaColumn<T>` constant per column, and (if the table has foreign keys)
+`foreign_keys()`. `current.rs` sources Version7 from `tables::entire_table()`.
+Helpers reference the constants by name — no literal column strings in
+`db/src/helpers/` except where the `protocol` crate already types them.
+
+To add a table: create `tbl_<name>.rs`, register it in `tables/mod.rs`, add an
+`ADbTable` entry, bump the schema version, and follow the pattern in the other
+`tbl_*` files. The header of `tables/mod.rs` has the full recipe.
+
+**Categories are case-insensitive within a type.** Creating or referencing one
+whose name matches an existing one except for case fails with a clear error
+naming the stored form. Renaming has the same check. Pre-existing collisions
+are reported at startup in a popup and logged; nothing is merged automatically.
+
 ### categories
 - `id` — primary key
 - `name` — the display name
-- `type_of_category` — `"normal"` or `"meta"`. Normal categories show in the normal picker; meta only in the meta picker. Same name can exist once per type.
+- `type_of_category` — `"normal"` or `"meta"`. Normal categories show in the normal picker; meta only in the meta picker. Same name can exist once per type, but the name itself is case-insensitive within a type (see above).
 
 ### texts
 - `id` — primary key
@@ -155,9 +171,39 @@ Three block types. The `parsing_instruct` field picks which:
 
 Categories referenced by name get created automatically. Import runs in a transaction. If any title collides with an existing row, the popup offers Replace / Keep both / Cancel.
 
-Export builds the same shape from the current DB. Validate parses without importing.
+Validate parses without importing.
 
-The prompt text the app hands out lives in `json_parsing/src/prompt.rs`.
+**Export has moved to SQL.** The Export button on the JSON screen produces a SQL
+script — INSERT statements for `categories`, `texts`, `templates`,
+`keyword_lookup`, `template_fills`, and `main_nav_clicks`, wrapped in a
+transaction, in FK-safe order. Column order per table matches the schema in
+`db/src/tables/tbl_*::new_table_*()`. Strings escape single quotes, blobs go
+out as `X'hex'`, NULLs as `NULL`. The helper lives in
+`db/src/helpers/sql_export.rs` with two entry points: `full_export(db)` for
+everything, `scoped_text_export(db, text_id)` for one text plus its category
+rows and keyword rows.
+
+The prompt text the app hands out lives in `json_parsing/src/prompt.rs`. It's
+now `prompt(existing_categories: &[(String, String)])`, which formats the DB's
+actual category list into the text so the AI sees what categories exist. The
+JSON UI calls it via `build_prompt(db)`.
+
+## Text editor actions
+
+The single-text editor (`final_nav_view_or_edit_modals/edit_single_text/ui.rs`)
+has, in addition to Save and Back:
+
+- **Delete** — opens a confirm popup, then deletes the row.
+- **Copy everything** — copies a SQL script scoped to that text (its row, its
+  category and meta category rows, and any `keyword_lookup` rows that point at
+  it) to the clipboard.
+
+## Shortcut picker
+
+Opens on right-click of a shortcut slot. Type a combo, Enter to save, Escape
+or right-click to cancel. Backspace / Delete clears the combo. Enter with an
+empty combo on an item that already had one clears the keybind rather than
+saving nothing.
 
 ---
 

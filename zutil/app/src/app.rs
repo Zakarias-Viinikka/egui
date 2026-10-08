@@ -20,9 +20,10 @@ use crate::components::circle_menu::ui::CircleMenuState;
 use crate::components::shortcut_picker::ui::{ShortcutPickerAction, ShortcutPickerState, shortcut_picker_ui};
 use crate::globals::{ItemKind, MenuItem};
 use std::collections::{HashMap, HashSet};
+use popup::ui::{PopupAction, PopupButton, PopupParams};
 use protocol::payload::DeleteRowIn;
 use zutil_db::helpers::edit::{edit_text_body, edit_text_title};
-use zutil_db::helpers::category::{TYPE_META, TYPE_NORMAL, category_col, category_id_opt, read_all_categories_with_ids, read_categories_with_ids_by_type, read_category_name_by_id};
+use zutil_db::helpers::category::{TYPE_META, TYPE_NORMAL, category_col, category_id_opt, find_category_collisions, read_all_categories_with_ids, read_categories_with_ids_by_type, read_category_name_by_id};
 use zutil_db::helpers::new_row::{new_row_template, new_row_text_with_category};
 use zutil_db::helpers::project::new_row_project;
 use zutil_db::helpers::edit::{edit_template_content, edit_template_example, edit_template_instructions, edit_template_title};
@@ -31,12 +32,16 @@ use zutil_db::helpers::read::{read_all_templates, read_all_texts, read_template_
 use zutil_db::helpers::read::read_text_by_id;
 
 pub fn run(db: LiveForever) -> eframe::Result<()> {
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_position([0.0, 0.0])
+        .with_inner_size([1920.0, 1080.0])
+        .with_decorations(false)
+        .with_transparent(true);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_position([0.0, 0.0])
-            .with_inner_size([1920.0, 1080.0])
-            .with_decorations(false)
-            .with_transparent(true),
+        viewport,
         ..Default::default()
     };
 
@@ -45,6 +50,9 @@ pub fn run(db: LiveForever) -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_visuals(eframe::egui::Visuals::light());
+            #[cfg(not(debug_assertions))]
+            cc.egui_ctx
+                .send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
             Ok(Box::new(App::new(db)))
         }),
     )
@@ -84,6 +92,8 @@ pub struct App {
     shortcut_picker: Option<ShortcutPickerState>,
     last_logged_error: Option<String>,
     hide_on_copy: bool,
+    pending_text_delete: Option<(i64, String)>,
+    pending_collision_report: Option<String>,
 }
 
 enum EditorOverlay {
@@ -97,6 +107,27 @@ enum EditorOverlay {
 
 impl App {
     fn new(db: LiveForever) -> Self {
+        let collision_report = match find_category_collisions(&db) {
+            Ok(v) if !v.is_empty() => {
+                let mut s = String::from(
+                    "Categories that share a name (case-insensitive) and type:\n\n",
+                );
+                for (name, ty, ids) in &v {
+                    s.push_str(&format!(
+                        "  \"{}\" ({})  ids: {:?}\n",
+                        name, ty, ids
+                    ));
+                }
+                s.push_str("\nNothing has been merged. Rename them yourself to fix.");
+                eprintln!("{}", s);
+                Some(s)
+            }
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!("collision scan failed: {}", e);
+                None
+            }
+        };
         let mut app = Self {
             db,
             page: Page::CircleMenu,
@@ -118,6 +149,8 @@ impl App {
             shortcut_picker: None,
             last_logged_error: None,
             hide_on_copy: true,
+            pending_text_delete: None,
+            pending_collision_report: collision_report,
         };
         app.init_root_menu();
         app
@@ -525,6 +558,8 @@ impl App {
         let mut close = false;
         let mut save: Option<EditorOverlay> = None;
         let mut text_save = false;
+        let mut text_delete = false;
+        let mut text_copy_everything = false;
         let mut template_save = false;
         let mut view_text_copy = false;
         let mut new_plus: Option<u8> = None;
@@ -576,6 +611,12 @@ impl App {
                         EditSingleTextAction::Back => close = true,
                         EditSingleTextAction::Save => {
                             text_save = true;
+                        }
+                        EditSingleTextAction::Delete => {
+                            text_delete = true;
+                        }
+                        EditSingleTextAction::CopyEverything => {
+                            text_copy_everything = true;
                         }
                         EditSingleTextAction::None => {}
                     }
@@ -650,6 +691,28 @@ impl App {
             self.rebuild_menu_stack();
         }
 
+        if text_delete {
+            if let Some(EditorOverlay::Text(state)) = &self.editor_overlay {
+                self.pending_text_delete = Some((state.id, state.title.clone()));
+            }
+            close = true;
+        }
+
+        if text_copy_everything {
+            if let Some(EditorOverlay::Text(state)) = &self.editor_overlay {
+                match zutil_db::helpers::sql_export::scoped_text_export(&self.db, state.id) {
+                    Ok(sql) => {
+                        ui.ctx().copy_text(sql);
+                        self.show_copied_popup(ui, "text_sql");
+                    }
+                    Err(e) => {
+                        self.pending_collision_report =
+                            Some(format!("export failed: {}", e));
+                    }
+                }
+            }
+        }
+
         if template_save {
             let save_result =
                 if let Some(EditorOverlay::Template(state)) = self.editor_overlay.as_ref() {
@@ -679,8 +742,45 @@ impl App {
         }
 
         if let Some(EditorOverlay::Category(state)) = &save {
+            let id = state.id;
+            let new_name = state.name.clone();
+            let cat_type =
+                match zutil_db::helpers::category::read_category_type_by_id(&self.db, id) {
+                    Ok(Some(t)) => t,
+                    Ok(None) => {
+                        self.notify_error(ui, "category no longer exists".to_string());
+                        return;
+                    }
+                    Err(e) => {
+                        self.notify_error(ui, format!("lookup failed: {}", e));
+                        return;
+                    }
+                };
+            match zutil_db::helpers::category::category_name_taken(
+                &self.db,
+                &new_name,
+                &cat_type,
+                Some(id),
+            ) {
+                Ok(Some(_)) => {
+                    self.notify_error(
+                        ui,
+                        format!(
+                            "Another category already uses \"{}\" (case-insensitive)",
+                            new_name
+                        ),
+                    );
+                    self.editor_overlay = None;
+                    return;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    self.notify_error(ui, format!("check failed: {}", e));
+                    return;
+                }
+            }
             let result = self.db.edit_col_in_row(
-                zutil_db::helpers::edit::edit_category_name(state.id, state.name.clone()),
+                zutil_db::helpers::edit::edit_category_name(id, new_name),
             );
             unwrap_or_bail!(result.map_err(|e| e.to_string()), "edit_category", "save");
             close = true;
@@ -759,6 +859,88 @@ impl App {
 
         let tag = format!("err_{}", msg.len());
         self.show_popup(ui, &tag, &msg);
+    }
+
+    fn draw_delete_text_confirm(&mut self, ui: &mut eframe::egui::Ui) {
+        let (id, title) = match self.pending_text_delete.clone() {
+            Some(t) => t,
+            None => return,
+        };
+        let action = popup::ui::popup(
+            ui,
+            PopupParams {
+                id: "delete_text_confirm",
+                title: "Delete text?",
+                page_label: None,
+                show_nav: false,
+                copy_text: None,
+                buttons: vec![
+                    PopupButton {
+                        label: "Delete".to_string(),
+                        action: PopupAction::Confirm,
+                    },
+                    PopupButton {
+                        label: "Cancel".to_string(),
+                        action: PopupAction::Cancel,
+                    },
+                ],
+                body: Box::new(move |ui| {
+                    ui.label(format!("Delete \"{}\"?", title));
+                    ui.label("This cannot be undone.");
+                }),
+            },
+        );
+        match action {
+            PopupAction::Confirm => {
+                self.pending_text_delete = None;
+                let result = self.db.delete_row(DeleteRowIn {
+                    table_name: "texts".to_string(),
+                    row_id: id.to_string(),
+                });
+                unwrap_or_bail!(
+                    result.map_err(|e| e.to_string()),
+                    "edit_single_text",
+                    "delete_text"
+                );
+                self.edit_text_state.reload(&self.db);
+                self.rebuild_menu_stack();
+            }
+            PopupAction::Cancel => {
+                self.pending_text_delete = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn draw_collision_report(&mut self, ui: &mut eframe::egui::Ui) {
+        let report = match self.pending_collision_report.clone() {
+            Some(r) => r,
+            None => return,
+        };
+        let action = popup::ui::popup(
+            ui,
+            PopupParams {
+                id: "collision_report",
+                title: "Duplicate categories",
+                page_label: None,
+                show_nav: false,
+                copy_text: Some(report.clone()),
+                buttons: vec![PopupButton {
+                    label: "Close".to_string(),
+                    action: PopupAction::Close,
+                }],
+                body: Box::new(move |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(400.0)
+                        .show(ui, |ui| {
+                            ui.label(&report);
+                        });
+                }),
+            },
+        );
+        if matches!(action, PopupAction::Close) {
+            self.pending_collision_report = None;
+        }
     }
 }
 
@@ -928,6 +1110,25 @@ impl App {
         match done {
             Some(ShortcutPickerAction::Cancel) => {
                 self.shortcut_picker = None;
+            }
+            Some(ShortcutPickerAction::Clear { owner_kind, owner_id }) => {
+                match zutil_db::helpers::shortcuts::clear_shortcut(
+                    &self.db,
+                    owner_kind,
+                    &owner_id,
+                ) {
+                    Ok(()) => {
+                        self.shortcut_picker = None;
+                        self.rebuild_menu_stack();
+                    }
+                    Err(e) => {
+                        let msg = format!("clear failed: {}", e);
+                        self.notify_error(ui, msg.clone());
+                        if let Some(state) = self.shortcut_picker.as_mut() {
+                            state.error = Some(msg);
+                        }
+                    }
+                }
             }
             Some(ShortcutPickerAction::Save { owner_kind, owner_id, combo }) => {
                 // reject if another item in the *current* circle already uses it
@@ -1262,7 +1463,7 @@ impl App {
             db.edit_col_in_row(edit_text_body(id, body))
                 .map_err(|e| e.to_string())?;
             let type_value = if type_of_text.is_empty() {
-                protocol::row_col::Col::Null
+                protocol::row_col::Col::Null(protocol::row_col::StructRepresentingNull {})
             } else {
                 protocol::row_col::Col::Text(type_of_text)
             };
@@ -1511,8 +1712,13 @@ impl eframe::App for App {
                 crate::globals::set_modal_open(
                     self.open_template.is_some()
                         || self.editor_overlay.is_some()
-                        || self.shortcut_picker.is_some(),
+                        || self.shortcut_picker.is_some()
+                        || self.pending_text_delete.is_some()
+                        || self.pending_collision_report.is_some(),
                 );
+
+                self.draw_collision_report(ui);
+                self.draw_delete_text_confirm(ui);
 
                 crate::globals::set_disable_rightclick(false);
 
@@ -1704,11 +1910,13 @@ impl eframe::App for App {
                     if let Some(i) = shortcut_open {
                         if let Some(item) = items.get(i) {
                             let existing = item.shortcut.clone();
+                            let had_existing = existing.is_some();
                             self.shortcut_picker = Some(ShortcutPickerState {
                                 owner_kind: item.owner.0,
                                 owner_id: item.owner.1.clone(),
                                 owner_label: item.label.clone(),
                                 combo: existing,
+                                had_existing,
                                 error: None,
                             });
                         }
@@ -1999,7 +2207,7 @@ impl App {
 
                             let type_of_text = self.edit_single_text_state.type_of_text.clone();
                             let type_value = if type_of_text.is_empty() {
-                                protocol::row_col::Col::Null
+                                protocol::row_col::Col::Null(protocol::row_col::StructRepresentingNull {})
                             } else {
                                 protocol::row_col::Col::Text(type_of_text)
                             };
@@ -2070,6 +2278,26 @@ impl App {
                             self.edit_text_state.reload(&self.db);
                             self.page = Page::EditText;
                         }
+                        EditSingleTextAction::Delete => {
+                            let id = self.edit_single_text_state.id;
+                            let title = self.edit_single_text_state.title.clone();
+                            self.pending_text_delete = Some((id, title));
+                            self.edit_text_state.reload(&self.db);
+                            self.page = Page::EditText;
+                        }
+                        EditSingleTextAction::CopyEverything => {
+                            let id = self.edit_single_text_state.id;
+                            match zutil_db::helpers::sql_export::scoped_text_export(&self.db, id) {
+                                Ok(sql) => {
+                                    ui.ctx().copy_text(sql);
+                                    self.show_copied_popup(ui, "text_sql");
+                                }
+                                Err(e) => {
+                                    self.pending_collision_report =
+                                        Some(format!("export failed: {}", e));
+                                }
+                            }
+                        }
                         EditSingleTextAction::None => {}
                     }
                 }
@@ -2078,29 +2306,30 @@ impl App {
                         json::ui::JsonAction::Back => self.page = Page::CircleMenu,
                         json::ui::JsonAction::Do => {}
                         json::ui::JsonAction::ImportConfirmed(payloads, mode) => {
-                            let (text_count, tpl_count, _cat_count) = unwrap_or_bail!(
-                                zutil_db::helpers::import::import_payloads(&self.db, payloads, mode)
-                                    .map_err(|e| e.to_string()),
-                                "json",
-                                "import_confirm"
-                            );
-                            logging::insert::log(
-                                &self.db,
-                                "ui",
-                                "json_import",
-                                &format!(
-                                    "imported {} text(s), {} template(s)",
-                                    text_count, tpl_count
-                                ),
-                            )
-                            .ok();
-                            self.edit_text_state.reload(&self.db);
+                            match zutil_db::helpers::import::import_payloads(&self.db, payloads, mode) {
+                                Ok((text_count, tpl_count, _cat_count)) => {
+                                    logging::insert::log(
+                                        &self.db,
+                                        "ui",
+                                        "json_import",
+                                        &format!(
+                                            "imported {} text(s), {} template(s)",
+                                            text_count, tpl_count
+                                        ),
+                                    )
+                                    .ok();
+                                    self.edit_text_state.reload(&self.db);
 
-                            self.show_popup(
-                                ui,
-                                &format!("import_{}_{}", text_count, tpl_count),
-                                &format!("created {} text(s), {} template(s)", text_count, tpl_count),
-                            );
+                                    self.show_popup(
+                                        ui,
+                                        &format!("import_{}_{}", text_count, tpl_count),
+                                        &format!("created {} text(s), {} template(s)", text_count, tpl_count),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.notify_error(ui, format!("{}", e));
+                                }
+                            }
                         }
                         json::ui::JsonAction::Example => {
                             if self.json_state.mode.is_some() {
@@ -2325,4 +2554,16 @@ fn find_popup_binary() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("zutil_popup")
+}
+
+
+fn window_icon() -> Option<eframe::egui::IconData> {
+    let bytes = include_bytes!("../assets/box.png");
+    let img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(eframe::egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
 }

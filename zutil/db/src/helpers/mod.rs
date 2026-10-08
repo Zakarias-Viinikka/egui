@@ -1,5 +1,6 @@
 pub mod category;
 pub mod edit;
+pub mod sql_export;
 pub mod export;
 pub mod new_row;
 pub mod read;

@@ -41,6 +41,8 @@ pub fn run() -> eframe::Result<()> {
             frozen_pids: Vec::new(),
             cmd_tx: hotkey_tx.clone(),
             ram_monitor_stop: monitor_stop,
+            last_refresh: std::time::Instant::now(),
+            was_focused: false,
         },
     };
 

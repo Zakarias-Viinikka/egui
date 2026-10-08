@@ -49,11 +49,11 @@ pub fn log(
             },
             ColumnValue {
                 column_name: "details".to_string(),
-                value: Col::Null,
+                value: Col::Null(protocol::row_col::StructRepresentingNull {}),
             },
             ColumnValue {
                 column_name: "details_type".to_string(),
-                value: Col::Null,
+                value: Col::Null(protocol::row_col::StructRepresentingNull {}),
             },
         ],
     })

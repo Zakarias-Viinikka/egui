@@ -1,12 +1,5 @@
 # todo
 
-## zapgui: confirm/deny on the diff viewer
-
-- Add confirm and deny buttons (replacing the three do-nothing glass buttons).
-- Confirm: write the new content to the path.
-- Deny: copy something like `denied request to edit file <path>` to the clipboard.
-- Writing is safe as-is: bytes go to disk, nothing interprets them. Content is visible in the diff before confirming, so no other guard needed on the body.
-
 ## zapgui: replace command
 
 - Request shape:

@@ -2,6 +2,7 @@ use protocol::payload::{ColumnValue, InsertDataIn};
 use protocol::row_col::Col;
 
 use crate::helpers::category::{TYPE_META, TYPE_NORMAL, category_id_opt};
+use crate::tables::{tbl_keyword_lookup, tbl_templates, tbl_texts};
 use db_wrapper::mascot::LiveForever;
 use protocol::error::DbError;
 
@@ -19,42 +20,42 @@ pub fn new_row_text_with_category(
 ) -> InsertDataIn {
     let category_value = match category_id {
         Some(id) => Col::Integer(id),
-        None => Col::Null,
+        None => Col::Null(protocol::row_col::StructRepresentingNull {}),
     };
     let meta_value = match meta_category_id {
         Some(id) => Col::Integer(id),
-        None => Col::Null,
+        None => Col::Null(protocol::row_col::StructRepresentingNull {}),
     };
     let type_value = match type_of_text {
         Some(s) if !s.is_empty() => Col::Text(s),
-        _ => Col::Null,
+        _ => Col::Null(protocol::row_col::StructRepresentingNull {}),
     };
 
     InsertDataIn {
-        table_name: "texts".to_string(),
+        table_name: tbl_texts::TABLE_NAME.to_string(),
         values: vec![
             ColumnValue {
-                column_name: "title".to_string(),
+                column_name: tbl_texts::TITLE.name.to_string(),
                 value: Col::Text(title),
             },
             ColumnValue {
-                column_name: "body".to_string(),
+                column_name: tbl_texts::BODY.name.to_string(),
                 value: Col::Text(body),
             },
             ColumnValue {
-                column_name: "category_id".to_string(),
+                column_name: tbl_texts::CATEGORY_ID.name.to_string(),
                 value: category_value,
             },
             ColumnValue {
-                column_name: "meta_category_id".to_string(),
+                column_name: tbl_texts::META_CATEGORY_ID.name.to_string(),
                 value: meta_value,
             },
             ColumnValue {
-                column_name: "type_of_text".to_string(),
+                column_name: tbl_texts::TYPE_OF_TEXT.name.to_string(),
                 value: type_value,
             },
             ColumnValue {
-                column_name: "copy_instead_of_view".to_string(),
+                column_name: tbl_texts::COPY_INSTEAD_OF_VIEW.name.to_string(),
                 value: Col::Integer(if copy_instead_of_view { 1 } else { 0 }),
             },
         ],
@@ -71,38 +72,38 @@ pub fn new_row_template(
 ) -> InsertDataIn {
     let category_value = match category_id {
         Some(id) => Col::Integer(id),
-        None => Col::Null,
+        None => Col::Null(protocol::row_col::StructRepresentingNull {}),
     };
     let meta_value = match meta_category_id {
         Some(id) => Col::Integer(id),
-        None => Col::Null,
+        None => Col::Null(protocol::row_col::StructRepresentingNull {}),
     };
 
     InsertDataIn {
-        table_name: "templates".to_string(),
+        table_name: tbl_templates::TABLE_NAME.to_string(),
         values: vec![
             ColumnValue {
-                column_name: "title".to_string(),
+                column_name: tbl_templates::TITLE.name.to_string(),
                 value: Col::Text(title),
             },
             ColumnValue {
-                column_name: "content".to_string(),
+                column_name: tbl_templates::CONTENT.name.to_string(),
                 value: Col::Text(content),
             },
             ColumnValue {
-                column_name: "instructions".to_string(),
+                column_name: tbl_templates::INSTRUCTIONS.name.to_string(),
                 value: Col::Text(instructions),
             },
             ColumnValue {
-                column_name: "example".to_string(),
+                column_name: tbl_templates::EXAMPLE.name.to_string(),
                 value: Col::Text(example),
             },
             ColumnValue {
-                column_name: "category_id".to_string(),
+                column_name: tbl_templates::CATEGORY_ID.name.to_string(),
                 value: category_value,
             },
             ColumnValue {
-                column_name: "meta_category_id".to_string(),
+                column_name: tbl_templates::META_CATEGORY_ID.name.to_string(),
                 value: meta_value,
             },
         ],
@@ -111,14 +112,14 @@ pub fn new_row_template(
 
 pub fn new_row_keyword_lookup(text_id: i64, keyword: String) -> InsertDataIn {
     InsertDataIn {
-        table_name: "keyword_lookup".to_string(),
+        table_name: tbl_keyword_lookup::TABLE_NAME.to_string(),
         values: vec![
             ColumnValue {
-                column_name: "text_id".to_string(),
+                column_name: tbl_keyword_lookup::TEXT_ID.name.to_string(),
                 value: Col::Integer(text_id),
             },
             ColumnValue {
-                column_name: "keyword".to_string(),
+                column_name: tbl_keyword_lookup::KEYWORD.name.to_string(),
                 value: Col::Text(keyword),
             },
         ],

@@ -7,11 +7,20 @@ const FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(12, 12, 12, 1
 const FILL_HOVER: egui::Color32 = egui::Color32::from_rgba_premultiplied(37, 37, 37, 160);
 const BORDER: egui::Color32 = egui::Color32::from_rgba_premultiplied(50, 50, 50, 50);
 const BORDER_HOVER: egui::Color32 = egui::Color32::from_rgba_premultiplied(110, 110, 110, 110);
+const GREEN: egui::Color32 = egui::Color32::from_rgb(80, 180, 80);
+const RED: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icon {
+    Confirm,
+    Deny,
+}
 
 pub fn glass_button_ui(
     ui: &mut egui::Ui,
     center: egui::Pos2,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
+    icon: Icon,
 ) -> bool {
     let rect = egui::Rect::from_center_size(center, egui::vec2(SIZE, SIZE));
     let id = egui::Id::new("glass_button").with(id_salt);
@@ -31,5 +40,33 @@ pub fn glass_button_ui(
         egui::StrokeKind::Inside,
     );
 
-    response.clicked()
+    let c = rect.center();
+    let half = 8.0;
+    let stroke = egui::Stroke::new(2.0, match icon {
+        Icon::Confirm => GREEN,
+        Icon::Deny => RED,
+    });
+    match icon {
+        Icon::Confirm => {
+            let a = egui::pos2(c.x - half, c.y);
+            let b = egui::pos2(c.x - half * 0.3, c.y + half * 0.7);
+            let d = egui::pos2(c.x + half, c.y - half * 0.7);
+            ui.painter().line_segment([a, b], stroke);
+            ui.painter().line_segment([b, d], stroke);
+        }
+        Icon::Deny => {
+            let a = egui::pos2(c.x - half, c.y - half);
+            let b = egui::pos2(c.x + half, c.y + half);
+            let cc = egui::pos2(c.x + half, c.y - half);
+            let d = egui::pos2(c.x - half, c.y + half);
+            ui.painter().line_segment([a, b], stroke);
+            ui.painter().line_segment([cc, d], stroke);
+        }
+    }
+
+    let label = match icon {
+        Icon::Confirm => "confirm",
+        Icon::Deny => "deny",
+    };
+    response.on_hover_text(label).clicked()
 }

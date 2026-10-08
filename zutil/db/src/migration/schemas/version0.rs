@@ -15,14 +15,14 @@ pub fn entire_table() -> Vec<ADbTable> {
             columns: texts_columns(),
             foreign_keys: vec![
                 ForeignKeyDef {
-                    column: "category_id".to_string(),
-                    referenced_table: "categories".to_string(),
-                    referenced_column: "id".to_string(),
+                    column_name: "category_id".to_string(),
+                    referenced_table_name: "categories".to_string(),
+                    referenced_column_name: "id".to_string(),
                 },
                 ForeignKeyDef {
-                    column: "meta_category_id".to_string(),
-                    referenced_table: "categories".to_string(),
-                    referenced_column: "id".to_string(),
+                    column_name: "meta_category_id".to_string(),
+                    referenced_table_name: "categories".to_string(),
+                    referenced_column_name: "id".to_string(),
                 },
             ],
         },
@@ -30,9 +30,9 @@ pub fn entire_table() -> Vec<ADbTable> {
             table_name: "keyword_lookup".to_string(),
             columns: keyword_lookup_columns(),
             foreign_keys: vec![ForeignKeyDef {
-                column: "text_id".to_string(),
-                referenced_table: "texts".to_string(),
-                referenced_column: "id".to_string(),
+                column_name: "text_id".to_string(),
+                referenced_table_name: "texts".to_string(),
+                referenced_column_name: "id".to_string(),
             }],
         },
         ADbTable {
@@ -50,14 +50,14 @@ pub fn entire_table() -> Vec<ADbTable> {
             columns: templates_columns(),
             foreign_keys: vec![
                 ForeignKeyDef {
-                    column: "category_id".to_string(),
-                    referenced_table: "categories".to_string(),
-                    referenced_column: "id".to_string(),
+                    column_name: "category_id".to_string(),
+                    referenced_table_name: "categories".to_string(),
+                    referenced_column_name: "id".to_string(),
                 },
                 ForeignKeyDef {
-                    column: "meta_category_id".to_string(),
-                    referenced_table: "categories".to_string(),
-                    referenced_column: "id".to_string(),
+                    column_name: "meta_category_id".to_string(),
+                    referenced_table_name: "categories".to_string(),
+                    referenced_column_name: "id".to_string(),
                 },
             ],
         },
@@ -65,9 +65,9 @@ pub fn entire_table() -> Vec<ADbTable> {
             table_name: "template_fills".to_string(),
             columns: template_fills_columns(),
             foreign_keys: vec![ForeignKeyDef {
-                column: "template_id".to_string(),
-                referenced_table: "templates".to_string(),
-                referenced_column: "id".to_string(),
+                column_name: "template_id".to_string(),
+                referenced_table_name: "templates".to_string(),
+                referenced_column_name: "id".to_string(),
             }],
         },
     ]
@@ -144,9 +144,9 @@ pub fn key_value_storage_columns() -> Vec<ColumnDef> {
 
 pub fn get_foreign_def_keyword_lookup() -> Vec<ForeignKeyDef> {
     vec![ForeignKeyDef {
-        column: "text_id".to_string(),
-        referenced_table: "texts".to_string(),
-        referenced_column: "id".to_string(),
+        column_name: "text_id".to_string(),
+        referenced_table_name: "texts".to_string(),
+        referenced_column_name: "id".to_string(),
     }]
 }
 

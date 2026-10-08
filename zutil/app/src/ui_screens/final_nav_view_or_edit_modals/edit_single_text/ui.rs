@@ -32,6 +32,8 @@ pub enum EditSingleTextAction {
     None,
     Back,
     Save,
+    Delete,
+    CopyEverything,
 }
 
 pub fn edit_single_text_ui(
@@ -74,6 +76,14 @@ pub fn edit_single_text_ui(
         if ui.button("Back").clicked() {
             action = EditSingleTextAction::Back;
         }
+        if ui.button("Copy everything").clicked() {
+            action = EditSingleTextAction::CopyEverything;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Delete").clicked() {
+                action = EditSingleTextAction::Delete;
+            }
+        });
     });
 
     action

@@ -31,6 +31,7 @@ zapgui` so they don't have to launch it manually.
 - zapcli with ls, cd, cat, settings, exit/quit, cls/clear, copy, zap,
   overwrite
 - zapgui showing a diff view of overwrite requests
+- confirm and deny on the diff viewer
 - zapgui starts hidden, wakes on overwrite, brings itself to front via wmctrl
 - egui patched so hidden-at-startup doesn't flash
 - Ctrl+C clears input, Ctrl+Shift+C is unreliable (see README)
@@ -48,10 +49,10 @@ In `zapcli/plan.md`:
 - Two whitelists: executables (safe-to-run), and files/folders (AI can edit
   without approval). Not started.
 
-## What "approve" means in zapgui
+## Confirm and deny in zapgui
 
-Not decided. The diff viewer has three glass buttons on the right that do
-nothing yet. The user hasn't said what they're for. Don't guess.
+Done. Confirm writes the new content to the path; deny copies the denial
+sentence. See the "Confirm and deny" section in README.md for the rules.
 
 ## The egui patch
 

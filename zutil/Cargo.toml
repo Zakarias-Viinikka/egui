@@ -9,6 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 eframe = "0.36.2"
 x11rb = "0.13"
+image = "0.25"
 
 [workspace.lints.rust]
 warnings = "allow"

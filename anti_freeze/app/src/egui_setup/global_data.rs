@@ -22,4 +22,6 @@ pub struct GlobalData {
     pub frozen_pids: Vec<u32>,
     pub cmd_tx: std::sync::mpsc::Sender<Cmd>,
     pub ram_monitor_stop: Arc<std::sync::atomic::AtomicBool>,
+    pub last_refresh: std::time::Instant,
+    pub was_focused: bool,
 }

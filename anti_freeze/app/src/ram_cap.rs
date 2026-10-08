@@ -2,8 +2,6 @@ use std::sync::mpsc::Sender;
 
 use eframe::egui;
 
-use app_core::ram_cap::Decision;
-
 use crate::hotkeys::Cmd;
 
 fn tell_ui(tx: &Sender<Cmd>, ctx: &egui::Context, cmd: Cmd) {
@@ -22,24 +20,29 @@ fn report(e: &str) {
 }
 
 pub fn on_trip(tx: Sender<Cmd>, ctx: egui::Context) {
-    match app_core::ram_cap::on_trip() {
-        Ok(Decision::Normal) => tell_ui(&tx, &ctx, Cmd::RamHigh),
-        Ok(Decision::AlreadyCapped) => {}
-        Ok(Decision::Capped) => {
-            if let Err(e) = app_core::popup::show("RAM cap engaged", 100, 100) {
-                eprintln!("{e}");
-            }
-            std::thread::spawn(move || {
-                std::thread::sleep(app_core::ram_cap::CAP_DURATION);
-                if let Err(e) = app_core::ram_cap::end_cap() {
-                    report(&e);
-                }
-                tell_ui(&tx, &ctx, Cmd::CapOver);
-            });
-        }
-        Err(e) => {
-            report(&e);
-            tell_ui(&tx, &ctx, Cmd::RamHigh);
-        }
+    if let Err(e) = app_core::ram_cap::on_trip() {
+        report(&e);
+        tell_ui(&tx, &ctx, Cmd::CapFailed);
+        return;
     }
+    if let Err(e) = app_core::popup::show("RAM cap engaged", 100, 100) {
+        eprintln!("{e}");
+    }
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(app_core::ram_cap::CHECK_INTERVAL);
+            match app_core::ram_cap::is_safe_to_lift() {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(e) => {
+                    eprintln!("{e}");
+                }
+            }
+        }
+        if let Err(e) = app_core::ram_cap::end_cap() {
+            report(&e);
+            return;
+        }
+        tell_ui(&tx, &ctx, Cmd::CapOver);
+    });
 }

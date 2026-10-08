@@ -11,14 +11,19 @@ don't read it.
 
 ## 2. What zapgui is doing
 
-`zapgui/app_core/src/terminal_router/mod.rs` — socket state and shared diff
-slot. Small.
+`zapgui/app_core/src/terminal_router/mod.rs` — socket state and the shared
+pending-edit slot. Small.
 
 `zapgui/app_core/src/terminal_router/listener.rs` — reads the whole stream,
 hands to route, writes reply.
 
 `zapgui/app_core/src/terminal_router/route_requests.rs` — parses the request
 shape.
+
+`zapgui/app_core/src/terminal_router/pending_overwrite.rs` — the pending edit
+and its confirm and deny methods.
+
+`zapgui/app_core/src/clipboard.rs` — xclip wrapper.
 
 `zapgui/app/src/egui_main.rs` — startup, icon, listener spawn, ctx storage.
 

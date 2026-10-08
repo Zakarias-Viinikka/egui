@@ -116,7 +116,7 @@ pub fn json_ui(ui: &mut egui::Ui, db: &LiveForever, state: &mut JsonState) -> Js
                     .add_sized([prompt_width, 40.0], egui::Button::new("Copy prompt"))
                     .clicked()
                 {
-                    ui.ctx().copy_text(json_parsing::prompt::prompt().to_string());
+                    ui.ctx().copy_text(build_prompt(db));
                     state.pending_popup = Some("copied".to_string());
                 }
             });
@@ -132,7 +132,7 @@ pub fn json_ui(ui: &mut egui::Ui, db: &LiveForever, state: &mut JsonState) -> Js
                 .add_sized([total_width, 40.0], egui::Button::new("Copy prompt"))
                 .clicked()
             {
-                ui.ctx().copy_text(json_parsing::prompt::prompt().to_string());
+                ui.ctx().copy_text(build_prompt(db));
                 state.pending_popup = Some("copied".to_string());
             }
         }
@@ -355,105 +355,15 @@ pub fn json_ui(ui: &mut egui::Ui, db: &LiveForever, state: &mut JsonState) -> Js
     action
 }
 
+fn build_prompt(db: &LiveForever) -> String {
+    let cats = zutil_db::helpers::category::read_all_categories_with_ids(db)
+        .map(|v| v.into_iter().map(|(_, n, t)| (n, t)).collect::<Vec<_>>())
+        .unwrap_or_default();
+    json_parsing::prompt::prompt(&cats)
+}
+
 fn build_export(db: &LiveForever) -> Result<String, String> {
-    use std::collections::HashMap;
-    use zutil_db::helpers::category::read_all_categories_with_ids;
-    use zutil_db::helpers::read::{read_all_templates, read_all_texts};
-
-    let cats = read_all_categories_with_ids(db).map_err(|e| e.to_string())?;
-    let name_by_id: HashMap<i64, String> = cats
-        .iter()
-        .map(|(id, name, _)| (*id, name.clone()))
-        .collect();
-
-    let new_cats: Vec<NewCategory> = cats
-        .iter()
-        .map(|(_, name, ty)| NewCategory {
-            name: name.clone(),
-            type_of_category: ty.clone(),
-        })
-        .collect();
-
-    let text_rows = read_all_texts(db).map_err(|e| e.to_string())?;
-    let new_texts: Vec<NewText> = text_rows
-        .iter()
-        .filter_map(|r| {
-            let title = r.cols.get(1)?.as_str().ok()?.to_string();
-            let body = r.cols.get(2)?.as_str().ok()?.to_string();
-            let category = r
-                .cols
-                .get(3)
-                .and_then(|c| c.as_int().ok().copied())
-                .and_then(|id| name_by_id.get(&id).cloned());
-            let meta_category = r
-                .cols
-                .get(4)
-                .and_then(|c| c.as_int().ok().copied())
-                .and_then(|id| name_by_id.get(&id).cloned());
-            let type_of_text = r
-                .cols
-                .get(5)
-                .and_then(|c| c.as_str().ok())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let copy_instead_of_view = r
-                .cols
-                .get(6)
-                .and_then(|c| c.as_int().ok().copied())
-                .map(|v| v != 0)
-                .unwrap_or(false);
-            Some(NewText {
-                title,
-                body,
-                category,
-                meta_category,
-                type_of_text,
-                copy_instead_of_view: if copy_instead_of_view { Some(true) } else { None },
-            })
-        })
-        .collect();
-
-    let tpl_rows = read_all_templates(db).map_err(|e| e.to_string())?;
-    let new_tpls: Vec<NewTemplate> = tpl_rows
-        .iter()
-        .filter_map(|r| {
-            let title = r.cols.get(1)?.as_str().ok()?.to_string();
-            let content = r.cols.get(2)?.as_str().ok()?.to_string();
-            let instructions = r
-                .cols
-                .get(3)
-                .and_then(|c| c.as_str().ok())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let example = r
-                .cols
-                .get(4)
-                .and_then(|c| c.as_str().ok())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            let category = r
-                .cols
-                .get(5)
-                .and_then(|c| c.as_int().ok().copied())
-                .and_then(|id| name_by_id.get(&id).cloned());
-            let meta_category = r
-                .cols
-                .get(6)
-                .and_then(|c| c.as_int().ok().copied())
-                .and_then(|id| name_by_id.get(&id).cloned());
-            Some(NewTemplate {
-                title,
-                content,
-                instructions,
-                example,
-                category,
-                meta_category,
-            })
-        })
-        .collect();
-
-    json_parsing::export::build_export_json(new_cats, new_texts, new_tpls)
-        .map_err(|e| e.to_string())
+    zutil_db::helpers::sql_export::full_export(db).map_err(|e| e.to_string())
 }
 
 fn collect_collisions(db: &LiveForever, payloads: &[ParsedPayload]) -> Vec<String> {
