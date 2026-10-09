@@ -70,3 +70,42 @@ pub fn glass_button_ui(
     };
     response.on_hover_text(label).clicked()
 }
+
+const FILL_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(60, 60, 60, 200);
+const BORDER_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(170, 170, 170, 200);
+const FILL_DENIED: egui::Color32 = egui::Color32::from_rgba_premultiplied(8, 8, 8, 70);
+const BORDER_DENIED: egui::Color32 = egui::Color32::from_rgba_premultiplied(40, 40, 40, 40);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockState {
+    Normal,
+    Selected,
+    Denied,
+}
+
+pub fn glass_step_block_ui(
+    ui: &mut egui::Ui,
+    center: egui::Pos2,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    state: BlockState,
+) -> bool {
+    let rect = egui::Rect::from_center_size(center, egui::vec2(SIZE, SIZE));
+    let id = egui::Id::new("glass_step_block").with(id_salt);
+    let response = ui.interact(rect, id, egui::Sense::click());
+
+    let (fill, border) = match state {
+        BlockState::Normal => (FILL, BORDER),
+        BlockState::Selected => (FILL_SELECTED, BORDER_SELECTED),
+        BlockState::Denied => (FILL_DENIED, BORDER_DENIED),
+    };
+
+    ui.painter().rect(
+        rect,
+        CORNER,
+        fill,
+        egui::Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+
+    response.clicked()
+}

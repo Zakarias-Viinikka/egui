@@ -1,6 +1,9 @@
 pub mod cat;
 pub mod cd;
+pub mod chain;
+pub mod help;
 pub mod ls;
 pub mod overwrite;
 pub mod settings;
+pub mod whitelist;
 pub mod zap;

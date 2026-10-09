@@ -19,7 +19,7 @@ pub fn send(payload: &str) -> Result<String, String> {
         Ok(s) => Some(s),
         Err(_) => {
             let gui = home_dir().join(".local/bin").join(GUI);
-            if let Err(e) = Command::new(&gui).spawn() {
+            if let Err(e) = Command::new(&gui).arg("--hidden").spawn() {
                 return Err(format!("zap: could not launch {}: {e}", gui.display()));
             }
             let deadline = Instant::now() + Duration::from_secs(3);

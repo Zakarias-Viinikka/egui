@@ -33,6 +33,23 @@ fn bar_color(kind: &RowKind, has_side: bool) -> Option<egui::Color32> {
 }
 
 pub fn diff_viewer_ui(ui: &mut egui::Ui, rect: egui::Rect, blocks: &[DiffRowProcessedForUi]) {
+    diff_viewer_body(ui, rect, blocks, true);
+}
+
+pub fn diff_viewer_ui_no_copy(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    blocks: &[DiffRowProcessedForUi],
+) {
+    diff_viewer_body(ui, rect, blocks, false);
+}
+
+fn diff_viewer_body(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    blocks: &[DiffRowProcessedForUi],
+    show_copy: bool,
+) {
     let mid_x = rect.center().x;
     let left_box = egui::Rect::from_min_max(rect.min, egui::pos2(mid_x - GAP / 2.0, rect.max.y));
     let right_box =
@@ -51,13 +68,15 @@ pub fn diff_viewer_ui(ui: &mut egui::Ui, rect: egui::Rect, blocks: &[DiffRowProc
     let inner_left = left_box.shrink(PAD);
     let inner_right = right_box.shrink(PAD);
 
-    let button_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.left() + 8.0, rect.top() - 26.0),
-        egui::vec2(60.0, 22.0),
-    );
-    if ui.put(button_rect, egui::Button::new("copy")).clicked() {
-        let s = app_core::text_diff::debug_format(blocks);
-        let _ = app_core::clipboard::copy_to_clipboard(&s);
+    if show_copy {
+        let button_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 8.0, rect.top() - 26.0),
+            egui::vec2(60.0, 22.0),
+        );
+        if ui.put(button_rect, egui::Button::new("copy")).clicked() {
+            let s = app_core::text_diff::debug_format(blocks);
+            let _ = app_core::clipboard::copy_to_clipboard(&s);
+        }
     }
 
     let mut child = ui.new_child(

@@ -66,6 +66,11 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
     if let Some(rest) = trimmed.strip_prefix("overwrite ") {
         return core_commands::overwrite::run(rest, session);
     }
+    // create and replace take a multi-line block (paste). Forward the raw
+    // input, not the trimmed form, so newlines survive.
+    if input.starts_with("create ") || input.starts_with("replace ") {
+        return core_commands::chain::run(input, session);
+    }
 
     let mut parts = trimmed.split_whitespace();
     let Some(verb) = parts.next() else {
@@ -78,6 +83,8 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         "ls" => core_commands::ls::run(&args, session),
         "cat" => core_commands::cat::run(&args, session),
         "s" | "settings" => core_commands::settings::run(),
+        "help" => core_commands::help::run(),
+        "whitelist" => core_commands::whitelist::run(),
         "exit" | "quit" => Outcome::Exit,
         "cls" | "clear" => Outcome::Clear,
         "copy" => Outcome::CopyAll,

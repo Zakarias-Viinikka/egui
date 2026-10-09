@@ -18,4 +18,7 @@ exec "$HOME/.local/bin/zapcli" "$@"
 WRAP
 chmod +x "$HOME/.local/bin/zap"
 
+pkill -x zapgui 2>/dev/null || true
+nohup "$HOME/.local/bin/zapgui" --hidden >/dev/null 2>&1 &
+
 echo "installed zapgui, zapcli, zap-settings, and zap"

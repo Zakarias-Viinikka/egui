@@ -54,21 +54,28 @@ to the repo on purpose so the patch travels with it.
 Request goes zapcli → zapgui. Reply goes zapgui → zapcli. Same socket, full
 duplex.
 
-Two request shapes:
+Four request shapes:
 
-`overwrite <path>` followed by a newline, then the content. Path is on the
-first line, content is everything after that first newline. Content can be
-multiline (paste in zapcli preserves newlines). The path must be absolute;
-zapcli's overwrite verb resolves `~` and relative paths before sending, so
-this only fires on something else. zapgui reads the file at path, diffs old
-against new, stores a pending edit in the shared slot, and replies empty. If
-the file can't be read: `zapgui: couldn't find <path>`. If the new content
-matches the old file exactly: `zapgui: no change to <path>` and nothing is
-shown. If a different unconfirmed edit was already in the slot:
-`zapgui: replaced unconfirmed edit to <old path>`.
+`chain <cwd>` followed by a newline, then the chain block (see
+`CHAIN_CHEATSHEET.md`). zapcli sends its working directory on the first line
+so zapgui can resolve relative paths inside the block. zapgui parses the
+block, plays it forward in memory, and then either applies it (if every
+touched file is inside a whitelisted folder) or stashes it for review and
+raises the window. Reply is empty unless a failure or a displaced chain
+happened; in those cases the reply is a one-line report and the same sentence
+lands on the clipboard with a popup.
 
-`replace` or `replace <anything>` — zapgui brings itself to the front, replies
-empty.
+`overwrite <path>` followed by a newline, then the content. Kept for the old
+one-step shape; internally becomes a one-step chain. Path must be absolute;
+zapcli resolves `~` and relative paths before sending, so this only fires on
+something else. Failures are the same shape as today: `zapgui: couldn't find
+<path>`, `zapgui: no change to <path>`, `zapgui: overwrite needs an absolute
+path: <path>`.
+
+`focus` or `focus <anything>` — zapgui brings itself to the front, replies
+empty. (Was called `replace`; renamed to free the word for the replace verb.)
+
+`menu` — zapgui shows its general menu, replies empty.
 
 Anything else — replies `zapgui: got "<request>"`.
 
@@ -84,46 +91,76 @@ the window. `wmctrl -a zapgui` does both. Called from the UI thread after
 
 egui only runs the app's `ui` function when something asks it to. A hidden
 window gets no input, so a hidden zapgui never runs `ui`, so it never learns a
-diff arrived. Fix: the listener thread stores the egui Context at startup
-(`set_ctx`), and calls `ctx.request_repaint()` after stashing an edit. That
+chain arrived. Fix: the listener thread stores the egui Context at startup
+(`set_ctx`), and calls `ctx.request_repaint()` after stashing a chain. That
 wakes the UI, which reads the slot at the top of its frame. If the slot holds
-a different edit than the one it last showed, it shows the window and raises
-it. The slot is read, not taken; it holds the edit until confirm or deny.
+a different chain than the one it last showed, it shows the window and raises
+it. The slot is read, not taken; it holds the chain until confirm or deny, or
+until a newer chain replaces it.
 
 ## Confirm and deny
 
-The pending edit lives in one slot in terminal_router, as an `Arc<PendingOverwrite>`
-holding the path, the old content the diff was made against, the new content
-to write, and the diff rows. The UI reads the slot every frame and renders
-from the last Arc it saw. Two glass buttons on the right of the diff viewer do
-the work: a check on top for confirm, an X below for deny.
+The pending chain lives in one slot in terminal_router, as an `Arc<Chain>`
+holding the steps, their diffs, and a snapshot of each touched file as it
+was when the chain was built. The UI reads the slot every frame and renders
+from the last Arc it saw. Glass buttons below the diff do the work: confirm
+on the left, deny on the right.
 
-Confirm re-reads the file and compares it with the stored old content. If the
-file is unreadable or different, it writes nothing and fails. Otherwise it
-overwrites in place with `std::fs::write` at the same path string, so
-permissions and symlinks survive.
+Confirm applies every step that is not denied. If a step fails (its file
+changed on disk since the snapshot, a create target already exists, a
+replace old text no longer matches), nothing is written and the window
+stays with a red error line, and the failure report goes on the clipboard
+with a popup.
 
-Deny copies `denied request to edit file <path>` to the clipboard and writes
-nothing.
+Deny marks the currently shown step denied, dims its block in the column on
+the right, and moves to the next undecided step. When every step is denied
+the window closes. Nothing is written.
 
-On success the slot empties — only if it still holds the same Arc, so a newer
-arrival survives — and the window hides with `ViewportCommand::Visible(false)`,
+A chain with more than one step shows a column of glass blocks on the right,
+one per step. The shown step's block is brighter, denied blocks are dimmed,
+and clicking a block shows that step. The caption above the diff says
+`step n of m · verb path`, and appends ` · denied` when the shown step has
+been denied.
+
+On success the slot empties (only if it still holds the same Arc, so a newer
+chain survives) and the window hides with `ViewportCommand::Visible(false)`,
 not `Close`, so the process and its listener stay alive.
 
-On failure the diff and window stay, and a red line shows in the bottom margin.
-The same sentence is copied to the clipboard so it can be pasted back to the
-AI. The shape is `failed request to edit file <path>: <reason>`, where reason
-is `file changed since the diff was made`, `couldn't read the file: <io error>`,
-or `write failed: <io error>`. If the clipboard copy itself fails, the sentence
-is `couldn't copy to the clipboard: <reason>`.
+Clicks are ignored for 500 ms after the displayed diff changes, after a deny,
+or after the window appears, so a click meant for something else can't land
+on a freshly shown diff.
 
-Clicks are ignored for 500 ms after a diff is shown, so a click meant for
-something else can't land on a freshly shown diff.
+A new chain while one is showing replaces it. The reply and clipboard both
+say `zap: replaced unconfirmed chain (<first path>).` so it doesn't
+disappear silently.
 
-A new overwrite while one is showing replaces it. If the displaced edit was for
-a different path, the reply is `zapgui: replaced unconfirmed edit to <old path>`,
-so it doesn't disappear silently. Nothing else goes over the socket on confirm
-or deny; the AI only sees what gets pasted back.
+## Reports and popups
+
+Every decision (a step denied, Confirm, a failure, a whitelist auto-apply)
+rebuilds a report: a plain sentence, one clause per file, saying what was
+applied or denied or failed, with a bit of the diff as context. The report
+goes on the clipboard, and a popup with a short label goes on screen. The
+popup binary is `popup_demo_app`, invoked as
+`popup_demo_app "text" x y host_id`; it draws a rounded box at x,y, sits
+about 800 ms, fades, and exits. Popups carry short strings only.
+
+## Whitelist
+
+`~/.config/zap/whitelist.txt` (honours `XDG_CONFIG_HOME`), one absolute
+folder per line. A chain whose touched files are all inside a whitelisted
+folder is applied immediately — no diff, no window, just a
+`Change was made` popup and the report on the clipboard. A chain with even
+one file outside goes wholly to review.
+
+A file counts as inside a folder after resolving symlinks and `..`, compared
+by whole path components, not string prefixes. For a file that doesn't exist
+yet, its nearest existing parent is used.
+
+When zapgui is launched normally (without `--hidden`) it shows a menu. One
+entry for now: Whitelisted folders. zapcli's auto-launch passes `--hidden`
+so a zapgui woken by a request stays hidden. A manual launch while another
+zapgui is running connects to the socket, asks that one to show its menu,
+and exits — so a second launch can't steal the first one's socket.
 
 ## Line styles
 
@@ -147,9 +184,13 @@ through. The `copy` command is the reliable way to copy everything.
 
 ## Where files go
 
+zapgui's `app_core/src/chain/` — the chain module. step.rs (step types),
+parser.rs (chain text -> steps), play.rs (play forward in memory), writer.rs
+(the one routine that writes), report.rs (clipboard / popup sentences),
+whitelist.rs (list file, matching), popup.rs (popup_demo_app wrapper).
+
 zapgui's `app_core/src/terminal_router/` — socket listener, route_requests,
-the shared slot in mod.rs, and pending_overwrite.rs (the PendingOverwrite
-struct with its confirm and deny methods).
+and the shared slot in mod.rs. The slot holds an `Arc<Chain>`.
 
 zapgui's `app_core/src/clipboard.rs` — the xclip helper, returning an error
 string when xclip can't start or exits non-zero.
@@ -176,6 +217,10 @@ Create `zapcli/app_core/src/command_router/core_commands/<name>.rs`. Write
 `pub fn run(args: &[&str], session: &Session) -> Outcome`. Add it to
 `core_commands/mod.rs`. Add a match arm in `command_router/mod.rs`. Return
 `Vec<Line>` in `Outcome::Print` — pick a `LineStyle` per line.
+
+If the command needs to forward a multi-line block to zapgui, take the
+verbatim input (not `trimmed`) and send it as `chain <cwd>\n<block>`. See
+`core_commands/chain.rs` for the existing create and replace verbs.
 
 ## Build
 

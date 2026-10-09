@@ -29,10 +29,17 @@ zapgui` so they don't have to launch it manually.
 ## What's done
 
 - zapcli with ls, cd, cat, settings, exit/quit, cls/clear, copy, zap,
-  overwrite
-- zapgui showing a diff view of overwrite requests
-- confirm and deny on the diff viewer
-- zapgui starts hidden, wakes on overwrite, brings itself to front via wmctrl
+  overwrite, create, replace
+- Chains: multi-step create/replace/overwrite blocks that play forward in
+  memory and are written all-or-nothing. See CHAIN_CHEATSHEET.md.
+- zapgui showing a diff view of a chain, with per-step review: caption,
+  glass-block column for picking a step, confirm and deny below
+- Reports on the clipboard and popups after every decision
+- Whitelist: a folder in ~/.config/zap/whitelist.txt and every chain that
+  only touches files inside it applies silently
+- Menu on a normal zapgui launch; `--hidden` for the auto-launch path
+- Single-instance: a manual second launch re-shows the menu on the running
+  one instead of stealing its socket
 - egui patched so hidden-at-startup doesn't flash
 - Ctrl+C clears input, Ctrl+Shift+C is unreliable (see README)
 - Both projects organized under ~/ProgStuff/egui/zap/
@@ -46,8 +53,8 @@ In `zapcli/plan.md`:
 - fzf-pickers replaced with something (cdf, s, b, co, cop, run)
 - t (tree to clipboard)
 - cur (pwd to clipboard)
-- Two whitelists: executables (safe-to-run), and files/folders (AI can edit
-  without approval). Not started.
+- Executable whitelist (safe-to-run). The folder whitelist for edits is
+  built and lives in ~/.config/zap/whitelist.txt.
 
 ## Confirm and deny in zapgui
 
