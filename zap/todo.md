@@ -47,3 +47,22 @@ chain-run failure should read "step 4 of 7 (cargo test) failed: ...".
 
 Estimated: an afternoon, most of it on the socket shape and the
 review-then-stream sequencing.
+
+- cat should support copying many files at once so I can get rid of the
+  "for f" AI prompt and make it use zap instead.
+- create an append verb, so adding a line to the bottom of a file does
+  not need a full replace.
+- rm can't touch a path with a space in it: the line is split on
+  whitespace, so `rm a b` is two paths and `DELETE REQUEST,` becomes
+  `DELETE` and `REQUEST,`. Need either one path per line, quoted paths,
+  or only a single path per rm line.
+- rename the rm verb to delete. `rm` typed in a terminal by accident is
+  dangerous, and the guard against it only catches it because the command
+  starts with `rm`.
+- rework `s`. Today it's a shortcut for settings in zapcli; it should do
+  what `s` does in my terminal instead. That's defined in my bashrc.
+- add support for `cdf`, which is defined in my bashrc.
+- word wrap on the input line is wrong. Typing a long path runs past the
+  right edge instead of wrapping. Pasting does wrap, but the continuation
+  lines don't start at column 0 — they start indented, leaving a gap on
+  the left.
