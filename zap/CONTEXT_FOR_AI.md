@@ -24,7 +24,18 @@ pending-chain slot. Small.
 hands to route, writes reply.
 
 `zapgui/app_core/src/terminal_router/route_requests.rs` — parses the request
-shape, dispatches to chain or overwrite, auto-applies whitelisted chains.
+shape, dispatches to chain / overwrite / last, auto-applies whitelisted
+chains (never rm or mv).
+
+`zapgui/app_core/src/terminal_router/run_file.rs` — the run verb's server
+side.
+
+`zapgui/app_core/src/terminal_router/stream_run.rs` — the shared process
+loop both cargo and run use.
+
+`zapgui/app_core/src/last_change.rs` — the in-memory record behind `last`.
+
+`zapgui/app_core/src/run_trust.rs` — run-target trust entries.
 
 `zapgui/app_core/src/clipboard.rs` — xclip wrapper.
 
@@ -37,8 +48,10 @@ the general menu.
 ## 3. What zapcli is doing
 
 `zapcli/app_core/src/command_router/mod.rs` — dispatch. Look at this to know
-what verbs exist. `create` and `replace` both forward their multi-line block
-as a chain; `core_commands/chain.rs` is the shared forwarder.
+what verbs exist. `create`, `replace`, `overwrite`, `rm`, `mv`, `mkdir` all
+forward their block as a chain; `core_commands/chain.rs` is the shared
+forwarder. `head`, `tail`, `wc`, `last` return peek lines. `cargo` and `run`
+open streaming sessions.
 
 `zapcli/app_core/src/command_router/core_commands/mod.rs` — the list of
 command files.
@@ -54,28 +67,45 @@ Ctrl+Shift+C handling.
 `zapcli/app/src/egui_setup/drawing_requirements.rs` — the terminal UI, the
 `raw_input_hook`, the event loop.
 
-## 4. Chain text format
+## 4. zap_wire and the cargo run flow
+
+`zap_wire/src/lib.rs` — framed messages. `zap_wire/src/argv.rs` — the
+command-line splitter. `zap_wire/src/cargo_gate.rs` — the cargo allow-list.
+
+`zapgui/app_core/src/surface.rs` and `trust.rs` — the execution surface and
+its stored record.
+
+`zapgui/app_core/src/runner.rs` — the process runner (own process group,
+merged streams, cap, kill on cancel).
+
+`zapgui/app_core/src/terminal_router/cargo_run.rs` — the cargo verb's
+server side.
+
+`zapgui/app_core/src/clipboard.rs` — read, write with a mode, and the
+in-memory record used to append run output under a report.
+
+## 5. Chain text format
 
 `CHAIN_CHEATSHEET.md` in the repo root. Read it if you're touching the
 parser or writing an example chain.
 
-## 5. The diff engine
+## 6. The diff engine
 
 `zapgui/app_core/src/text_diff/` — `pair_lines` produces raw rows, `process`
 groups them into blocks the UI can render. This is what zapgui's UI consumes.
 
-## 6. Reusable UI
+## 7. Reusable UI
 
 `zapgui/every_page_ever/src/ReusableComponents/` — close_button, glass_button,
 diff_viewer.
 
-## 7. The egui patch
+## 8. The egui patch
 
 `egui-src/crates/eframe/src/native/epi_integration.rs` — one function is
 patched. Everything else in `egui-src` is stock 0.36.2. Don't touch anything
 else in there unless you know why.
 
-## 8. Don't
+## 9. Don't
 
 Don't `cargo update`. Don't change the egui version. The patch depends on the
 exact source.

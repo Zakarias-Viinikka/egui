@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+zap_wire = { path = "../../zap_wire" }
 eframe.workspace = true
 image.workspace = true
 every_page_ever = { path = "../every_page_ever" }

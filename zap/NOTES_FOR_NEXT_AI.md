@@ -28,19 +28,28 @@ zapgui` so they don't have to launch it manually.
 
 ## What's done
 
-- zapcli with ls, cd, cat, settings, exit/quit, cls/clear, copy, zap,
-  overwrite, create, replace
-- Chains: multi-step create/replace/overwrite blocks that play forward in
-  memory and are written all-or-nothing. See CHAIN_CHEATSHEET.md.
+- zapcli with ls, cd, cat, settings, exit/quit, cls/clear, copy, copy all,
+  zap, overwrite, create, replace, rm, mv, mkdir, head, tail, wc, last,
+  help, whitelist, cargo, run
+- Chains: multi-step create/replace/overwrite/rm/mv/mkdir blocks that play
+  forward in memory and are written all-or-nothing. See CHAIN_CHEATSHEET.md.
 - zapgui showing a diff view of a chain, with per-step review: caption,
   glass-block column for picking a step, confirm and deny below
+- Distinct banners for RUN / EXECUTE / DELETE / RENAME requests
+- Mis-click guard: Confirm refuses to apply an rm or mv the user never looked at
 - Reports on the clipboard and popups after every decision
 - Whitelist: a folder in ~/.config/zap/whitelist.txt and every chain that
-  only touches files inside it applies silently
+  only touches files inside it applies silently, unless it has rm or mv
 - Menu on a normal zapgui launch; `--hidden` for the auto-launch path
 - Single-instance: a manual second launch re-shows the menu on the running
   one instead of stealing its socket
 - egui patched so hidden-at-startup doesn't flash
+- Cargo and run stream into a bottom pane, with the progress bar drawn
+- Run targets are trusted per (path, args, content hash); rename through a
+  confirmed mv carries the trust
+- `last` shows the last change zap made to a file
+- head/tail/wc/last output is peek-only; copy skips it
+- Input line is an egui TextEdit: Ctrl+Z, click-to-position, selection
 - Ctrl+C clears input, Ctrl+Shift+C is unreliable (see README)
 - Both projects organized under ~/ProgStuff/egui/zap/
 
@@ -48,18 +57,19 @@ zapgui` so they don't have to launch it manually.
 
 In `zapcli/plan.md`:
 
-- head, tail, find (uses rg), grep (uses rg), rg, wc
+- find, grep, rg
 - git read-only: status, log, diff, show
-- fzf-pickers replaced with something (cdf, s, b, co, cop, run)
+- fzf-pickers replaced with something (cdf, s, b, co, cop)
 - t (tree to clipboard)
 - cur (pwd to clipboard)
-- Executable whitelist (safe-to-run). The folder whitelist for edits is
-  built and lives in ~/.config/zap/whitelist.txt.
 
 ## Confirm and deny in zapgui
 
 Done. Confirm writes the new content to the path; deny copies the denial
-sentence. See the "Confirm and deny" section in README.md for the rules.
+sentence. See the "Confirm and deny", "Reports and popups", and "rm, mv,
+mkdir" sections in README.md for the rules. The `visited` field on the UI
+struct tracks which steps have been shown; Confirm refuses an rm or mv that
+was never shown.
 
 ## The egui patch
 

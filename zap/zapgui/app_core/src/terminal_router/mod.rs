@@ -1,8 +1,13 @@
+pub mod cargo_run;
 pub mod listener;
+pub mod run_file;
+pub mod stream_run;
 pub mod pending_overwrite;
 pub mod route_requests;
+pub mod surface_review;
 
 use crate::chain::Chain;
+use surface_review::SurfaceReview;
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub const SOCKET_PATH: &str = "/run/user/1000/zap.sock";
@@ -55,6 +60,40 @@ pub fn request_menu() {
 /// Consume any pending menu request.
 pub fn take_menu_request() -> bool {
     MENU_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The pending surface review, if any. A chain review or a menu can coexist
+/// with this; the UI shows the surface review first when one is present.
+static PENDING_SURFACE: OnceLock<Mutex<Option<Arc<SurfaceReview>>>> = OnceLock::new();
+
+fn surface_cell() -> &'static Mutex<Option<Arc<SurfaceReview>>> {
+    PENDING_SURFACE.get_or_init(|| Mutex::new(None))
+}
+
+/// Store a surface review and wake the UI. Returns false if one is already
+/// waiting. The caller waits on the review's channel for the response.
+pub fn stash_surface_review(review: SurfaceReview) -> bool {
+    let mut g = surface_cell().lock().unwrap();
+    if g.is_some() {
+        return false;
+    }
+    *g = Some(Arc::new(review));
+    if let Some(ctx) = CTX.get() {
+        ctx.request_repaint();
+    }
+    true
+}
+
+pub fn current_surface_review() -> Option<Arc<SurfaceReview>> {
+    surface_cell().lock().unwrap().clone()
+}
+
+pub fn clear_surface_review(r: &Arc<SurfaceReview>) {
+    let mut g = surface_cell().lock().unwrap();
+    let same = g.as_ref().map(|c| Arc::ptr_eq(c, r)).unwrap_or(false);
+    if same {
+        *g = None;
+    }
 }
 
 pub fn clear_pending(chain: &Arc<Chain>) {

@@ -1,4 +1,9 @@
 pub mod chain;
 pub mod clipboard;
+pub mod last_change;
+pub mod runner;
+pub mod run_trust;
+pub mod surface;
+pub mod trust;
 pub mod terminal_router;
 pub mod text_diff;

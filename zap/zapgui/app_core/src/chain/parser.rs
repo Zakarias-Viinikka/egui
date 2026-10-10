@@ -28,48 +28,78 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
         let (verb, rest) = parse_header(lines[i].trim_end(), header_no)?;
         i += 1;
 
-        if i >= lines.len() {
-            return Err(ParseError { line: i + 1, message: "expected a marker line".to_string() });
-        }
-        let marker_count = count_ats(lines[i]);
-        if marker_count == 0 {
-            return Err(ParseError { line: i + 1, message: "expected a marker line".to_string() });
-        }
-
-        let (old_text, new_text, next_i) = match verb {
-            Verb::Replace => {
-                let name = marker_name(lines[i]);
-                if name != "old" {
-                    return Err(ParseError { line: i + 1, message: format!("expected @old, got @{}", name) });
+        match verb {
+            Verb::Remove | Verb::Move | Verb::Mkdir => {
+                let new_steps = parse_single_line(verb, rest, header_no)?;
+                steps.extend(new_steps);
+            }
+            Verb::Create | Verb::Replace | Verb::Overwrite => {
+                if i >= lines.len() {
+                    return Err(ParseError {
+                        line: i + 1,
+                        message: "expected a marker line".to_string(),
+                    });
                 }
-                let (old_text, after_old) = read_until_marker(&lines, i + 1, marker_count, "new")?;
-                let (new_text, after_new) = read_until_marker(&lines, after_old, marker_count, "end")?;
-                (old_text, new_text, after_new)
-            }
-            _ => {
-                let name = marker_name(lines[i]);
-                if name != "new" {
-                    return Err(ParseError { line: i + 1, message: format!("expected @new, got @{}", name) });
+                let marker_count = count_ats(lines[i]);
+                if marker_count == 0 {
+                    return Err(ParseError {
+                        line: i + 1,
+                        message: "expected a marker line".to_string(),
+                    });
                 }
-                let (new_text, after_new) = read_until_marker(&lines, i + 1, marker_count, "end")?;
-                (String::new(), new_text, after_new)
+
+                let (old_text, new_text, next_i) = match verb {
+                    Verb::Replace => {
+                        let name = marker_name(lines[i]);
+                        if name != "old" {
+                            return Err(ParseError {
+                                line: i + 1,
+                                message: format!("expected @old, got @{}", name),
+                            });
+                        }
+                        let (old_text, after_old) =
+                            read_until_marker(&lines, i + 1, marker_count, "new")?;
+                        let (new_text, after_new) =
+                            read_until_marker(&lines, after_old, marker_count, "end")?;
+                        (old_text, new_text, after_new)
+                    }
+                    _ => {
+                        let name = marker_name(lines[i]);
+                        if name != "new" {
+                            return Err(ParseError {
+                                line: i + 1,
+                                message: format!("expected @new, got @{}", name),
+                            });
+                        }
+                        let (new_text, after_new) =
+                            read_until_marker(&lines, i + 1, marker_count, "end")?;
+                        (String::new(), new_text, after_new)
+                    }
+                };
+
+                let (path, count) = parse_path_and_count(rest, header_no, verb)?;
+
+                let new_text = if matches!(verb, Verb::Create) {
+                    let mut t = new_text;
+                    if !t.ends_with('\n') {
+                        t.push('\n');
+                    }
+                    t
+                } else {
+                    new_text
+                };
+
+                steps.push(Step {
+                    verb,
+                    path,
+                    dest: None,
+                    old_text,
+                    new_text,
+                    count,
+                });
+                i = next_i;
             }
-        };
-
-        let (path, count) = parse_path_and_count(rest, header_no, verb)?;
-
-        let new_text = if matches!(verb, Verb::Create) {
-            let mut t = new_text;
-            if !t.ends_with('\n') {
-                t.push('\n');
-            }
-            t
-        } else {
-            new_text
-        };
-
-        steps.push(Step { verb, path, old_text, new_text, count });
-        i = next_i;
+        }
     }
 
     Ok(steps)
@@ -84,15 +114,115 @@ fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> 
         "create" => Verb::Create,
         "replace" => Verb::Replace,
         "overwrite" => Verb::Overwrite,
-        _ => return Err(ParseError { line: line_no, message: format!("unknown command: {:?}", word) }),
+        "rm" => Verb::Remove,
+        "mv" => Verb::Move,
+        "mkdir" => Verb::Mkdir,
+        _ => {
+            return Err(ParseError {
+                line: line_no,
+                message: format!("unknown command: {:?}", word),
+            })
+        }
     };
     if rest.trim().is_empty() {
-        return Err(ParseError { line: line_no, message: format!("missing path after {:?}", word) });
+        return Err(ParseError {
+            line: line_no,
+            message: format!("missing path after {:?}", word),
+        });
     }
     Ok((verb, rest))
 }
 
-fn parse_path_and_count(rest: &str, line: usize, verb: Verb) -> Result<(String, Option<usize>), ParseError> {
+fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, ParseError> {
+    let args = zap_wire::argv::split(rest.trim()).map_err(|e| ParseError { line, message: e })?;
+    if args.is_empty() {
+        return Err(ParseError {
+            line,
+            message: "missing path".to_string(),
+        });
+    }
+
+    match verb {
+        Verb::Remove => {
+            let mut steps = Vec::new();
+            for a in &args {
+                if a.starts_with('-') && a.len() > 1 {
+                    return Err(ParseError {
+                        line,
+                        message: format!("rm: unsupported option {a}"),
+                    });
+                }
+                steps.push(Step {
+                    verb: Verb::Remove,
+                    path: a.clone(),
+                    dest: None,
+                    old_text: String::new(),
+                    new_text: String::new(),
+                    count: None,
+                });
+            }
+            Ok(steps)
+        }
+        Verb::Move => {
+            if args.len() != 2 {
+                return Err(ParseError {
+                    line,
+                    message: "mv: needs a source and a destination".to_string(),
+                });
+            }
+            if args.iter().any(|a| a.starts_with('-') && a.len() > 1) {
+                return Err(ParseError {
+                    line,
+                    message: "mv: flags are not supported".to_string(),
+                });
+            }
+            Ok(vec![Step {
+                verb: Verb::Move,
+                path: args[0].clone(),
+                dest: Some(args[1].clone()),
+                old_text: String::new(),
+                new_text: String::new(),
+                count: None,
+            }])
+        }
+        Verb::Mkdir => {
+            let mut steps = Vec::new();
+            for a in &args {
+                if a == "-p" {
+                    continue;
+                }
+                if a.starts_with('-') && a.len() > 1 {
+                    return Err(ParseError {
+                        line,
+                        message: format!("mkdir: unsupported option {a}"),
+                    });
+                }
+                steps.push(Step {
+                    verb: Verb::Mkdir,
+                    path: a.clone(),
+                    dest: None,
+                    old_text: String::new(),
+                    new_text: String::new(),
+                    count: None,
+                });
+            }
+            if steps.is_empty() {
+                return Err(ParseError {
+                    line,
+                    message: "mkdir: missing path".to_string(),
+                });
+            }
+            Ok(steps)
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn parse_path_and_count(
+    rest: &str,
+    line: usize,
+    verb: Verb,
+) -> Result<(String, Option<usize>), ParseError> {
     let rest = rest.trim();
     if let Verb::Replace = verb {
         if let Some(idx) = rest.rfind(char::is_whitespace) {
@@ -105,7 +235,10 @@ fn parse_path_and_count(rest: &str, line: usize, verb: Verb) -> Result<(String, 
                     })?;
                     let path = rest[..idx].trim();
                     if path.is_empty() {
-                        return Err(ParseError { line, message: "missing path".to_string() });
+                        return Err(ParseError {
+                            line,
+                            message: "missing path".to_string(),
+                        });
                     }
                     return Ok((path.to_string(), Some(n)));
                 }
@@ -113,7 +246,10 @@ fn parse_path_and_count(rest: &str, line: usize, verb: Verb) -> Result<(String, 
         }
     }
     if rest.is_empty() {
-        return Err(ParseError { line, message: "missing path".to_string() });
+        return Err(ParseError {
+            line,
+            message: "missing path".to_string(),
+        });
     }
     Ok((rest.to_string(), None))
 }
@@ -210,5 +346,61 @@ mod tests {
     fn errors_on_unknown_verb() {
         let err = parse("frobnicate /tmp/a.rs\n@new\nx\n@end\n").expect_err("should fail");
         assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn parses_a_remove() {
+        let steps = parse("rm /tmp/a.rs\n").expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].verb, Verb::Remove);
+        assert_eq!(steps[0].path, "/tmp/a.rs");
+    }
+
+    #[test]
+    fn parses_a_remove_with_two_paths() {
+        let steps = parse("rm /tmp/a.rs /tmp/b.rs\n").expect("parse");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].path, "/tmp/a.rs");
+        assert_eq!(steps[1].path, "/tmp/b.rs");
+    }
+
+    #[test]
+    fn parses_a_move() {
+        let steps = parse("mv /tmp/a.rs /tmp/b.rs\n").expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].verb, Verb::Move);
+        assert_eq!(steps[0].path, "/tmp/a.rs");
+        assert_eq!(steps[0].dest.as_deref(), Some("/tmp/b.rs"));
+    }
+
+    #[test]
+    fn parses_a_move_with_quoted_path() {
+        let steps = parse("mv \"/tmp/a b.rs\" /tmp/c.rs\n").expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.rs");
+        assert_eq!(steps[0].dest.as_deref(), Some("/tmp/c.rs"));
+    }
+
+    #[test]
+    fn parses_a_mkdir() {
+        let steps = parse("mkdir /tmp/newdir\n").expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].verb, Verb::Mkdir);
+        assert_eq!(steps[0].path, "/tmp/newdir");
+    }
+
+    #[test]
+    fn parses_mkdir_with_p_flag() {
+        let steps = parse("mkdir -p /tmp/newdir\n").expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].path, "/tmp/newdir");
+    }
+
+    #[test]
+    fn parses_rm_and_mv_are_not_confused_with_bodies() {
+        let input = "create /tmp/a.rs\n@new\nrm /tmp/b.rs\nmv /tmp/c.rs /tmp/d.rs\n@end\n";
+        let steps = parse(input).expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].verb, Verb::Create);
+        assert!(steps[0].new_text.contains("rm /tmp/b.rs"));
     }
 }

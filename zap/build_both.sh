@@ -14,6 +14,11 @@ install -m 755 target/release/zap-settings "$HOME/.local/bin/zap-settings"
 
 cat > "$HOME/.local/bin/zap" << 'WRAP'
 #!/usr/bin/env bash
+if [ "$1" = "-free" ]; then
+    shift
+    setsid "$HOME/.local/bin/zapcli" "$@" >/dev/null 2>&1 < /dev/null &
+    exit 0
+fi
 exec "$HOME/.local/bin/zapcli" "$@"
 WRAP
 chmod +x "$HOME/.local/bin/zap"

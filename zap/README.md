@@ -60,10 +60,14 @@ Four request shapes:
 `CHAIN_CHEATSHEET.md`). zapcli sends its working directory on the first line
 so zapgui can resolve relative paths inside the block. zapgui parses the
 block, plays it forward in memory, and then either applies it (if every
-touched file is inside a whitelisted folder) or stashes it for review and
-raises the window. Reply is empty unless a failure or a displaced chain
-happened; in those cases the reply is a one-line report and the same sentence
-lands on the clipboard with a popup.
+touched file is inside a whitelisted folder and the chain has no `rm` or
+`mv`) or stashes it for review and raises the window. Reply is empty unless
+a failure or a displaced chain happened; in those cases the reply is a
+one-line report and the same sentence lands on the clipboard with a popup.
+
+`run <file>` is a separate request kind (`RunFile`) that streams into the
+same pane as `cargo`. Same transport, same frames, same summary. See the
+`run` verb section below.
 
 `overwrite <path>` followed by a newline, then the content. Kept for the old
 one-step shape; internally becomes a one-step chain. Path must be absolute;
@@ -156,21 +160,129 @@ A file counts as inside a folder after resolving symlinks and `..`, compared
 by whole path components, not string prefixes. For a file that doesn't exist
 yet, its nearest existing parent is used.
 
+A chain with any `rm` or `mv` step goes to review even inside a whitelisted
+folder, so an auto-applied edit can never be paired with an auto-applied
+delete or rename.
+
 When zapgui is launched normally (without `--hidden`) it shows a menu. One
 entry for now: Whitelisted folders. zapcli's auto-launch passes `--hidden`
 so a zapgui woken by a request stays hidden. A manual launch while another
 zapgui is running connects to the socket, asks that one to show its menu,
 and exits — so a second launch can't steal the first one's socket.
 
+## Cargo and streaming
+
+zapcli's `cargo` verb runs cargo in zapgui and streams the output back into
+a pane at the bottom of the zapcli window. zapcli itself never starts a
+process — every side effect stays behind zapgui, which holds the guardrail
+and the trust records. See `cargo` in `CHAIN_CHEATSHEET.md` for the
+allow-list.
+
+Transport is framed, not end-of-file terminated: `[kind: u8][length: u32
+LE][bytes]`. zapcli keeps its write half open so a cancel frame can go out
+while output is flowing. One connection carries one request. A plain request
+is request, reply, close. A run is CargoRun, then StreamOpen, StreamData...,
+StreamDone.
+
+Before every run, zapgui computes the project's execution surface — every
+Cargo.toml, Cargo.lock, build script, proc-macro source, .cargo/config, and
+rust-toolchain file that would run or change what runs during a build. If
+the surface matches the trusted record for that project, the run starts
+immediately. Otherwise a surface review window shows the new or changed
+files and asks for a decision. Confirm stores the surface and starts;
+Deny cancels the run.
+
+Ordinary source files and `target/` are not in the surface, so editing the
+program he is deliberately running never re-prompts. After a run, only
+Cargo.lock's trusted copy is refreshed (cargo may have rewritten it). When a
+chain is confirmed in review, any surface file it wrote in an already-trusted
+project gets its trusted copy updated, because that review was the approval.
+Whitelisted auto-applies do not do that.
+
 ## Line styles
 
-Every command returns a `Vec<Line>`. `Line` has `text` and `style`. `LineStyle`
-is Normal, Error, Folder, Prompt, Zap, CliMessage. The UI maps style to color.
-The UI never inspects line text to guess what a line is — that's what the
-styles are for. If you add a command, decide per line what it means.
+Every command returns a `Vec<Line>`. `Line` has `text`, `style`, and
+`skip_copy`. `LineStyle` is Normal, Error, Folder, Prompt, Zap, CliMessage,
+Peek. The UI maps style to color. The UI never inspects line text to guess
+what a line is — that's what the styles are for. If you add a command,
+decide per line what it means.
 
 Colors: Normal white, Error red, Folder yellow, Prompt dim green, Zap cyan,
-CliMessage gray.
+CliMessage gray, Peek muted violet (with a thin bar down the left edge).
+
+`skip_copy` is set by the peek commands (`head`, `tail`, `wc`, `last`). A
+line with `skip_copy = true` is left out of `copy` but included in
+`copy all`. Peek commands set it on their own prompt line and every output
+line, so a paste of the scrollback to an AI doesn't include the file being
+inspected.
+
+## Reading files and the last change
+
+`head`, `tail`, `wc` behave like their GNU counterparts (`-n N`, `-nN`,
+`-N`, `-l -w -c`). Output is violet with a bar, and goes through the skip
+rule above.
+
+`last [path]` shows the last change zap made to a file, diffed against the
+file as it is now. With no argument, the most recently changed file. Records
+live in memory in zapgui (module `last_change`), one per path, capped at
+200, dropped oldest-first. A file too big or binary is recorded as a size
+only, and `last` reports that. Only changes made since zapgui started are
+known.
+
+## The run verb
+
+`run <file> [args]` runs one file. It never runs a command found on PATH.
+The file is resolved against zapcli's cwd, canonicalized, and must be a
+regular file. If it has the executable bit it runs directly; if not but it
+ends in `.sh` it runs under `bash`; anything else is refused.
+
+Before running, zapgui reads the file and looks up a trust entry keyed by
+(canonical path, exact args). If the file's SHA-256 matches the stored one,
+it runs without a prompt. Otherwise the EXECUTE REQUEST window opens with
+a diff from the old approved text, or the full file on first use. Confirm
+stores the entry and runs. Deny cancels with a clipboard sentence and a
+popup. The file is re-read after confirm; if it changed while the window
+was up, it refuses.
+
+The environment matches `cargo` (colour off, progress bar on, `TERM=xterm`).
+A script that calls cargo shows cargo's bar in the pane. `stream_run.rs` is
+the shared loop both verbs use.
+
+## Rename-aware trust
+
+A trust entry means: this exact content, at this path, with these args, was
+approved. A rename through a confirmed `mv` step re-keys every entry whose
+path was the source, keeping the same sha and text. At the next `run`, if
+the content is unchanged, no prompt. If the content changed since approval,
+the review shows a diff from the old approved text.
+
+A `rm` step drops the entries for that path. Recreating a file at the same
+path is new and needs a full review. A chain with any `rm` or `mv` skips
+the surface content refresh — moved content never appeared as a diff, so
+nothing is auto-trusted. Chains without `rm` or `mv` keep the old behaviour
+of refreshing the cargo surface for files the chain wrote.
+
+The RENAME REQUEST caption adds a `· trusted for running` note when the
+source file is a run target or a file in a trusted cargo surface.
+
+## rm, mv, mkdir
+
+`rm`, `mv`, `mkdir` are chain steps. They have no marker body:
+
+    rm <path> [<path>...]
+    mv <from> <to>
+    mkdir [-p] <path> [<path>...]
+
+`rm` works on one text file at a time, and only ones it can keep an undo
+copy of. It refuses directories. `mv` never overwrites: to replace a file,
+`rm` it first in the same chain. `mkdir` accepts `-p` and always creates
+parents.
+
+A chain with any `rm` or `mv` step always goes to review, even inside a
+whitelisted folder. The DELETE REQUEST or RENAME REQUEST banner is drawn
+above the caption. Confirm refuses to apply a chain if an `rm` or `mv` step
+was never shown at least once; it jumps to the first such step and says so.
+Deny once and the guard is satisfied for that step.
 
 ## The Ctrl+C problem
 
@@ -181,6 +293,15 @@ work around this, zapcli's `raw_input_hook` strips both the Key(C) event and
 any `Event::Copy` before egui processes them. It reads modifiers from the Key
 event when available and falls back to ClearInput when only `Event::Copy` came
 through. The `copy` command is the reliable way to copy everything.
+
+## The input line
+
+The input is an `egui::TextEdit` (multiline, one row tall, frame off). It
+gives Ctrl+Z, Ctrl+Y, selection, Ctrl+A, cut and click-to-place cursor
+without extra code. Plain Enter submits; Shift+Enter inserts a newline; Tab
+is stripped in `raw_input_hook` so it can't move focus to a pane button.
+Focus is requested at most once per frame and only when nothing else holds
+it — requesting focus every frame spins the render loop.
 
 ## Where files go
 
@@ -199,10 +320,33 @@ zapgui's `every_page_ever/src/ReusableComponents/` — close_button, glass_butto
 diff_viewer. Each component has a `mod.rs` and `ui.rs`.
 
 zapcli's `app_core/src/command_router/` — dispatch, plus `core_commands/<name>.rs`
-per verb.
+per verb. `core_commands/chain.rs` forwards create, replace, overwrite, rm,
+mv, and mkdir; the cargo and run verbs live inline in `mod.rs` because they
+open streaming sessions.
 
-zapcli's `app_core/src/general_util/` — things that aren't about commands:
-path_parsing, socket.
+`zapcli/app_core/src/general_util/socket.rs` — the framed client: `open` for
+plain requests, `open_cargo` for a streaming run. Connect and auto-launch
+for a run happen on the reader thread, so a slow launch never blocks the UI.
+
+`zap/cli/app/src/egui_setup/drawing_requirements.rs` — the terminal UI, the
+stream pane, `raw_input_hook` for Ctrl+C/Ctrl+Shift+C.
+
+`zapcli/app_core/src/general_util/socket.rs` — `open` for plain requests,
+`open_cargo` and `open_run` for streaming sessions. Connect and auto-launch
+for a streaming request happen on the reader thread, so a slow launch never
+blocks the UI.
+
+`zapgui/app_core/src/last_change.rs` — the in-memory record of the last
+change per file.
+
+`zapgui/app_core/src/run_trust.rs` — run-target trust entries, one per
+(canonical path, exact args), stored under `~/.config/zap/run_trust/`.
+
+`zapgui/app_core/src/terminal_router/stream_run.rs` — the shared process
+loop both cargo and run use.
+
+`zapgui/app_core/src/terminal_router/run_file.rs` — the run verb's server
+side.
 
 zapcli's `app_core/src/shortcuts/` — one file per shortcut, plus mod.rs to
 dispatch.
@@ -226,7 +370,12 @@ verbatim input (not `trimmed`) and send it as `chain <cwd>\n<block>`. See
 
 `~/ProgStuff/egui/zap/build_both.sh`. Builds and installs `zapgui`, `zapcli`,
 `zap-settings`, and the `zap` wrapper (`~/.local/bin/zap`, a bash script that
-execs `zapcli`).
+execs `zapcli`). It also kills a running zapgui and starts a fresh hidden
+one, so a rebuild takes effect immediately.
+
+`zap_wire/` is a small crate both binaries depend on: the framed-message
+types and the cargo allow-list. It lives beside `zapgui/` and `zapcli/` as
+a sibling workspace.
 
 ## Socket path
 

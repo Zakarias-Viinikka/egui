@@ -9,6 +9,8 @@ pub enum Action {
     ClearInput,
     /// Copy the entire scrollback to the clipboard. Same as the `copy` command.
     CopyAll,
+    /// A run is in progress; send a cancel frame on its connection.
+    CancelStream,
 }
 
 /// Ask each shortcut module whether the current frame's input matches it.

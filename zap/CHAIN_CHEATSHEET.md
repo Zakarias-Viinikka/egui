@@ -1,18 +1,39 @@
-# zap chains: cheat sheet
+# zap cheat sheet
 
-Paste this into any AI chat so it emits chains that zapcli accepts.
+Paste this into any AI chat so it emits commands zapcli accepts.
 
-## What a chain is
+## Commands zapcli understands
 
-A chain is one paste into zapcli. It contains one or more commands, each
-introduced by a header line, with the file content between marker lines.
-zapcli forwards the whole block to zapgui, which either applies it (if all
-files are whitelisted) or shows a diff to review.
+`ls`, `cd`, `cat` (also copies to clipboard), `s`/`settings`, `copy`,
+`copy all`, `cls`/`clear`, `help`, `exit`/`quit`.
 
-Nothing in a chain is interpreted by a shell. Backticks, `$`, quotes and
-heredoc markers are all literal.
+`head`, `tail`, `wc` — read part of a file. Output is violet and is not
+included in `copy` (but is included in `copy all`).
 
-## The three verbs
+`last [path]` — show the last change zap made to a file.
+
+`whitelist` opens zapgui's menu of auto-apply folders.
+
+`zap <text>` sends a line to zapgui.
+
+`cargo <args>` runs cargo in the current folder and streams its output into
+the bottom pane. Allowed subcommands: build, check, run, test, bench, clippy,
+doc, clean, tree, version, the short forms b/c/d/r/t, and fmt only with
+`--check`. Refused: install, publish, and the rest of cargo's write verbs;
+`--config`, `--manifest-path`, `--target-dir`, `-Z...`, and any toolchain
+other than stable/beta/nightly. An AI cannot start a run — only the human,
+from zapcli's prompt, on a single line.
+
+`create`, `replace`, `overwrite`, `rm`, `mv`, `mkdir` — see "Chains" below.
+
+Paths: absolute, or `~/`, or relative to zapcli's current folder. No shell
+expansion — `$VAR` is five literal characters.
+
+## Chains
+
+A chain is one paste into zapcli. One or more commands.
+
+create, replace and overwrite have content between markers:
 
     create <path>
     @new
@@ -31,41 +52,41 @@ heredoc markers are all literal.
     <full new file content>
     @end
 
+rm, mv and mkdir are one line, no body:
+
+    rm <path> [<path>...]
+    mv <from> <to>
+    mkdir [-p] <path> [<path>...]
+
 `replace` requires the old text to occur exactly once. `xN` means exactly N
-times; all N are replaced. `create` fails if the file already exists;
-`overwrite` fails if it does not. `create` adds a trailing newline if the
-content does not end with one. Missing parent folders are made when the
-chain is applied.
+times; all N are replaced. `create` fails if the file exists; `overwrite`
+fails if it does not. `create` adds a trailing newline if the content does
+not end with one. Missing parent folders are made when the chain is applied.
 
-## Paths
+`rm` works on text files only, and only ones it can keep an undo copy of.
+It refuses directories. `mv` never overwrites: to replace a file, `rm` it
+first in the same chain. `mkdir` accepts `-p` and always creates parents.
 
-Absolute, or starting with `~/`, or relative to zapcli's current directory.
-Everything after the verb up to end-of-line is the path, so spaces are fine.
-No `$VAR` — zapcli does not expand shell variables.
+Nothing in a chain is interpreted. Backticks, `$`, quotes, and heredoc
+markers are all literal.
 
-## Markers
+Markers are whole lines starting in column 0, trailing spaces ignored. The
+line break right before a marker is not part of the text. If the content
+itself contains a line like `@end`, use one extra `@` on every marker in
+that command (`@@new`, `@@old`, `@@end`); the parser reads the `@` count
+from the first marker.
 
-Markers are whole lines starting in column 0. Trailing spaces on the marker
-line are ignored. The line break right before a marker is not part of the
-text. If your content itself contains a line like `@end`, use one extra `@`
-on every marker in that command (`@@new`, `@@old`, `@@end`); the parser reads
-the `@` count from the first marker and only lines with exactly that count
-count as markers.
+Rules of thumb: keep the old text small and unique. One chain can touch many
+files, and a step can target a file an earlier step made. All-or-nothing: if
+any step cannot be done, nothing is written.
 
-## Rules of thumb
+A chain with any `rm` or `mv` step always needs his review, even inside a
+whitelisted folder. Whitelisted folders auto-apply only create, replace,
+overwrite and mkdir.
 
-- Keep the old text small and unique. `fn old() {}` is safer than a whole
-  function body if the function name is distinctive.
-- One chain can touch many files, and a replace can target a file an earlier
-  create made. Steps see each other's results.
-- All-or-nothing: if any step cannot be done, nothing is written.
-- Chains are applied as a whole, so put dependent steps in order.
+## What you get back
 
-## Reading the pasted-back report
-
-After Confirm, Deny, a failure, or a whitelist auto-apply, the clipboard
-holds a plain sentence report. It names each file and what happened. A
-failure says `nothing was written` and gives the reason; anything after that
-is context for what the chain would have done.
-
-Popups carry short text only, so they are not the report.
+Every decision — a step denied, Confirm, a failure, a whitelist auto-apply —
+puts a plain sentence report on the clipboard and shows a short popup. A run
+summary from `cargo` is appended under the last report if nothing else was
+copied in between. One paste gives you the whole picture.

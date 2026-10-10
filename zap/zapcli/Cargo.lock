@@ -201,6 +201,7 @@ dependencies = [
  "eframe",
  "every_page_ever",
  "image",
+ "zap_wire",
 ]
 
 [[package]]
@@ -208,6 +209,7 @@ name = "app_core"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "zap_wire",
 ]
 
 [[package]]
@@ -4167,6 +4169,10 @@ dependencies = [
  "syn 2.0.119",
  "synstructure 0.13.2",
 ]
+
+[[package]]
+name = "zap_wire"
+version = "0.1.0"
 
 [[package]]
 name = "zbus"

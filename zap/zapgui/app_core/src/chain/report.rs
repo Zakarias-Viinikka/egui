@@ -1,3 +1,4 @@
+
 use super::play::{AppliedStep, Chain};
 use super::step::Verb;
 
@@ -64,6 +65,16 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
             truncate(&applied.step.new_text, 60),
             path
         ),
+        Verb::Remove => format!("{}deleted {}", prefix, path),
+        Verb::Move => {
+            let dest = applied
+                .dest
+                .as_ref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            format!("{}moved {} to {}", prefix, path, dest)
+        }
+        Verb::Mkdir => format!("{}created folder {}", prefix, path),
     }
 }
 
