@@ -12,6 +12,7 @@
 //! by the plan; only the frame type lives here.
 
 pub mod cargo_gate;
+pub mod chain;
 pub mod linefold;
 
 use std::io::{self, Read, Write};
@@ -32,6 +33,10 @@ pub enum FrameKind {
     CargoRun = 0x03,
     /// zapcli -> zapgui. Run a file. Text is `<cwd>\0<arg1>\0...`.
     RunFile = 0x04,
+    /// zapcli -> zapgui. A chain that ends in a run step. Text is
+    /// `<cwd>\n<block>`. The connection stays open through review, the
+    /// writes, and the run.
+    ChainRun = 0x05,
     /// zapgui -> zapcli. The single final answer for a plain request.
     Reply = 0x10,
     /// zapgui -> zapcli. One line for the main scrollback.
@@ -55,6 +60,7 @@ impl FrameKind {
             0x02 => Self::Cancel,
             0x03 => Self::CargoRun,
             0x04 => Self::RunFile,
+            0x05 => Self::ChainRun,
             0x10 => Self::Reply,
             0x11 => Self::Notice,
             0x12 => Self::StreamOpen,
@@ -97,6 +103,11 @@ impl Frame {
         decode_cwd_and_args(text)
     }
     /// Encode a run-file request. Same shape as cargo_run.
+    /// Encode a chain-run request. Text is `<cwd>\n<block>`, the same
+    /// payload shape as `request`.
+    pub fn chain_run(payload: impl Into<String>) -> Self {
+        Self { kind: FrameKind::ChainRun, text: payload.into() }
+    }
     pub fn run_file(cwd: &str, args: &[String]) -> Result<Self, String> {
         let mut parts = vec![cwd.to_string()];
         parts.extend(args.iter().cloned());
@@ -191,6 +202,7 @@ mod tests {
         let frames = [
             Frame::request("hello"),
             Frame::cancel(),
+            Frame::chain_run("payload"),
             Frame::reply("world"),
             Frame::notice("one line"),
             Frame::stream_open("cargo run"),

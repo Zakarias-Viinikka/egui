@@ -71,16 +71,66 @@ pub fn glass_button_ui(
     response.on_hover_text(label).clicked()
 }
 
+/// A small glass-style pill: a rounded rectangle with a label, sized to
+/// its text. Used for the full-file toggle and any other capsule control.
+pub fn pill_ui(
+    ui: &mut egui::Ui,
+    center: egui::Pos2,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    active: bool,
+) -> bool {
+    let font = egui::FontId::monospace(12.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font, egui::Color32::WHITE);
+    let pad_x = 10.0;
+    let pad_y = 4.0;
+    let size = egui::vec2(
+        galley.size().x + pad_x * 2.0,
+        galley.size().y + pad_y * 2.0,
+    );
+    let rect = egui::Rect::from_center_size(center, size);
+    let id = egui::Id::new("glass_pill").with(id_salt);
+    let response = ui.interact(rect, id, egui::Sense::click());
+
+    let (fill, border) = if active {
+        (FILL_SELECTED, BORDER_SELECTED)
+    } else if response.hovered() {
+        (FILL_HOVER, BORDER_HOVER)
+    } else {
+        (FILL, BORDER)
+    };
+
+    ui.painter().rect(
+        rect,
+        size.y / 2.0,
+        fill,
+        egui::Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        rect.center() - galley.size() / 2.0,
+        galley,
+        egui::Color32::from_rgb(220, 220, 220),
+    );
+
+    response.clicked()
+}
+
 const FILL_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(60, 60, 60, 200);
 const BORDER_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(170, 170, 170, 200);
-const FILL_DENIED: egui::Color32 = egui::Color32::from_rgba_premultiplied(8, 8, 8, 70);
-const BORDER_DENIED: egui::Color32 = egui::Color32::from_rgba_premultiplied(40, 40, 40, 40);
+const FILL_DENIED: egui::Color32 = egui::Color32::from_rgba_premultiplied(91, 35, 35, 110);
+const BORDER_DENIED: egui::Color32 = egui::Color32::from_rgba_premultiplied(181, 69, 69, 220);
+const FILL_DENIED_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(110, 42, 42, 130);
+const BORDER_DENIED_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(230, 88, 88, 255);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockState {
     Normal,
     Selected,
     Denied,
+    DeniedSelected,
 }
 
 pub fn glass_step_block_ui(
@@ -97,6 +147,7 @@ pub fn glass_step_block_ui(
         BlockState::Normal => (FILL, BORDER),
         BlockState::Selected => (FILL_SELECTED, BORDER_SELECTED),
         BlockState::Denied => (FILL_DENIED, BORDER_DENIED),
+        BlockState::DeniedSelected => (FILL_DENIED_SELECTED, BORDER_DENIED_SELECTED),
     };
 
     ui.painter().rect(

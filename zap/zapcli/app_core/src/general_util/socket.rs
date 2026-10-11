@@ -173,6 +173,62 @@ pub fn open_cargo(cwd: &std::path::Path, args: &[String]) -> Result<Session, Str
     })
 }
 
+/// Open a connection and send a ChainRun frame. `payload` is
+/// `<cwd>\n<block>`, the same shape a plain chain request uses.
+pub fn open_chain_run(payload: &str) -> Result<Session, String> {
+    let frame = Frame::chain_run(payload.to_string());
+    let writer: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel();
+    let writer_for_thread = writer.clone();
+    let cancel_for_thread = cancel_flag.clone();
+
+    let _reader = thread::spawn(move || {
+        let mut stream = match connect_or_launch() {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = tx.send(Frame::reply(e));
+                return;
+            }
+        };
+        if let Err(e) = write_frame(&mut stream, &frame) {
+            let _ = tx.send(Frame::reply(format!("zap: write failed: {e}")));
+            return;
+        }
+        if let Ok(clone) = stream.try_clone() {
+            if let Ok(mut g) = writer_for_thread.lock() {
+                *g = Some(clone);
+            }
+        }
+        if cancel_for_thread.load(Ordering::SeqCst) {
+            let _ = write_frame(&mut stream, &Frame::cancel());
+        }
+        loop {
+            match read_frame(&mut stream) {
+                Ok(f) => {
+                    if tx.send(f).is_err() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => {
+                    let _ = tx.send(Frame::reply(format!(
+                        "zap: bad frame ({e}); is zapgui up to date?"
+                    )));
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(Session {
+        writer,
+        cancel_flag,
+        frames: rx,
+        _reader,
+    })
+}
+
 /// Open a connection and send a RunFile frame. Same shape as open_cargo.
 pub fn open_run(cwd: &std::path::Path, args: &[String]) -> Result<Session, String> {
     let frame = Frame::run_file(&cwd.display().to_string(), args)?;

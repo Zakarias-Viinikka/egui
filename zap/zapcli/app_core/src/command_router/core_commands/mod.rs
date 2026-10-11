@@ -5,7 +5,6 @@ pub mod head;
 pub mod help;
 pub mod last;
 pub mod ls;
-pub mod overwrite;
 pub mod settings;
 pub mod tail;
 pub mod wc;

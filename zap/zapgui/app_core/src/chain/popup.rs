@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const HOST_ID: &str = "zapgui";
-const POPUP_W: f32 = 360.0;
-const POPUP_H: f32 = 100.0;
+const POPUP_W: f32 = 260.0;
+const POPUP_H: f32 = 60.0;
 
 pub fn show(text: &str) {
     show_with_size(text, None);
@@ -18,7 +17,6 @@ pub fn show_with_size(text: &str, screen_size: Option<(f32, f32)>) {
         .arg(text)
         .arg(x.to_string())
         .arg(y.to_string())
-        .arg(HOST_ID)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -32,7 +30,7 @@ pub fn show_with_size(text: &str, screen_size: Option<(f32, f32)>) {
 
 fn find_binary() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let local = PathBuf::from(&home).join(".local/bin/popup_demo_app");
+    let local = PathBuf::from(&home).join(".local/bin/fading_popup");
     if local.exists() {
         return Some(local);
     }
@@ -41,7 +39,7 @@ fn find_binary() -> Option<PathBuf> {
             if dir.is_empty() {
                 continue;
             }
-            let candidate = PathBuf::from(dir).join("popup_demo_app");
+            let candidate = PathBuf::from(dir).join("fading_popup");
             if candidate.exists() {
                 return Some(candidate);
             }

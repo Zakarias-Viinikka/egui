@@ -19,3 +19,25 @@
 - file extensions should be an explicit allowlist.
 - every allowed format needs an explicit statement of what each verb
   does to it.
+- a chain that mixes auto-apply-safe steps with one rm/mv should only
+  ask for approval on the rm/mv step, not the whole chain. Today any
+  rm or mv forces the entire block into review, so a single delete on
+  an otherwise whitelisted edit makes you look at every step.
+- a chmod step for chains. `chmod +x <path>` as a one-line step, so an
+  AI can make a script runnable without leaving zap. It should always
+  go to review, like rm and mv, and the review window should show a
+  distinct banner (something like "EXEC REQUEST"), since granting the
+  executable bit is a security-relevant change. The whole point is the
+  human gets a prompt to allow a file to be made executable before it
+  happens.
+
+- replace failures should be smart. When a replace's old text isn't found,
+  instead of just saying "expected 1 occurrence, found 0", the report
+  should try to locate the nearest matching lines in the file and include
+  them in the clipboard sentence. Like: "expected 1 occurrence of
+  `fn foo() {`, found 0. Closest match at line 47: `fn foo() -> bool {`."
+  The similarity metric already exists in text_diff/similarity.rs; reuse
+  it. The goal is that a paste-back to the AI says "here's what you did
+  wrong" without a follow-up cat. Same treatment for create-target-exists
+  and overwrite-file-missing if a useful hint is cheap. A "smart system"
+  that figures out the mistake from similarity, not a generic error.

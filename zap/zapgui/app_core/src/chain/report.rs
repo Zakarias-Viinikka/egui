@@ -58,6 +58,7 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
             )
         }
         Verb::Overwrite => format!("{}overwrote {}", prefix, path),
+        Verb::Append => format!("{}appended to {}", prefix, path),
         Verb::Replace => format!(
             "{}replaced `{}` with `{}` in {}",
             prefix,
@@ -75,6 +76,24 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
             format!("{}moved {} to {}", prefix, path, dest)
         }
         Verb::Mkdir => format!("{}created folder {}", prefix, path),
+        Verb::Cargo => {
+            let args = applied.step.args.join(" ");
+            let cwd = applied.step.cwd.as_deref().unwrap_or("");
+            if would_have {
+                format!("would have run cargo {} in {}", args, cwd)
+            } else {
+                format!("will run cargo {} in {}", args, cwd)
+            }
+        }
+        Verb::Run => {
+            let file = applied.step.args.first().cloned().unwrap_or_default();
+            let cwd = applied.step.cwd.as_deref().unwrap_or("");
+            if would_have {
+                format!("would have run {} in {}", file, cwd)
+            } else {
+                format!("will run {} in {}", file, cwd)
+            }
+        }
     }
 }
 

@@ -23,6 +23,10 @@ exec "$HOME/.local/bin/zapcli" "$@"
 WRAP
 chmod +x "$HOME/.local/bin/zap"
 
+cd "$HOME/ProgStuff/egui/reusable_components"
+cargo build --release -p fading_popup
+install -m 755 target/release/fading_popup "$HOME/.local/bin/fading_popup"
+
 pkill -x zapgui 2>/dev/null || true
 nohup "$HOME/.local/bin/zapgui" --hidden >/dev/null 2>&1 &
 

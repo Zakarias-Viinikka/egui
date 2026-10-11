@@ -1,9 +1,10 @@
 use eframe::egui;
+use egui::text::{LayoutJob, TextWrapping};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use app_core::chain::{popup, report, writer, Chain, StepStatus, Verb};
+use app_core::chain::{popup, report, writer, Chain, ChainOutcome, StepStatus, Verb};
 use app_core::terminal_router::surface_review::SurfaceReview;
 use every_page_ever::ReusableComponents::close_button::ui as close_button;
 use every_page_ever::ReusableComponents::diff_viewer::ui as diff_viewer;
@@ -18,6 +19,8 @@ const CAPTION_DENIED_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80)
 const SURFACE_BANNER_BG: egui::Color32 = egui::Color32::from_rgb(60, 42, 12);
 const SURFACE_BANNER_BORDER: egui::Color32 = egui::Color32::from_rgb(230, 160, 40);
 const SURFACE_BANNER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 200, 110);
+const CAPTION_MIN_H: f32 = 28.0;
+const PILL_RESERVE: f32 = 110.0;
 
 use app_core::terminal_router::surface_review::BannerKind;
 
@@ -85,6 +88,112 @@ fn draw_banner(ui: &egui::Ui, rect: egui::Rect, kind: BannerKind) {
     );
 }
 
+/// Rects shared by the chain page and the surface review page. Built once
+/// per frame so the caption can grow when a path wraps.
+struct PageLayout {
+    banner: Option<egui::Rect>,
+    caption: egui::Rect,
+    viewer: egui::Rect,
+    button_y: f32,
+    button_size: f32,
+    block_size: f32,
+    block_col_x: f32,
+    gap: f32,
+    close_center: egui::Pos2,
+    error_rect: egui::Rect,
+    pill_center: egui::Pos2,
+}
+
+impl PageLayout {
+    fn new(screen: egui::Rect, has_banner: bool, has_blocks: bool, caption_h: f32) -> Self {
+        let margin = 40.0;
+        let banner_h = 52.0;
+        let buttons_h = 64.0;
+        let blocks_col_w: f32 = 56.0;
+        let gap = 12.0;
+        let button_size = 44.0;
+        let block_size = 32.0;
+
+        let right_pad = if has_blocks { blocks_col_w + gap } else { 0.0 };
+        let banner_offset = if has_banner { banner_h + gap } else { 0.0 };
+
+        let banner = if has_banner {
+            Some(egui::Rect::from_min_max(
+                egui::pos2(screen.left() + margin, screen.top() + margin),
+                egui::pos2(screen.right() - margin, screen.top() + margin + banner_h),
+            ))
+        } else {
+            None
+        };
+
+        let caption_top = screen.top() + margin + banner_offset;
+        let caption = egui::Rect::from_min_max(
+            egui::pos2(screen.left() + margin, caption_top),
+            egui::pos2(screen.right() - margin - right_pad, caption_top + caption_h),
+        );
+
+        let viewer = egui::Rect::from_min_max(
+            egui::pos2(screen.left() + margin, caption_top + caption_h + gap),
+            egui::pos2(
+                screen.right() - margin - right_pad,
+                screen.bottom() - margin - buttons_h,
+            ),
+        );
+
+        let block_col_x = viewer.right() + gap + blocks_col_w / 2.0;
+        let button_y = screen.bottom() - margin - buttons_h / 2.0;
+        let close_center = egui::pos2(screen.right() - 20.0, screen.top() + 20.0);
+        let error_rect = egui::Rect::from_min_max(
+            egui::pos2(screen.left() + margin, screen.bottom() - 46.0),
+            egui::pos2(screen.right() - margin, screen.bottom() - 16.0),
+        );
+        let pill_center = egui::pos2(caption.right() - 50.0, caption.center().y);
+
+        Self {
+            banner,
+            caption,
+            viewer,
+            button_y,
+            button_size,
+            block_size,
+            block_col_x,
+            gap,
+            close_center,
+            error_rect,
+            pill_center,
+        }
+    }
+}
+
+fn caption_wrap_width(screen: egui::Rect, has_blocks: bool) -> f32 {
+    let margin = 40.0;
+    let blocks_col_w = 56.0;
+    let gap = 12.0;
+    let right_pad = if has_blocks { blocks_col_w + gap } else { 0.0 };
+    ((screen.right() - margin - right_pad) - (screen.left() + margin) - PILL_RESERVE).max(120.0)
+}
+
+fn layout_caption(
+    ui: &egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    wrap_width: f32,
+) -> Arc<egui::Galley> {
+    let mut job = LayoutJob::single_section(
+        text.to_string(),
+        egui::TextFormat {
+            font_id: egui::FontId::monospace(13.0),
+            color,
+            ..Default::default()
+        },
+    );
+    job.wrap = TextWrapping {
+        max_width: wrap_width,
+        ..Default::default()
+    };
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
 pub struct NecessaryStructForEgui {
     shown: Option<Arc<Chain>>,
     shown_at: Instant,
@@ -99,6 +208,12 @@ pub struct NecessaryStructForEgui {
     menu_folders: Vec<PathBuf>,
     menu_draft: String,
     menu_error: Option<String>,
+    /// When true, the viewer shows every line of the step instead of the
+    /// snippet around the change.
+    full_file: bool,
+    /// Set for one frame when the pill is clicked, so the viewer scrolls
+    /// to the first change after switching modes.
+    scroll_to_change_pending: bool,
 }
 
 impl Default for NecessaryStructForEgui {
@@ -117,6 +232,8 @@ impl Default for NecessaryStructForEgui {
             menu_folders: Vec::new(),
             menu_draft: String::new(),
             menu_error: None,
+            full_file: false,
+            scroll_to_change_pending: false,
         }
     }
 }
@@ -138,9 +255,6 @@ impl eframe::App for NecessaryStructForEgui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if app_core::terminal_router::take_menu_request() {
             self.open_menu();
-            // Even if the menu was already open, make sure the window is
-            // visible and raised. wmctrl on a hidden window does nothing,
-            // so Visible(true) has to go first.
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(true));
             app_core::terminal_router::route_requests::focus_window();
@@ -153,8 +267,17 @@ impl eframe::App for NecessaryStructForEgui {
             _ => true,
         };
         if surface_changed {
+            let was_shown = self.shown_surface.is_some();
+            let now_none = current_surface.is_none();
             self.shown_surface = current_surface;
             self.surface_step = 0;
+            self.full_file = false;
+            if was_shown && now_none {
+                // The review was withdrawn by its own handler (cancel,
+                // timeout) without the UI having cleared it. Hide.
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
             if self.shown_surface.is_some() {
                 self.menu_open = false;
                 ui.ctx()
@@ -170,10 +293,19 @@ impl eframe::App for NecessaryStructForEgui {
             _ => true,
         };
         if changed {
+            // If the slot went from Some to None without the UI having
+            // cleared it, the chain-run handler withdrew it. Hide.
+            let was_shown = self.shown.is_some();
+            let now_none = current.is_none();
             self.shown = current;
+            if was_shown && now_none {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
             self.shown_at = Instant::now();
             self.error_line = None;
             self.shown_step = 0;
+            self.full_file = false;
             self.denied = self
                 .shown
                 .as_ref()
@@ -229,19 +361,9 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             return;
         }
 
-        let margin = 40.0;
-        let banner_h = 52.0;
-        let caption_h = 28.0;
-        let buttons_h = 64.0;
-        let blocks_col_w = 56.0;
-        let gap = 12.0;
-        let button_size = 44.0;
-        let block_size = 32.0;
-
         let chain = self.shown.clone();
         let step_count = chain.as_ref().map(|c| c.steps.len()).unwrap_or(0);
         let show_blocks = step_count > 1;
-        let right_pad = if show_blocks { blocks_col_w + gap } else { 0.0 };
 
         let banner_kind = chain
             .as_ref()
@@ -249,43 +371,25 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             .and_then(|s| match s.step.verb {
                 Verb::Remove => Some(BannerKind::Delete),
                 Verb::Move => Some(BannerKind::Rename),
+                Verb::Cargo => Some(BannerKind::CargoRun),
+                Verb::Run => Some(BannerKind::Execute),
                 _ => None,
             });
-        let banner_offset = if banner_kind.is_some() { banner_h + gap } else { 0.0 };
+        let has_banner = banner_kind.is_some();
 
-        if let Some(kind) = banner_kind {
-            let banner_rect = egui::Rect::from_min_max(
-                egui::pos2(screen.left() + margin, screen.top() + margin),
-                egui::pos2(screen.right() - margin, screen.top() + margin + banner_h),
-            );
-            draw_banner(ui, banner_rect, kind);
-        }
+        let wrap_width = caption_wrap_width(screen, show_blocks);
 
-        let caption_top = screen.top() + margin + banner_offset;
-        let caption_rect = egui::Rect::from_min_max(
-            egui::pos2(screen.left() + margin, caption_top),
-            egui::pos2(screen.right() - margin, caption_top + caption_h),
-        );
-
-        let viewer_rect = egui::Rect::from_min_max(
-            egui::pos2(
-                screen.left() + margin,
-                caption_top + caption_h + gap,
-            ),
-            egui::pos2(
-                screen.right() - margin - right_pad,
-                screen.bottom() - margin - buttons_h,
-            ),
-        );
-
-        if let Some(c) = chain.as_ref() {
+        let (caption_galley, caption_color) = if let Some(c) = chain.as_ref() {
             if let Some(step) = c.steps.get(self.shown_step) {
                 let denied = self.denied.get(self.shown_step).copied().unwrap_or(false);
                 let verb = match step.step.verb {
                     Verb::Create => "create".to_string(),
                     Verb::Replace => "replace".to_string(),
                     Verb::Overwrite => "overwrite".to_string(),
+                    Verb::Append => "append".to_string(),
                     Verb::Remove => "delete".to_string(),
+                    Verb::Cargo => "cargo".to_string(),
+                    Verb::Run => "run".to_string(),
                     Verb::Move => {
                         let dest = step
                             .dest
@@ -303,45 +407,126 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 let n = self.shown_step + 1;
                 let m = step_count;
                 let text = if denied {
-                    format!("step {n} of {m} \u{00b7} {verb} {} \u{00b7} denied", step.path.display())
+                    format!(
+                        "step {n} of {m} \u{00b7} {verb} {} \u{00b7} denied",
+                        step.path.display()
+                    )
                 } else {
                     format!("step {n} of {m} \u{00b7} {verb} {}", step.path.display())
                 };
-                let color = if denied { CAPTION_DENIED_COLOR } else { CAPTION_COLOR };
-                ui.painter().text(
-                    egui::pos2(caption_rect.left(), caption_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    text,
-                    egui::FontId::monospace(13.0),
-                    color,
-                );
+                let color = if denied {
+                    CAPTION_DENIED_COLOR
+                } else {
+                    CAPTION_COLOR
+                };
+                let g = layout_caption(ui, &text, color, wrap_width);
+                (Some(g), color)
+            } else {
+                (None, CAPTION_COLOR)
+            }
+        } else {
+            (None, CAPTION_COLOR)
+        };
+
+        let measured_caption_h = caption_galley
+            .as_ref()
+            .map(|g| g.size().y)
+            .unwrap_or(CAPTION_MIN_H)
+            .max(CAPTION_MIN_H);
+
+        let layout = PageLayout::new(screen, has_banner, show_blocks, measured_caption_h);
+
+        if let (Some(kind), Some(banner_rect)) = (banner_kind, layout.banner) {
+            draw_banner(ui, banner_rect, kind);
+        }
+
+        if let Some(g) = caption_galley {
+            ui.painter()
+                .galley(layout.caption.left_top(), g, caption_color);
+        }
+
+        if chain.is_some() {
+            let label = if self.full_file {
+                "changes only"
+            } else {
+                "full file"
+            };
+            if glass_button::pill_ui(
+                ui,
+                layout.pill_center,
+                "full_file_toggle",
+                label,
+                self.full_file,
+            ) {
+                self.full_file = !self.full_file;
+                self.scroll_to_change_pending = true;
+                self.shown_at = Instant::now();
             }
         }
 
-        let empty_rows: Vec<app_core::text_diff::DiffRowProcessedForUi> = Vec::new();
-        let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = chain
+        let owned_blocks;
+        let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = if self.full_file {
+            if let Some(c) = chain.as_ref() {
+                if let Some(step) = c.steps.get(self.shown_step) {
+                    let before = step.before.as_deref().unwrap_or("");
+                    owned_blocks = app_core::text_diff::process(
+                        &app_core::text_diff::pair_lines_full(before, &step.after),
+                    );
+                    owned_blocks.as_slice()
+                } else {
+                    &[]
+                }
+            } else {
+                &[]
+            }
+        } else {
+            chain
+                .as_ref()
+                .and_then(|c| c.steps.get(self.shown_step))
+                .map(|s| s.rows.as_slice())
+                .unwrap_or(&[])
+        };
+
+        let move_spans: &[app_core::text_diff::MoveSpan] = chain
             .as_ref()
             .and_then(|c| c.steps.get(self.shown_step))
-            .map(|s| s.rows.as_slice())
-            .unwrap_or(&empty_rows);
-        diff_viewer::diff_viewer_ui_no_copy(ui, viewer_rect, blocks);
+            .map(|s| s.move_spans.as_slice())
+            .unwrap_or(&[]);
+
+        let scroll_once = self.scroll_to_change_pending;
+        self.scroll_to_change_pending = false;
+        diff_viewer::diff_viewer_ui_no_copy(
+            ui,
+            layout.viewer,
+            blocks,
+            diff_viewer::DiffViewerParams {
+                move_spans,
+                scroll_id: egui::Id::new(("diff_scroll", self.shown_step, self.full_file)),
+                scroll_to_change_once: scroll_once,
+            },
+        );
 
         let mut clicked_step: Option<usize> = None;
         if show_blocks {
-            let col_x = viewer_rect.right() + gap + blocks_col_w / 2.0;
-            let total = step_count as f32 * block_size
-                + (step_count.saturating_sub(1)) as f32 * gap;
-            let start_y = viewer_rect.center().y - total / 2.0 + block_size / 2.0;
+            let total = step_count as f32 * layout.block_size
+                + (step_count.saturating_sub(1)) as f32 * layout.gap;
+            let start_y = layout.viewer.center().y - total / 2.0 + layout.block_size / 2.0;
             for i in 0..step_count {
-                let state = if self.denied.get(i).copied().unwrap_or(false) {
-                    BlockState::Denied
-                } else if i == self.shown_step {
-                    BlockState::Selected
-                } else {
-                    BlockState::Normal
+                let denied = self.denied.get(i).copied().unwrap_or(false);
+                let shown = i == self.shown_step;
+                let state = match (denied, shown) {
+                    (true, true) => BlockState::DeniedSelected,
+                    (true, false) => BlockState::Denied,
+                    (false, true) => BlockState::Selected,
+                    (false, false) => BlockState::Normal,
                 };
-                let y = start_y + i as f32 * (block_size + gap);
-                if glass_button::glass_step_block_ui(ui, egui::pos2(col_x, y), i, state) {
+                let y = start_y + i as f32 * (layout.block_size + layout.gap);
+                if glass_button::glass_step_block_ui(
+                    ui,
+                    egui::pos2(layout.block_col_x, y),
+                    i,
+                    state,
+                ) {
                     clicked_step = Some(i);
                 }
             }
@@ -354,20 +539,14 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             *slot = true;
         }
 
-        let close_margin = 20.0;
-        let close_center = egui::pos2(screen.right() - close_margin, screen.top() + close_margin);
-        if close_button::close_button_ui(ui, close_center) {
+        if close_button::close_button_ui(ui, layout.close_center) {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         if let Some(line) = &self.error_line {
-            let rect = egui::Rect::from_min_max(
-                egui::pos2(screen.left() + margin, screen.bottom() - 46.0),
-                egui::pos2(screen.right() - margin, screen.bottom() - 16.0),
-            );
             ui.put(
-                rect,
+                layout.error_rect,
                 egui::Label::new(egui::RichText::new(line.as_str()).color(ERROR_COLOR)).wrap(),
             );
         }
@@ -376,12 +555,12 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         let mut confirmed = false;
         let mut denied_click = false;
         if chain.is_some() {
-            let total_w = 2.0 * button_size + gap;
-            let start_x = viewer_rect.center().x - total_w / 2.0 + button_size / 2.0;
-            let btn_y = screen.bottom() - margin - buttons_h / 2.0;
+            let total_w = 2.0 * layout.button_size + layout.gap;
+            let start_x =
+                layout.viewer.center().x - total_w / 2.0 + layout.button_size / 2.0;
             if glass_button::glass_button_ui(
                 ui,
-                egui::pos2(start_x, btn_y),
+                egui::pos2(start_x, layout.button_y),
                 0,
                 GlassIcon::Confirm,
             ) && click_ok
@@ -390,7 +569,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             }
             if glass_button::glass_button_ui(
                 ui,
-                egui::pos2(start_x + button_size + gap, btn_y),
+                egui::pos2(start_x + layout.button_size + layout.gap, layout.button_y),
                 1,
                 GlassIcon::Deny,
             ) && click_ok
@@ -430,6 +609,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                         let _ = app_core::clipboard::copy_to_clipboard(&rep);
                         popup::show("All denied");
                         app_core::terminal_router::clear_pending(&c);
+                        c.finish(ChainOutcome::AllDenied);
                         self.shown = None;
                         self.error_line = None;
                         ui.ctx()
@@ -442,17 +622,14 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         if confirmed {
             if let Some(c) = chain.clone() {
                 let wanted: Vec<bool> = self.denied.iter().map(|d| !*d).collect();
-                // A Remove or Move step the user never looked at blocks the
-                // whole confirm. Jump to it and say so.
-                let unvisited_destructive = c
-                    .steps
-                    .iter()
-                    .enumerate()
-                    .position(|(i, s)| {
-                        wanted.get(i).copied().unwrap_or(true)
-                            && matches!(s.step.verb, Verb::Remove | Verb::Move)
-                            && !self.visited.get(i).copied().unwrap_or(false)
-                    });
+                let unvisited_destructive = c.steps.iter().enumerate().position(|(i, s)| {
+                    wanted.get(i).copied().unwrap_or(true)
+                        && matches!(
+                            s.step.verb,
+                            Verb::Remove | Verb::Move | Verb::Cargo | Verb::Run
+                        )
+                        && !self.visited.get(i).copied().unwrap_or(false)
+                });
                 if let Some(i) = unvisited_destructive {
                     self.shown_step = i;
                     self.shown_at = Instant::now();
@@ -480,6 +657,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                         let applied = wanted.iter().filter(|w| **w).count();
                         popup::show(&format!("Applied {} step(s)", applied));
                         app_core::terminal_router::clear_pending(&c);
+                        c.finish(ChainOutcome::Applied(wanted.clone()));
                         self.shown = None;
                         self.error_line = None;
                         ui.ctx()
@@ -513,102 +691,135 @@ impl NecessaryStructForEgui {
             return;
         };
 
-        let margin = 40.0;
-        let banner_h = 52.0;
-        let caption_h = 28.0;
-        let buttons_h = 64.0;
-        let blocks_col_w = 56.0;
-        let gap = 12.0;
-        let button_size = 44.0;
-        let block_size = 32.0;
-
         let file_count = review.files.len();
         let show_blocks = file_count > 1;
-        let right_pad = if show_blocks { blocks_col_w + gap } else { 0.0 };
 
-        let banner_rect = egui::Rect::from_min_max(
-            egui::pos2(screen.left() + margin, screen.top() + margin),
-            egui::pos2(screen.right() - margin, screen.top() + margin + banner_h),
-        );
-        draw_banner(ui, banner_rect, review.kind);
+        let wrap_width = caption_wrap_width(screen, show_blocks);
 
-        let caption_top = screen.top() + margin + banner_h + gap;
-        let caption_rect = egui::Rect::from_min_max(
-            egui::pos2(screen.left() + margin, caption_top),
-            egui::pos2(screen.right() - margin, caption_top + caption_h),
-        );
-
-        let viewer_rect = egui::Rect::from_min_max(
-            egui::pos2(
-                screen.left() + margin,
-                caption_top + caption_h + gap,
-            ),
-            egui::pos2(
-                screen.right() - margin - right_pad,
-                screen.bottom() - margin - buttons_h,
-            ),
-        );
-
-        if let Some(f) = review.files.get(self.surface_step) {
+        let (caption_galley, caption_color) = if let Some(f) = review.files.get(self.surface_step)
+        {
             let n = self.surface_step + 1;
             let text = format!(
                 "{} \u{00b7} {n} of {file_count} \u{00b7} {}",
                 review.caption,
                 f.path.display()
             );
-            ui.painter().text(
-                egui::pos2(caption_rect.left(), caption_rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                text,
-                egui::FontId::monospace(12.0),
-                CAPTION_COLOR,
-            );
+            let g = layout_caption(ui, &text, CAPTION_COLOR, wrap_width);
+            (Some(g), CAPTION_COLOR)
+        } else {
+            (None, CAPTION_COLOR)
+        };
+
+        let measured_caption_h = caption_galley
+            .as_ref()
+            .map(|g| g.size().y)
+            .unwrap_or(CAPTION_MIN_H)
+            .max(CAPTION_MIN_H);
+
+        let layout = PageLayout::new(screen, true, show_blocks, measured_caption_h);
+
+        if let Some(banner_rect) = layout.banner {
+            draw_banner(ui, banner_rect, review.kind);
         }
 
-        let empty_rows: Vec<app_core::text_diff::DiffRowProcessedForUi> = Vec::new();
-        let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = review
-            .files
-            .get(self.surface_step)
-            .map(|f| f.rows.as_slice())
-            .unwrap_or(&empty_rows);
-        diff_viewer::diff_viewer_ui_no_copy(ui, viewer_rect, blocks);
+        if let Some(g) = caption_galley {
+            ui.painter()
+                .galley(layout.caption.left_top(), g, caption_color);
+        }
+
+        let label = if self.full_file {
+            "changes only"
+        } else {
+            "full file"
+        };
+        if glass_button::pill_ui(
+            ui,
+            layout.pill_center,
+            "full_file_toggle",
+            label,
+            self.full_file,
+        ) {
+            self.full_file = !self.full_file;
+            self.scroll_to_change_pending = true;
+        }
+
+        let owned_blocks;
+        let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = if self.full_file {
+            if let Some(f) = review.files.get(self.surface_step) {
+                owned_blocks = app_core::text_diff::process(
+                    &app_core::text_diff::pair_lines_full(&f.old_text, &f.new_text),
+                );
+                owned_blocks.as_slice()
+            } else {
+                &[]
+            }
+        } else {
+            review
+                .files
+                .get(self.surface_step)
+                .map(|f| f.rows.as_slice())
+                .unwrap_or(&[])
+        };
+
+        let scroll_once = self.scroll_to_change_pending;
+        self.scroll_to_change_pending = false;
+        diff_viewer::diff_viewer_ui_no_copy(
+            ui,
+            layout.viewer,
+            blocks,
+            diff_viewer::DiffViewerParams {
+                move_spans: &[],
+                scroll_id: egui::Id::new((
+                    "diff_scroll",
+                    self.surface_step,
+                    self.full_file,
+                )),
+                scroll_to_change_once: scroll_once,
+            },
+        );
 
         if show_blocks {
-            let col_x = viewer_rect.right() + gap + blocks_col_w / 2.0;
-            let total = file_count as f32 * block_size
-                + (file_count.saturating_sub(1)) as f32 * gap;
-            let start_y = viewer_rect.center().y - total / 2.0 + block_size / 2.0;
+            let total = file_count as f32 * layout.block_size
+                + (file_count.saturating_sub(1)) as f32 * layout.gap;
+            let start_y = layout.viewer.center().y - total / 2.0 + layout.block_size / 2.0;
             for i in 0..file_count {
                 let state = if i == self.surface_step {
                     BlockState::Selected
                 } else {
                     BlockState::Normal
                 };
-                let y = start_y + i as f32 * (block_size + gap);
-                if glass_button::glass_step_block_ui(ui, egui::pos2(col_x, y), 1000 + i, state) {
+                let y = start_y + i as f32 * (layout.block_size + layout.gap);
+                if glass_button::glass_step_block_ui(
+                    ui,
+                    egui::pos2(layout.block_col_x, y),
+                    1000 + i,
+                    state,
+                ) {
                     self.surface_step = i;
                 }
             }
         }
 
-        let close_margin = 20.0;
-        let close_center = egui::pos2(screen.right() - close_margin, screen.top() + close_margin);
-        if close_button::close_button_ui(ui, close_center) {
+        if close_button::close_button_ui(ui, layout.close_center) {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
-        let total_w = 2.0 * button_size + gap;
-        let start_x = viewer_rect.center().x - total_w / 2.0 + button_size / 2.0;
-        let btn_y = screen.bottom() - margin - buttons_h / 2.0;
+        let total_w = 2.0 * layout.button_size + layout.gap;
+        let start_x = layout.viewer.center().x - total_w / 2.0 + layout.button_size / 2.0;
         let mut confirm_clicked = false;
         let mut deny_clicked = false;
-        if glass_button::glass_button_ui(ui, egui::pos2(start_x, btn_y), 0, GlassIcon::Confirm) {
+        if glass_button::glass_button_ui(
+            ui,
+            egui::pos2(start_x, layout.button_y),
+            0,
+            GlassIcon::Confirm,
+        ) {
             confirm_clicked = true;
         }
         if glass_button::glass_button_ui(
             ui,
-            egui::pos2(start_x + button_size + gap, btn_y),
+            egui::pos2(start_x + layout.button_size + layout.gap, layout.button_y),
             1,
             GlassIcon::Deny,
         ) {
@@ -732,8 +943,6 @@ pub struct CtxForActuallyDrawing<'a> {
     pub ui: &'a mut egui::Ui,
 }
 
-/// After a chain is confirmed in review, update the trust record for any
-/// already-trusted project whose surface files the chain wrote.
 fn refresh_trust_after_chain_confirm(chain: &Chain) {
     use std::collections::HashSet;
 
@@ -742,7 +951,6 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
         .iter()
         .any(|s| matches!(s.step.verb, Verb::Move | Verb::Remove));
 
-    // Rename / remove bookkeeping for Move and Remove steps.
     for step in &chain.steps {
         match step.step.verb {
             Verb::Move => {
@@ -771,8 +979,6 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
         }
     }
 
-    // A chain with any Move or Remove skips the content refresh, because
-    // moved content never appeared as a diff.
     if has_move_or_remove {
         return;
     }

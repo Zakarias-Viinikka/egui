@@ -33,7 +33,14 @@ pub fn set_ctx(ctx: eframe::egui::Context) {
 /// Store a chain and wake the UI. Returns the displaced chain if there was
 /// one, so the caller can report it.
 pub fn stash_pending_chain(chain: Chain) -> Option<Arc<Chain>> {
-    let displaced = cell().lock().unwrap().replace(Arc::new(chain));
+    stash_pending_arc(Arc::new(chain))
+}
+
+/// Same as stash_pending_chain but takes an Arc directly, so a streaming
+/// handler can keep its own handle for withdrawing. Returns the displaced
+/// chain, if any.
+pub fn stash_pending_arc(chain: Arc<Chain>) -> Option<Arc<Chain>> {
+    let displaced = cell().lock().unwrap().replace(chain);
     if let Some(ctx) = CTX.get() {
         ctx.request_repaint();
     }

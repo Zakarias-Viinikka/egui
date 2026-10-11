@@ -28,14 +28,17 @@ keep it hidden, eframe was patched. See "The egui patch" below.
     zap/
       zapgui/       the diff viewer
       zapcli/       the fake terminal
+      zap_wire/     the framed transport, the shared chain parser, the
+                    cargo allow-list
       egui-src/     frozen + patched egui 0.36.2
+      local_cargo.sh  from the root, `c t` tests all three workspaces
       build_both.sh builds and installs both
       README.md
       CONTEXT_FOR_AI.md
 
-Both `zapgui/` and `zapcli/` are their own cargo workspaces. They're siblings,
-not one merged workspace. That way both can have their own `app`, `app_core`,
-`every_page_ever` without colliding.
+`zapgui/` and `zapcli/` are their own cargo workspaces. `zap_wire` is a
+third sibling workspace that both depend on. That way both can have their
+own `app`, `app_core`, `every_page_ever` without colliding.
 
 ## The egui patch
 
@@ -52,59 +55,113 @@ to the repo on purpose so the patch travels with it.
 ## Wire protocol
 
 Request goes zapcli → zapgui. Reply goes zapgui → zapcli. Same socket, full
-duplex.
+duplex. Frames are `[kind: u8][length: u32 LE][bytes]`, defined in
+`zap_wire::lib`.
 
-Four request shapes:
+Request shapes:
 
-`chain <cwd>` followed by a newline, then the chain block (see
-`CHAIN_CHEATSHEET.md`). zapcli sends its working directory on the first line
-so zapgui can resolve relative paths inside the block. zapgui parses the
-block, plays it forward in memory, and then either applies it (if every
-touched file is inside a whitelisted folder and the chain has no `rm` or
-`mv`) or stashes it for review and raises the window. Reply is empty unless
-a failure or a displaced chain happened; in those cases the reply is a
-one-line report and the same sentence lands on the clipboard with a popup.
+`Request` with text `chain <cwd>\n<chain block>` — a chain that only does
+file work. zapgui parses the block, plays it forward in memory, then either
+applies it (if every touched file is inside a whitelisted folder and the
+chain has no `rm`, `mv`, `cargo` or `run`) or stashes it for review and
+raises the window. Reply is empty unless a failure or a displaced chain
+happened; in those cases the reply is a one-line report and the same
+sentence lands on the clipboard with a popup.
 
-`run <file>` is a separate request kind (`RunFile`) that streams into the
-same pane as `cargo`. Same transport, same frames, same summary. See the
-`run` verb section below.
+`Request` with text `overwrite <abs path>\n<content>` — kept for the old
+one-step bare-overwrite shape; internally becomes a one-step chain. This
+path is only reachable if something bypasses zapcli's parser (e.g. an
+older client). zapcli itself routes every `overwrite` through the chain
+parser.
 
-`overwrite <path>` followed by a newline, then the content. Kept for the old
-one-step shape; internally becomes a one-step chain. Path must be absolute;
-zapcli resolves `~` and relative paths before sending, so this only fires on
-something else. Failures are the same shape as today: `zapgui: couldn't find
-<path>`, `zapgui: no change to <path>`, `zapgui: overwrite needs an absolute
-path: <path>`.
+`Request` with text `focus` or `focus <anything>` — zapgui brings itself
+to the front, replies empty. (Was called `replace`; renamed to free the
+word for the replace verb.)
 
-`focus` or `focus <anything>` — zapgui brings itself to the front, replies
-empty. (Was called `replace`; renamed to free the word for the replace verb.)
+`Request` with text `menu` — zapgui shows its general menu, replies empty.
 
-`menu` — zapgui shows its general menu, replies empty.
+`Request` with text `last [<path>]` — a peek-only reply from zapgui's
+in-memory last-change record.
 
-Anything else — replies `zapgui: got "<request>"`.
+`CargoRun` frame, text `<cwd>\0<arg1>\0...` — the standalone `cargo`
+verb. Streams output into zapcli's bottom pane.
 
-Reply is read by zapcli after it shuts down its write half (EOF marker).
+`RunFile` frame, same text shape — the standalone `run` verb. Same stream.
 
-## Bringing the window to the front
+`ChainRun` frame, text `<cwd>\n<chain block>` — a chain that ends in a
+run step. The connection stays open through review, the writes, and the
+run. Nothing streams until the user confirms.
 
-`ViewportCommand::Focus` only sets keyboard focus on XFCE, it does not raise
-the window. `wmctrl -a zapgui` does both. Called from the UI thread after
-`Visible(true)`, because wmctrl on a hidden window is unreliable.
+`Cancel` frame, text empty — ask the current run to stop.
 
-## Waking the UI thread
+Reply shapes from zapgui to zapcli:
 
-egui only runs the app's `ui` function when something asks it to. A hidden
-window gets no input, so a hidden zapgui never runs `ui`, so it never learns a
-chain arrived. Fix: the listener thread stores the egui Context at startup
-(`set_ctx`), and calls `ctx.request_repaint()` after stashing a chain. That
-wakes the UI, which reads the slot at the top of its frame. If the slot holds
-a different chain than the one it last showed, it shows the window and raises
-it. The slot is read, not taken; it holds the chain until confirm or deny, or
-until a newer chain replaces it.
+`Reply` — a single-line answer to a plain request. Followed by EOF on the
+socket. zapcli reads until the connection closes.
+
+`Notice` — a line for zapcli's main scrollback.
+
+`StreamOpen` / `StreamData` / `StreamClear` / `StreamClose` / `StreamDone`
+— the streaming frames the bottom pane consumes. One connection carries
+one run.
+
+Anything else replies `zapgui: got "<request>"`.
+
+## The shared parser
+
+`zap_wire::chain` holds `parse`, `ParseError`, `Step` and `Verb`. zapcli
+calls `parse` first, so a bad path or an unknown verb never reaches the
+socket. zapgui calls the same `parse` again and enforces the same rules.
+The absolute-path requirement and the cargo allow-list live in the one
+place.
+
+`zapgui/app_core/src/chain/parser.rs` and `chain/step.rs` are one-line
+re-exports, so old code that says `crate::chain::Step` still compiles.
+
+## Chain grammar
+
+See `CHAIN_CHEATSHEET.md` for the operator's view. Short version:
+`create`, `replace`, `overwrite`, `append` carry content between `@new`
+/ `@old` / `@end` markers. `rm`, `mv`, `mkdir` are one-liners. A chain may
+end with a `cd <folder>` line and a `cargo <args>` or `run <file> [args]`
+line; that run step must be the last step and needs its `cd`.
+
+Marker escape: `@@new` / `@@old` / `@@end` at the start of a content line
+means one literal `@`. Only lines that collide with a marker word are
+escapes. `@@ -1,3 +1,4 @@` and `@derive(Debug)` pass through untouched.
+
+Chain writes require an absolute path or a `~/...` path. Reads do not.
+
+## Run steps inside a chain
+
+A chain that ends in a run step arrives as `ChainRun`, not `Request`.
+The handler runs on the connection's own thread and blocks for the life
+of the chain:
+
+1. It parses the block, plays it forward, wraps the chain in an `Arc`,
+   and stashes it. If a chain was already there, the displaced one's
+   `notify` gets `ChainOutcome::Replaced` and a popup.
+2. It starts one watcher thread on a clone of the stream. Cancel or EOF
+   sets an `Arc<AtomicBool>`.
+3. It waits on the chain's `mpsc` channel, polling the cancel flag and a
+   600-second deadline.
+4. When the UI confirms, the sender in `Chain.notify` sends
+   `ChainOutcome::Applied(wanted)`. The handler looks up the run step. If
+   the run was wanted, it calls `cargo_run::run` or `run_file::run` with
+   the same cancel flag, so the run uses the watcher's flag instead of
+   spawning a second reader on the same socket. Output streams through
+   the standard frames. When the run finishes, the summary appends under
+   the chain's report, already on the clipboard as `RecordKind::Report`.
+5. On `AllDenied` the handler replies a one-line sentence. On `Replaced`
+   the same. On cancel or timeout it calls `clear_pending` and replies.
+
+The UI's `clear_pending` on a successful confirm happens before the
+handler sees the outcome; the handler's own `Arc` keeps the chain alive
+so the run step's path and args are still available.
 
 ## Confirm and deny
 
-The pending chain lives in one slot in terminal_router, as an `Arc<Chain>`
+The pending chain lives in one slot in `terminal_router`, as an `Arc<Chain>`
 holding the steps, their diffs, and a snapshot of each touched file as it
 was when the chain was built. The UI reads the slot every frame and renders
 from the last Arc it saw. Glass buttons below the diff do the work: confirm
@@ -114,14 +171,15 @@ Confirm applies every step that is not denied. If a step fails (its file
 changed on disk since the snapshot, a create target already exists, a
 replace old text no longer matches), nothing is written and the window
 stays with a red error line, and the failure report goes on the clipboard
-with a popup.
+with a popup. A failure report names the step index and verb:
+`zap: nothing was written. step 3 of 7 (replace /abs/x.rs) failed: ...`.
 
 Deny marks the currently shown step denied, dims its block in the column on
 the right, and moves to the next undecided step. When every step is denied
 the window closes. Nothing is written.
 
 A chain with more than one step shows a column of glass blocks on the right,
-one per step. The shown step's block is brighter, denied blocks are dimmed,
+one per step. The shown step's block is brighter, denied blocks are red,
 and clicking a block shows that step. The caption above the diff says
 `step n of m · verb path`, and appends ` · denied` when the shown step has
 been denied.
@@ -138,15 +196,58 @@ A new chain while one is showing replaces it. The reply and clipboard both
 say `zap: replaced unconfirmed chain (<first path>).` so it doesn't
 disappear silently.
 
+## The viewer
+
+The diff viewer is `every_page_ever::ReusableComponents::diff_viewer::ui`.
+It draws rows in three passes.
+
+Pass 0, before the scroll area: each side's text is laid out as a galley
+from a `LayoutJob` in monospace. The wrap width is the side's inner width
+minus the gutter, the bar, the text pad and a scrollbar reserve.
+`break_anywhere` is on so long tokens wrap. Row height is
+`max(ROW_MIN_H, taller galley + pad)`, plus a `TAG_H` strip above the
+row if a move span starts on that line. A `LaidRow` records the galleys,
+line numbers, move-span membership, tag labels, and the computed height.
+
+Pass 1, inside the scroll area: each row is allocated at its computed
+height and drawn. Bars span the row's height below any tag strip. Line
+numbers pin to the first wrapped line. A move-span tag, if any, is painted
+as a violet strip above the row's first wrapped line.
+
+Pass 2: the text. Each side's pre-laid galley is placed as a
+`Label::new(galley).selectable(true).wrap_mode(Wrap)` in a small child UI
+with a top-left layout. Placing the labels in the order rows are drawn
+works because egui's `LabelSelectionState` constrains a drag to labels
+whose x-range overlaps the current selection. Left and right columns have
+disjoint x-ranges, so a drag stays in one column.
+
+Bar colours: left red for a `Delete`, right green for an `Insert`, left
+red and right green for a `Change`, violet on both ends of a move span.
+Nothing is coloured by inspecting row text.
+
+Row 0 of a wrapped line has no marker. Each continuation row gets a
+bright orange arrow with a short accent bar to its left, in a widened gap
+between the bar and the text.
+
+A small glass pill labelled "full file" / "changes only" sits at the top
+right of the viewer area, outside the scrolling content. It swaps the
+viewer between the 3-line-context snippet and every line of the file,
+re-paired with `pair_lines_full`. The scroll id includes the step index
+and the mode, so scroll position isn't shared.
+
 ## Reports and popups
 
 Every decision (a step denied, Confirm, a failure, a whitelist auto-apply)
 rebuilds a report: a plain sentence, one clause per file, saying what was
 applied or denied or failed, with a bit of the diff as context. The report
-goes on the clipboard, and a popup with a short label goes on screen. The
-popup binary is `popup_demo_app`, invoked as
-`popup_demo_app "text" x y host_id`; it draws a rounded box at x,y, sits
-about 800 ms, fades, and exits. Popups carry short strings only.
+goes on the clipboard, and a popup with a short label goes on screen.
+
+Popups are the `fading_popup` binary in
+`~/ProgStuff/egui/reusable_components`. `build_both.sh` builds it with the
+`RUSTFLAGS` it already exports and installs it to `~/.local/bin`. A popup
+appears top-center-ish, sits for 800 ms, fades, exits. Click to dismiss.
+They are drawn directly against X11 (`override_redirect`) because an egui
+window on XFCE fights the window manager for focus.
 
 ## Whitelist
 
@@ -160,9 +261,9 @@ A file counts as inside a folder after resolving symlinks and `..`, compared
 by whole path components, not string prefixes. For a file that doesn't exist
 yet, its nearest existing parent is used.
 
-A chain with any `rm` or `mv` step goes to review even inside a whitelisted
-folder, so an auto-applied edit can never be paired with an auto-applied
-delete or rename.
+A chain with any `rm`, `mv`, `cargo` or `run` step goes to review even
+inside a whitelisted folder, so an auto-applied edit can never be paired
+with an auto-applied delete, rename or execution.
 
 When zapgui is launched normally (without `--hidden`) it shows a menu. One
 entry for now: Whitelisted folders. zapcli's auto-launch passes `--hidden`
@@ -178,11 +279,11 @@ process — every side effect stays behind zapgui, which holds the guardrail
 and the trust records. See `cargo` in `CHAIN_CHEATSHEET.md` for the
 allow-list.
 
-Transport is framed, not end-of-file terminated: `[kind: u8][length: u32
-LE][bytes]`. zapcli keeps its write half open so a cancel frame can go out
-while output is flowing. One connection carries one request. A plain request
-is request, reply, close. A run is CargoRun, then StreamOpen, StreamData...,
-StreamDone.
+Transport is framed: `[kind: u8][length: u32 LE][bytes]`. zapcli keeps its
+write half open so a cancel frame can go out while output is flowing. One
+connection carries one request. A plain request is request, reply, close. A
+run is CargoRun or RunFile, then StreamOpen, StreamData..., StreamDone. A
+chain-with-run is ChainRun, then the same stream.
 
 Before every run, zapgui computes the project's execution surface — every
 Cargo.toml, Cargo.lock, build script, proc-macro source, .cargo/config, and
@@ -194,20 +295,20 @@ Deny cancels the run.
 
 Ordinary source files and `target/` are not in the surface, so editing the
 program he is deliberately running never re-prompts. After a run, only
-Cargo.lock's trusted copy is refreshed (cargo may have rewritten it). When a
-chain is confirmed in review, any surface file it wrote in an already-trusted
-project gets its trusted copy updated, because that review was the approval.
-Whitelisted auto-applies do not do that.
+Cargo.lock's trusted copy is refreshed. When a chain is confirmed in review,
+any surface file it wrote in an already-trusted project gets its trusted
+copy updated, because that review was the approval. Whitelisted
+auto-applies do not do that.
 
 ## Line styles
 
 Every command returns a `Vec<Line>`. `Line` has `text`, `style`, and
 `skip_copy`. `LineStyle` is Normal, Error, Folder, Prompt, Zap, CliMessage,
-Peek. The UI maps style to color. The UI never inspects line text to guess
+Peek. The UI maps style to colour. The UI never inspects line text to guess
 what a line is — that's what the styles are for. If you add a command,
 decide per line what it means.
 
-Colors: Normal white, Error red, Folder yellow, Prompt dim green, Zap cyan,
+Colours: Normal white, Error red, Folder yellow, Prompt dim green, Zap cyan,
 CliMessage gray, Peek muted violet (with a thin bar down the left edge).
 
 `skip_copy` is set by the peek commands (`head`, `tail`, `wc`, `last`). A
@@ -248,6 +349,9 @@ The environment matches `cargo` (colour off, progress bar on, `TERM=xterm`).
 A script that calls cargo shows cargo's bar in the pane. `stream_run.rs` is
 the shared loop both verbs use.
 
+A run step inside a chain does the same trust check. A run target the chain
+itself wrote is already trusted because the write was reviewed as a diff.
+
 ## Rename-aware trust
 
 A trust entry means: this exact content, at this path, with these args, was
@@ -265,24 +369,51 @@ of refreshing the cargo surface for files the chain wrote.
 The RENAME REQUEST caption adds a `· trusted for running` note when the
 source file is a run target or a file in a trusted cargo surface.
 
-## rm, mv, mkdir
+## Edit-vs-replace
 
-`rm`, `mv`, `mkdir` are chain steps. They have no marker body:
+`zapgui/app_core/src/text_diff/pair.rs`. When `similar` reports a run of
+deleted and inserted lines, the pairer aligns old and new by token-level
+similarity instead of by index.
 
-    rm <path> [<path>...]
-    mv <from> <to>
-    mkdir [-p] <path> [<path>...]
+Two lines are similar if the weighted longest common subsequence of their
+tokens — runs of letters, digits and underscore — covers at least half
+their total token weight. `SIMILARITY_THRESHOLD` is 0.5. Above the
+threshold, the pair is one row: `Equal` if identical, else `Change`. Below
+the threshold, the old line and new line are not paired; the run's
+unmatched deletes are emitted before the unmatched inserts, never
+interleaved.
 
-`rm` works on one text file at a time, and only ones it can keep an undo
-copy of. It refuses directories. `mv` never overwrites: to replace a file,
-`rm` it first in the same chain. `mkdir` accepts `-p` and always creates
-parents.
+Above `ALIGNMENT_CELL_LIMIT` (100,000 old-times-new) the DP is skipped
+and lines are paired by index with the same threshold test.
 
-A chain with any `rm` or `mv` step always goes to review, even inside a
-whitelisted folder. The DELETE REQUEST or RENAME REQUEST banner is drawn
-above the caption. Confirm refuses to apply a chain if an `rm` or `mv` step
-was never shown at least once; it jumps to the first such step and says so.
-Deny once and the guard is satisfied for that step.
+## Move detection
+
+`zapgui/app_core/src/text_diff/moves.rs`. Detection runs once over every
+step of a chain, not once per step, so a move between two files is caught.
+
+Candidates are maximal runs of consecutive Delete-only rows and of
+Insert-only rows. Runs smaller than 3 lines or 60 non-whitespace characters
+are ignored. A Delete run and an Insert run that touch directly are never
+paired; that's a replacement.
+
+Cheap pre-check: Dice over the multisets of tokens must reach
+`DICE_FLOOR` (0.6). Then confirm with the alignment function from
+edit-vs-replace; matched weight over the longer run's weight must reach
+`ALIGN_FLOOR` (0.7). If either run exceeds `LONG_RUN` (300 lines), skip
+alignment and require `DICE_FLOOR_LONG` (0.8). Take pairs greedily by
+descending score, each run used once. `edited` is true when the matched
+lines aren't all identical after trimming.
+
+Each confirmed pair produces a `MoveSpan` on the From step and one on the
+To step. A span carries `role`, `first_line`, `last_line`, `label`,
+`edited`. Labels are built here where paths are known, e.g.
+`moved to src/foo.rs:120` or `moved from /abs/a.rs:5 (edited)`.
+
+The viewer decides membership from line numbers only: a Delete row whose
+left line number is inside a From span, an Insert row whose right line
+number is inside a To span. A member row gets a violet bar on the owning
+side. A span starting on a row paints a violet strip above that row with
+the label.
 
 ## The Ctrl+C problem
 
@@ -293,6 +424,9 @@ work around this, zapcli's `raw_input_hook` strips both the Key(C) event and
 any `Event::Copy` before egui processes them. It reads modifiers from the Key
 event when available and falls back to ClearInput when only `Event::Copy` came
 through. The `copy` command is the reliable way to copy everything.
+
+Inside the zapgui viewer, Ctrl+C on selected text goes through egui's own
+selection handling, which works because the labels are selectable.
 
 ## The input line
 
@@ -305,55 +439,61 @@ it — requesting focus every frame spins the render loop.
 
 ## Where files go
 
-zapgui's `app_core/src/chain/` — the chain module. step.rs (step types),
-parser.rs (chain text -> steps), play.rs (play forward in memory), writer.rs
-(the one routine that writes), report.rs (clipboard / popup sentences),
-whitelist.rs (list file, matching), popup.rs (popup_demo_app wrapper).
+`zapgui/app_core/src/chain/` — the chain module. `step.rs` and `parser.rs`
+are re-exports of `zap_wire::chain`. `play.rs` plays forward in memory and
+runs move detection. `writer.rs` is the one routine that writes.
+`report.rs` is the clipboard / popup sentences. `whitelist.rs` is the list
+file and matching. `popup.rs` wraps `fading_popup`.
 
-zapgui's `app_core/src/terminal_router/` — socket listener, route_requests,
-and the shared slot in mod.rs. The slot holds an `Arc<Chain>`.
+`zapgui/app_core/src/terminal_router/` — socket listener,
+`route_requests`, the blocking `handle_chain_run`, the shared slot in
+`mod.rs`. The slot holds an `Arc<Chain>`.
 
-zapgui's `app_core/src/clipboard.rs` — the xclip helper, returning an error
+`zapgui/app_core/src/terminal_router/stream_run.rs` — the shared process
+loop both `cargo` and `run` use. `cargo_run.rs` and `run_file.rs` are the
+two verbs' server sides.
+
+`zapgui/app_core/src/terminal_router/surface_review.rs` — the surface
+review window's data. Each `SurfaceReviewFile` keeps its `old_text` and
+`new_text` so the full-file toggle can re-pair them.
+
+`zapgui/app_core/src/clipboard.rs` — the xclip helper, returning an error
 string when xclip can't start or exits non-zero.
 
-zapgui's `every_page_ever/src/ReusableComponents/` — close_button, glass_button,
-diff_viewer. Each component has a `mod.rs` and `ui.rs`.
+`zapgui/every_page_ever/src/ReusableComponents/` — `close_button`,
+`glass_button` (including `pill_ui`), `diff_viewer`. Each has a `mod.rs`
+and `ui.rs`.
 
-zapcli's `app_core/src/command_router/` — dispatch, plus `core_commands/<name>.rs`
-per verb. `core_commands/chain.rs` forwards create, replace, overwrite, rm,
-mv, and mkdir; the cargo and run verbs live inline in `mod.rs` because they
-open streaming sessions.
+`zapcli/app_core/src/command_router/` — dispatch, plus
+`core_commands/<name>.rs` per verb. `core_commands/chain.rs` forwards
+create, replace, overwrite, append, rm, mv, mkdir and run chains; the
+cargo and run verbs live inline in `mod.rs` because they open streaming
+sessions.
 
-`zapcli/app_core/src/general_util/socket.rs` — the framed client: `open` for
-plain requests, `open_cargo` for a streaming run. Connect and auto-launch
-for a run happen on the reader thread, so a slow launch never blocks the UI.
+`zapcli/app_core/src/general_util/socket.rs` — the framed client: `open`
+for plain requests, `open_cargo`, `open_run`, `open_chain_run` for
+streaming.
 
-`zap/cli/app/src/egui_setup/drawing_requirements.rs` — the terminal UI, the
-stream pane, `raw_input_hook` for Ctrl+C/Ctrl+Shift+C.
+`zapcli/app_core/src/general_util/path_parsing.rs` — how `~`, `~/...`,
+absolute and relative paths get resolved on the client side.
 
-`zapcli/app_core/src/general_util/socket.rs` — `open` for plain requests,
-`open_cargo` and `open_run` for streaming sessions. Connect and auto-launch
-for a streaming request happen on the reader thread, so a slow launch never
-blocks the UI.
+`zapcli/app/src/egui_setup/drawing_requirements.rs` — the terminal UI, the
+stream pane, the `raw_input_hook` for Ctrl+C and Ctrl+Shift+C.
+
+`zapgui/app/src/egui_setup/drawing_requirements.rs` — the review window,
+the surface review, the menu.
+
+`zapgui/app_core/src/text_diff/` — `rows.rs` (types), `pair.rs` (line
+pairing), `post_process.rs` (rows → render blocks), `similarity.rs`
+(token similarity shared with moves), `moves.rs` (move detection).
 
 `zapgui/app_core/src/last_change.rs` — the in-memory record of the last
 change per file.
 
 `zapgui/app_core/src/run_trust.rs` — run-target trust entries, one per
-(canonical path, exact args), stored under `~/.config/zap/run_trust/`.
+(canonical path, exact args), under `~/.config/zap/run_trust/`.
 
-`zapgui/app_core/src/terminal_router/stream_run.rs` — the shared process
-loop both cargo and run use.
-
-`zapgui/app_core/src/terminal_router/run_file.rs` — the run verb's server
-side.
-
-zapcli's `app_core/src/shortcuts/` — one file per shortcut, plus mod.rs to
-dispatch.
-
-zapcli's `app/src/egui_setup/drawing_requirements.rs` — the actual terminal UI.
-
-zapgui's `app/src/egui_setup/drawing_requirements.rs` — the actual diff UI.
+`zap_wire/src/chain.rs` — the shared parser.
 
 ## Adding a command
 
@@ -368,14 +508,19 @@ verbatim input (not `trimmed`) and send it as `chain <cwd>\n<block>`. See
 
 ## Build
 
-`~/ProgStuff/egui/zap/build_both.sh`. Builds and installs `zapgui`, `zapcli`,
-`zap-settings`, and the `zap` wrapper (`~/.local/bin/zap`, a bash script that
-execs `zapcli`). It also kills a running zapgui and starts a fresh hidden
-one, so a rebuild takes effect immediately.
+`~/ProgStuff/egui/zap/build_both.sh`. Builds and installs `zapgui`,
+`zapcli`, `zap-settings`, the `zap` wrapper (`~/.local/bin/zap`, a bash
+script that execs `zapcli`), and `fading_popup` from
+`~/ProgStuff/egui/reusable_components`. It also kills a running zapgui and
+starts a fresh hidden one, so a rebuild takes effect immediately.
 
 `zap_wire/` is a small crate both binaries depend on: the framed-message
-types and the cargo allow-list. It lives beside `zapgui/` and `zapcli/` as
-a sibling workspace.
+types, the shared chain parser, and the cargo allow-list. It lives beside
+`zapgui/` and `zapcli/` as a sibling workspace. Any change in `zap_wire`
+means both binaries must be rebuilt.
+
+From the zap root, `c t` runs `cargo test` in zapgui, zapcli and zap_wire,
+one after the other. `c c` for check, `c b` for build.
 
 ## Socket path
 

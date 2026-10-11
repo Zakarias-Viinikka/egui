@@ -19,6 +19,10 @@ pub enum BannerKind {
 pub struct SurfaceReviewFile {
     pub path: PathBuf,
     pub rows: Vec<DiffRowProcessedForUi>,
+    /// Old and new text kept so the full-file toggle can re-pair them
+    /// without context limits.
+    pub old_text: String,
+    pub new_text: String,
 }
 
 pub struct SurfaceReview {
@@ -45,8 +49,14 @@ impl SurfaceReview {
             .into_iter()
             .map(|d| {
                 let old = d.old_text.unwrap_or_default();
-                let rows = process(&pair_lines(&old, &d.new_text));
-                SurfaceReviewFile { path: d.path, rows }
+                let new = d.new_text;
+                let rows = process(&pair_lines(&old, &new));
+                SurfaceReviewFile {
+                    path: d.path,
+                    rows,
+                    old_text: old,
+                    new_text: new,
+                }
             })
             .collect();
         Self {

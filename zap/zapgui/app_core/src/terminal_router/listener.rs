@@ -50,6 +50,10 @@ fn handle_one(mut stream: UnixStream) {
         crate::terminal_router::route_requests::handle_run_file(&mut stream, &frame.text);
         return;
     }
+    if frame.kind == FrameKind::ChainRun {
+        crate::terminal_router::route_requests::handle_chain_run(&mut stream, &frame.text);
+        return;
+    }
 
     if frame.kind != FrameKind::Request {
         let _ = write_frame(

@@ -13,13 +13,31 @@ enum Undo {
 }
 
 pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
+    let total = chain.steps.len();
+
     // Re-verify snapshots. If anything changed between review and confirm,
     // refuse rather than clobber.
     for snap in &chain.snapshots {
         let current = read_or_none(&snap.path)?;
         if current != snap.content {
+            let step_no = chain
+                .steps
+                .iter()
+                .position(|s| s.path == snap.path)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let verb = chain
+                .steps
+                .iter()
+                .find(|s| s.path == snap.path)
+                .map(|s| verb_name(s.step.verb))
+                .unwrap_or("step");
             return Err(format!(
-                "{} changed since the chain was built",
+                "step {} of {} ({} {}) failed: {} changed since the chain was built",
+                step_no,
+                total,
+                verb,
+                snap.path.display(),
                 snap.path.display()
             ));
         }
@@ -31,9 +49,17 @@ pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
         if !wanted.get(i).copied().unwrap_or(true) {
             continue;
         }
-        if let Err(e) = execute_step(applied, &mut undos) {
+        let step_no = i + 1;
+        if let Err(reason) = execute_step(applied, &mut undos) {
             undo_all(&mut undos);
-            return Err(e);
+            return Err(format!(
+                "step {} of {} ({} {}) failed: {}",
+                step_no,
+                total,
+                verb_name(applied.step.verb),
+                applied.path.display(),
+                reason
+            ));
         }
         record_last_change(applied);
     }
@@ -41,23 +67,38 @@ pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
     Ok(())
 }
 
+fn verb_name(v: Verb) -> &'static str {
+    match v {
+        Verb::Create => "create",
+        Verb::Replace => "replace",
+        Verb::Overwrite => "overwrite",
+        Verb::Append => "append",
+        Verb::Remove => "delete",
+        Verb::Move => "rename",
+        Verb::Mkdir => "mkdir",
+        Verb::Cargo => "cargo",
+        Verb::Run => "run",
+    }
+}
+
 fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), String> {
     match applied.step.verb {
         Verb::Mkdir => {
             if applied.path.exists() {
-                return Err(format!("mkdir: {} already exists", applied.path.display()));
+                return Err(format!("{} already exists", applied.path.display()));
             }
             std::fs::create_dir_all(&applied.path)
-                .map_err(|e| format!("mkdir {}: {}", applied.path.display(), e))?;
+                .map_err(|e| format!("create_dir_all {}: {}", applied.path.display(), e))?;
             undos.push(Undo::RemoveDir { path: applied.path.clone() });
             Ok(())
         }
         Verb::Remove => {
-            let before = applied.before.clone().ok_or_else(|| {
-                format!("rm: no before content for {}", applied.path.display())
-            })?;
+            let before = applied
+                .before
+                .clone()
+                .ok_or_else(|| format!("no before content for {}", applied.path.display()))?;
             std::fs::remove_file(&applied.path)
-                .map_err(|e| format!("rm {}: {}", applied.path.display(), e))?;
+                .map_err(|e| format!("remove_file {}: {}", applied.path.display(), e))?;
             undos.push(Undo::RestoreText {
                 path: applied.path.clone(),
                 content: before,
@@ -68,21 +109,20 @@ fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), Stri
             let dest = applied
                 .dest
                 .clone()
-                .ok_or_else(|| "mv: no resolved destination".to_string())?;
+                .ok_or_else(|| "no resolved destination".to_string())?;
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("mv mkdir {}: {}", parent.display(), e))?;
+                    .map_err(|e| format!("create_dir_all {}: {}", parent.display(), e))?;
             }
             match std::fs::rename(&applied.path, &dest) {
                 Ok(()) => {}
                 Err(_) => {
-                    // Cross-device: copy then remove.
                     let bytes = std::fs::read(&applied.path)
-                        .map_err(|e| format!("mv read {}: {}", applied.path.display(), e))?;
+                        .map_err(|e| format!("read {}: {}", applied.path.display(), e))?;
                     std::fs::write(&dest, bytes)
-                        .map_err(|e| format!("mv write {}: {}", dest.display(), e))?;
+                        .map_err(|e| format!("write {}: {}", dest.display(), e))?;
                     std::fs::remove_file(&applied.path)
-                        .map_err(|e| format!("mv rm {}: {}", applied.path.display(), e))?;
+                        .map_err(|e| format!("remove_file {}: {}", applied.path.display(), e))?;
                 }
             }
             undos.push(Undo::RenameBack {
@@ -91,9 +131,10 @@ fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), Stri
             });
             Ok(())
         }
-        Verb::Create | Verb::Replace | Verb::Overwrite => {
+        Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
             write_text(&applied.path, &applied.after, &applied.before, undos)
         }
+        Verb::Cargo | Verb::Run => Ok(()),
     }
 }
 
@@ -106,7 +147,7 @@ fn write_text(
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+                .map_err(|e| format!("create_dir_all {}: {}", parent.display(), e))?;
             undos.push(Undo::RemoveDir {
                 path: parent.to_path_buf(),
             });
@@ -169,7 +210,7 @@ fn record_last_change(applied: &AppliedStep) {
                 Some(&applied.after),
             );
         }
-        Verb::Overwrite | Verb::Replace => {
+        Verb::Overwrite | Verb::Replace | Verb::Append => {
             let before_text = applied.before.clone().unwrap_or_default();
             let before_v = last_change::classify_content(&before_text);
             last_change::record(
@@ -201,7 +242,7 @@ fn record_last_change(applied: &AppliedStep) {
                 None,
             );
         }
-        Verb::Mkdir => {}
+        Verb::Mkdir | Verb::Cargo | Verb::Run => {}
     }
 }
 
@@ -231,6 +272,9 @@ mod tests {
             old_text: old.to_string(),
             new_text: new.to_string(),
             count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
         }
     }
 
@@ -242,6 +286,9 @@ mod tests {
             old_text: String::new(),
             new_text: String::new(),
             count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
         }
     }
 
@@ -253,6 +300,9 @@ mod tests {
             old_text: String::new(),
             new_text: String::new(),
             count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
         }
     }
 
@@ -264,6 +314,9 @@ mod tests {
             old_text: String::new(),
             new_text: String::new(),
             count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
         }
     }
 
@@ -290,13 +343,16 @@ mod tests {
     }
 
     #[test]
-    fn refuses_if_file_changed() {
+    fn refuses_if_file_changed_and_names_the_step() {
         let dir = tmp();
         let file = dir.join("a.txt");
         fs::write(&file, "hello\n").expect("write");
         let chain = play_forward(vec![text_step(Verb::Replace, &file, "hello", "world")], &dir).expect("play");
         fs::write(&file, "different\n").expect("write");
-        assert!(apply(&chain, &[true]).is_err());
+        let err = apply(&chain, &[true]).expect_err("should fail");
+        assert!(err.contains("step 1 of 1"), "got: {err}");
+        assert!(err.contains("replace"));
+        assert!(err.contains("changed since"));
         let _ = fs::remove_dir_all(&dir);
     }
 

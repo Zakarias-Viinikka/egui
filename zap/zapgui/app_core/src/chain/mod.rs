@@ -14,6 +14,6 @@ pub mod whitelist;
 pub mod writer;
 
 pub use parser::{parse, ParseError};
-pub use play::{play_forward, AppliedStep, Chain, Snapshot};
+pub use play::{play_forward, AppliedStep, Chain, ChainOutcome, Snapshot};
 pub use report::StepStatus;
 pub use step::{Step, Verb};

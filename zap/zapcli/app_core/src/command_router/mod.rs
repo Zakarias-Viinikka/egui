@@ -82,9 +82,6 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
     if first_word_is_chain_verb(input) {
         return core_commands::chain::run(input, session);
     }
-    if let Some(rest) = trimmed.strip_prefix("overwrite ") {
-        return core_commands::overwrite::run(rest, session);
-    }
 
     let mut parts = trimmed.split_whitespace();
     let Some(verb) = parts.next() else {
@@ -165,25 +162,40 @@ pub fn reply_outcome_peek(result: Result<String, String>) -> Outcome {
 }
 
 fn first_word_is_chain_verb(input: &str) -> bool {
-    let first = input.split_whitespace().next().unwrap_or("");
-    let is_chainable = matches!(
+    // A block of two or more non-blank lines whose first word is cd,
+    // cargo or run is a chain. Single-line cd/cargo/run stay the human
+    // verbs and are dispatched below.
+    let non_blank: Vec<&str> = input.lines().filter(|l| !l.trim().is_empty()).collect();
+    if non_blank.len() >= 2 {
+        let first = non_blank[0]
+            .trim_start()
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if matches!(first, "cd" | "cargo" | "run") {
+            return true;
+        }
+    }
+
+    // Look at the first non-blank line only. A leading blank line or a
+    // leading space used to make this return false, so a paste with either
+    // went to the bare-overwrite path and the markers landed in the file.
+    // That path is gone; the chain parser is the only route for these
+    // verbs now. A marker-less overwrite fails loudly in the parser with
+    // "expected a marker line".
+    let first_line = input.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let trimmed = first_line.trim_start();
+    let first = trimmed.split_whitespace().next().unwrap_or("");
+    if !matches!(
         first,
-        "create" | "replace" | "overwrite" | "rm" | "mv" | "mkdir"
-    );
-    if !is_chainable || !input.starts_with(&format!("{first} ")) {
+        "create" | "replace" | "overwrite" | "append" | "rm" | "mv" | "mkdir"
+    ) {
         return false;
     }
-    // Bare overwrite without markers is the one-step form; leave that to
-    // overwrite.rs. Overwrite WITH markers goes through the chain parser.
-    if first == "overwrite" {
-        let after_first = match input.find('\n') {
-            Some(i) => &input[i + 1..],
-            None => return false,
-        };
-        let body_first = after_first.lines().next().unwrap_or("");
-        return body_first.trim_start().starts_with('@');
-    }
-    true
+    trimmed
+        .strip_prefix(first)
+        .map(|rest| rest.starts_with(' ') || rest.starts_with('\t'))
+        .unwrap_or(false)
 }
 
 pub fn reply_outcome(result: Result<String, String>) -> Outcome {

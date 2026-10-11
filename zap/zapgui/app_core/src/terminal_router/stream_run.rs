@@ -25,6 +25,10 @@ pub struct StreamSpec {
     /// Called once after the process ends, with the raw output. Used by
     /// cargo to refresh Cargo.lock.
     pub after: Option<Box<dyn FnOnce(&str) + Send>>,
+    /// When Some, the loop uses this flag instead of spawning its own
+    /// reader thread. The chain-run handler already has one watching the
+    /// socket for Cancel and EOF; two readers on one socket steal frames.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 pub fn stream(stream: &mut UnixStream, spec: StreamSpec) -> Result<(), String> {
@@ -39,23 +43,28 @@ pub fn stream(stream: &mut UnixStream, spec: StreamSpec) -> Result<(), String> {
         }
     };
 
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    if let Ok(mut reader) = stream.try_clone() {
-        let cf = cancel_flag.clone();
-        std::thread::spawn(move || loop {
-            match read_frame(&mut reader) {
-                Ok(f) if f.kind == FrameKind::Cancel => {
-                    cf.store(true, Ordering::SeqCst);
-                    break;
+    let cancel_flag = if let Some(f) = spec.cancel_flag {
+        f
+    } else {
+        let cf = Arc::new(AtomicBool::new(false));
+        if let Ok(mut reader) = stream.try_clone() {
+            let cf2 = cf.clone();
+            std::thread::spawn(move || loop {
+                match read_frame(&mut reader) {
+                    Ok(f) if f.kind == FrameKind::Cancel => {
+                        cf2.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        cf2.store(true, Ordering::SeqCst);
+                        break;
+                    }
                 }
-                Ok(_) => {}
-                Err(_) => {
-                    cf.store(true, Ordering::SeqCst);
-                    break;
-                }
-            }
-        });
-    }
+            });
+        }
+        cf
+    };
 
     let mut output = String::new();
     let mut cancelled = false;

@@ -32,6 +32,7 @@ pub fn handle_cargo_run(stream: &mut UnixStream, text: &str) {
         stream,
         args,
         std::path::PathBuf::from(cwd),
+        None,
     ) {
         let _ = write_frame(stream, &Frame::stream_data(&format!("{e}\n")));
         let _ = write_frame(stream, &Frame::stream_done("error"));
@@ -50,9 +51,157 @@ pub fn handle_run_file(stream: &mut UnixStream, text: &str) {
         stream,
         args,
         std::path::PathBuf::from(cwd),
+        None,
     ) {
         let _ = write_frame(stream, &Frame::stream_data(&format!("{e}\n")));
         let _ = write_frame(stream, &Frame::stream_done("error"));
+    }
+}
+
+
+/// Handle a ChainRun frame. Runs on the connection's own thread and blocks
+/// for the life of the chain: parse, play forward, stash for review, wait
+/// for the UI's outcome, then dispatch the run step (if wanted) with the
+/// same cancel flag the watcher uses.
+pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+
+    // One watcher. The run below uses its flag instead of spawning a
+    // second reader on the same socket.
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut reader) = stream.try_clone() {
+        let cf = cancel.clone();
+        std::thread::spawn(move || loop {
+            match read_frame(&mut reader) {
+                Ok(f) if f.kind == FrameKind::Cancel => {
+                    cf.store(true, Ordering::SeqCst);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    cf.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        });
+    }
+
+    let Some(nl) = text.find('\n') else {
+        let _ = write_frame(stream, &Frame::reply("zapgui: chain-run needs a newline after cwd"));
+        return;
+    };
+    let cwd = text[..nl].trim();
+    let block = &text[nl + 1..];
+
+    let steps = match crate::chain::parse(block) {
+        Ok(s) => s,
+        Err(e) => {
+            let sentence = format!("zap: nothing was written. {}.", e);
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
+            crate::chain::popup::show("Edit failed");
+            let _ = write_frame(stream, &Frame::reply(&sentence));
+            return;
+        }
+    };
+    if !steps.iter().any(|s| s.verb.is_run()) {
+        let _ = write_frame(stream, &Frame::reply("zapgui: not a run chain"));
+        return;
+    }
+
+    let mut chain = match play_forward(steps, std::path::Path::new(cwd)) {
+        Ok(c) => c,
+        Err(e) => {
+            let sentence = format!("zap: nothing was written. {}.", e);
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
+            crate::chain::popup::show("Edit failed");
+            let _ = write_frame(stream, &Frame::reply(&sentence));
+            return;
+        }
+    };
+
+    let (tx, rx) = mpsc::channel();
+    chain.notify = Some(std::sync::Mutex::new(tx));
+    let mine = Arc::new(chain);
+
+    if let Some(displaced) = crate::terminal_router::stash_pending_arc(mine.clone()) {
+        displaced.finish(crate::chain::ChainOutcome::Replaced);
+        let first = displaced
+            .steps
+            .first()
+            .map(|s| s.path.display().to_string())
+            .unwrap_or_default();
+        let sentence = format!("zap: replaced unconfirmed chain ({first}).");
+        let _ = crate::clipboard::copy_to_clipboard(&sentence);
+        crate::chain::popup::show("Replaced");
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
+    let outcome = loop {
+        if cancel.load(Ordering::SeqCst) {
+            crate::terminal_router::clear_pending(&mine);
+            let _ = write_frame(stream, &Frame::reply("zap: cancelled"));
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            crate::terminal_router::clear_pending(&mine);
+            let _ = write_frame(stream, &Frame::reply("zap: timed out"));
+            return;
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(o) => break o,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = write_frame(stream, &Frame::reply("zap: chain handler closed"));
+                return;
+            }
+        }
+    };
+
+    match outcome {
+        crate::chain::ChainOutcome::Applied(wanted) => {
+            let run_idx = mine
+                .steps
+                .iter()
+                .position(|s| matches!(s.step.verb, Verb::Cargo | Verb::Run));
+            let Some(ri) = run_idx else {
+                let _ = write_frame(stream, &Frame::reply("zap: no run step"));
+                return;
+            };
+            if !wanted.get(ri).copied().unwrap_or(false) {
+                let _ = write_frame(stream, &Frame::reply("zap: applied, run denied"));
+                return;
+            }
+            let step = &mine.steps[ri];
+            let folder = step.path.clone();
+            let args = step.step.args.clone();
+            let res = match step.step.verb {
+                Verb::Cargo => crate::terminal_router::cargo_run::run(
+                    stream,
+                    args,
+                    folder,
+                    Some(cancel.clone()),
+                ),
+                Verb::Run => crate::terminal_router::run_file::run(
+                    stream,
+                    args,
+                    folder,
+                    Some(cancel.clone()),
+                ),
+                _ => unreachable!(),
+            };
+            if let Err(e) = res {
+                let _ = write_frame(stream, &Frame::stream_data(&format!("{e}\n")));
+                let _ = write_frame(stream, &Frame::stream_done("error"));
+            }
+        }
+        crate::chain::ChainOutcome::AllDenied => {
+            let _ = write_frame(stream, &Frame::reply("zap: all steps denied"));
+        }
+        crate::chain::ChainOutcome::Replaced => {
+            let _ = write_frame(stream, &Frame::reply("zap: this chain was replaced"));
+        }
     }
 }
 
@@ -133,6 +282,9 @@ fn handle_chain(rest: &str) -> String {
 
     if steps.is_empty() {
         return "zapgui: empty chain".to_string();
+    }
+    if steps.iter().any(|s| s.verb.is_run()) {
+        return "zapgui: this chain has a run step; send it as a ChainRun frame".to_string();
     }
 
     let chain = match play_forward(steps, std::path::Path::new(cwd)) {
@@ -228,6 +380,9 @@ fn handle_overwrite(rest: &str) -> String {
         old_text: String::new(),
         new_text: normalized,
         count: None,
+        no_newline: false,
+        args: Vec::new(),
+        cwd: None,
     };
 
     let chain = match play_forward(vec![step], std::path::Path::new("/")) {

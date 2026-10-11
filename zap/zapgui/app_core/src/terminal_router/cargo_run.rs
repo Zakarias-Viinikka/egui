@@ -3,6 +3,8 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use zap_wire::{write_frame, Frame};
@@ -15,9 +17,18 @@ use crate::trust::{self, SurfaceDiff};
 
 const SURFACE_REVIEW_TIMEOUT: Duration = Duration::from_secs(600);
 
-pub fn run(stream: &mut UnixStream, args: Vec<String>, cwd: PathBuf) -> Result<(), String> {
+pub fn run(
+    stream: &mut UnixStream,
+    args: Vec<String>,
+    cwd: PathBuf,
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
     if args.is_empty() {
         return Err("cargo: no subcommand".to_string());
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    if let Err(e) = zap_wire::cargo_gate::check(&refs) {
+        return Err(e);
     }
 
     let title = format!("cargo {}", args.join(" "));
@@ -121,6 +132,7 @@ pub fn run(stream: &mut UnixStream, args: Vec<String>, cwd: PathBuf) -> Result<(
                 }
             }
         })),
+        cancel_flag,
     };
     crate::terminal_router::stream_run::stream(stream, spec)
 }

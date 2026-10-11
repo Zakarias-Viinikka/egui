@@ -4,6 +4,8 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use zap_wire::{write_frame, Frame};
@@ -15,9 +17,13 @@ use crate::terminal_router::stream_run::StreamSpec;
 use crate::trust::SurfaceDiff;
 
 const REVIEW_TIMEOUT: Duration = Duration::from_secs(600);
-const MAX_SHOWN_BYTES: u64 = 1024 * 1024;
 
-pub fn run(stream: &mut UnixStream, args: Vec<String>, cwd: PathBuf) -> Result<(), String> {
+pub fn run(
+    stream: &mut UnixStream,
+    args: Vec<String>,
+    cwd: PathBuf,
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
     if args.is_empty() {
         return Err("run: missing file".to_string());
     }
@@ -172,6 +178,7 @@ pub fn run(stream: &mut UnixStream, args: Vec<String>, cwd: PathBuf) -> Result<(
         popup_ok: "Run: ok".to_string(),
         popup_fail: "Run failed".to_string(),
         after: None,
+        cancel_flag,
     };
     crate::terminal_router::stream_run::stream(stream, spec)
 }
