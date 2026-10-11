@@ -1,5 +1,6 @@
 # zap todo
 
+- there's no way to remove stray marker lines. If `@new`, `@end`, or another marker word ends up in a file by accident, nothing in zap can take it back out. Needs support in the lib for removing accidental markers.
 - the assistant can't tell if the user already ran a command (touch, rm, etc.) or not, leading to unnecessary back-and-forth
 - report cap: `report::build` currently concatenates every step's description with no length cap; long chains make a long report
 - popup position and wording are first guesses; tune them after living with them a bit
@@ -66,3 +67,29 @@ review-then-stream sequencing.
   right edge instead of wrapping. Pasting does wrap, but the continuation
   lines don't start at column 0 — they start indented, leaving a gap on
   the left.
+- clicking on something should show its full code alongside the "edit way
+  things look" view, with the surrounding code visible if I choose to.
+- smart move detection in the diff view. Right now a move reads as two
+  unrelated things — an edit where the text used to be, and a delete or
+  insert somewhere else. It should be able to say "this was moved" when
+  the same content disappears in one place and appears in another.
+- I need to be able to copy code.
+- `last` should give enough to reason about the file without a follow-up
+  `cat`. Today it's just a diff since the last zap change, so when the
+  assistant sees it they still have to ask "what does the file look like
+  now". Make it emit the diff plus the current contents, so one run answers
+  the question. Also copy to the clipboard by default — right now its output
+  is peek-only (violet, skipped by `copy`), so seeing the diff and getting
+  it onto the clipboard are two separate actions.
+- denying a step should turn that step's block in the right-hand column
+  red.
+- add a rename command.
+- change the edit_title pen button to work. It should turn the block into a
+  text field, let me write in it, and confirm on Enter, which edits the
+  title.
+- file extensions should be an explicit allowlist. Today any extension is
+  allowed by default, and only the ones with special behavior get
+  registered, so an unknown extension slips through as if it were fine.
+- every allowed file format needs an explicit statement of how it's
+  handled for each verb — mv, rm, and the rest. Right now what a verb does
+  to a given format is implicit.
