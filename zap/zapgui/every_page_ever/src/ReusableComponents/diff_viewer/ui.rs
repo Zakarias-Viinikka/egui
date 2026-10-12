@@ -36,6 +36,9 @@ pub struct DiffViewerParams<'a> {
     pub move_spans: &'a [MoveSpan],
     pub scroll_id: egui::Id,
     pub scroll_to_change_once: bool,
+    /// When set, the right ("after") pane gets a colored glow. Used to
+    /// flag execute / cargo-run requests at a glance.
+    pub right_accent: Option<egui::Color32>,
 }
 
 impl Default for DiffViewerParams<'_> {
@@ -44,6 +47,7 @@ impl Default for DiffViewerParams<'_> {
             move_spans: &[],
             scroll_id: egui::Id::new("diff_scroll"),
             scroll_to_change_once: false,
+            right_accent: None,
         }
     }
 }
@@ -141,6 +145,24 @@ fn span_starting_at<'a>(
         .find(|s| s.role == role && s.first_line == n)
 }
 
+fn paint_right_accent(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32) {
+    for (w, a) in [(14.0f32, 16u8), (8.0, 40), (3.0, 90)] {
+        let c = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a);
+        ui.painter().rect_stroke(
+            rect,
+            CORNER + 2.0,
+            egui::Stroke::new(w, c),
+            egui::StrokeKind::Outside,
+        );
+    }
+    ui.painter().rect_stroke(
+        rect,
+        CORNER,
+        egui::Stroke::new(2.0, color),
+        egui::StrokeKind::Inside,
+    );
+}
+
 fn diff_viewer_body(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -161,6 +183,9 @@ fn diff_viewer_body(
             egui::Stroke::new(1.0, BORDER),
             egui::StrokeKind::Inside,
         );
+    }
+    if let Some(accent) = params.right_accent {
+        paint_right_accent(ui, right_box, accent);
     }
 
     let inner_left = left_box.shrink(PAD);

@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 const MAX_ENTRIES: usize = 20;
 
 pub fn run(args: &[&str], session: &Session) -> Outcome {
-    let joined = args.join(" ");
-    let paths: Vec<&str> = joined
-        .split(',')
+    let paths: Vec<&str> = args
+        .iter()
+        .flat_map(|a| a.split(','))
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();

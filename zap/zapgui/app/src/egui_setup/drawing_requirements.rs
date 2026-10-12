@@ -495,6 +495,14 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         let scroll_once = self.scroll_to_change_pending;
         self.scroll_to_change_pending = false;
+        let right_accent = chain
+            .as_ref()
+            .and_then(|c| c.steps.get(self.shown_step))
+            .and_then(|s| match s.step.verb {
+                Verb::Run | Verb::Cargo => Some(egui::Color32::from_rgb(200, 90, 220)),
+                _ => None,
+            });
+
         diff_viewer::diff_viewer_ui_no_copy(
             ui,
             layout.viewer,
@@ -503,6 +511,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 move_spans,
                 scroll_id: egui::Id::new(("diff_scroll", self.shown_step, self.full_file)),
                 scroll_to_change_once: scroll_once,
+                right_accent,
             },
         );
 
@@ -763,6 +772,13 @@ impl NecessaryStructForEgui {
 
         let scroll_once = self.scroll_to_change_pending;
         self.scroll_to_change_pending = false;
+        let right_accent = match review.kind {
+            BannerKind::Execute | BannerKind::CargoRun => {
+                Some(egui::Color32::from_rgb(200, 90, 220))
+            }
+            _ => None,
+        };
+
         diff_viewer::diff_viewer_ui_no_copy(
             ui,
             layout.viewer,
@@ -775,6 +791,7 @@ impl NecessaryStructForEgui {
                     self.full_file,
                 )),
                 scroll_to_change_once: scroll_once,
+                right_accent,
             },
         );
 

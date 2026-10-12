@@ -18,3 +18,7 @@ below. Details are Claude's call.
 
 - Chain writes still require absolute paths and this stays. If reads
   ever cause a wrong-folder surprise, revisit.
+- [ ] Give the right-side glass buttons distinct colors based on the type of action or request they represent, so different operations are visually distinguishable.
+- [ ] Add a dedicated "Allow Special Request" confirmation button for execution requests such as `run` and `cargo`. These requests must not be approved by the ordinary green confirmation button. Give the associated glass panel a distinct colored border or accent to make special requests visually obvious.
+- [ ] Add a verification button for ordinary file reviews, allowing the user to explicitly mark a file as verified and move on without requiring special-request approval.
+- [ ] Fix copying errors to the clipboard, which is currently broken.

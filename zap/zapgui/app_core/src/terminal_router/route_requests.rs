@@ -125,6 +125,35 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
     chain.notify = Some(std::sync::Mutex::new(tx));
     let mine = Arc::new(chain);
 
+    // Fast path: a single run or cargo step whose target is already
+    // trusted for this exact invocation. Skip the chain review and run
+    // it. The run handlers (run_file::run / cargo_run::run) re-check
+    // trust on their own and skip their own review when it matches, so
+    // a fresh target produces no window at all; a stale one falls back
+    // to the run handler's review. See TRUST_REUSE_NOTES.md.
+    if let Some((verb, folder, args)) = run_if_trusted(&mine) {
+        let res = match verb {
+            Verb::Cargo => crate::terminal_router::cargo_run::run(
+                stream,
+                args,
+                folder,
+                Some(cancel.clone()),
+            ),
+            Verb::Run => crate::terminal_router::run_file::run(
+                stream,
+                args,
+                folder,
+                Some(cancel.clone()),
+            ),
+            _ => unreachable!(),
+        };
+        if let Err(e) = res {
+            let _ = write_frame(stream, &Frame::stream_data(&format!("{e}\n")));
+            let _ = write_frame(stream, &Frame::stream_done("error"));
+        }
+        return;
+    }
+
     if let Some(displaced) = crate::terminal_router::stash_pending_arc(mine.clone()) {
         displaced.finish(crate::chain::ChainOutcome::Replaced);
         let first = displaced
@@ -202,6 +231,68 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
         crate::chain::ChainOutcome::Replaced => {
             let _ = write_frame(stream, &Frame::reply("zap: this chain was replaced"));
         }
+    }
+}
+
+/// Resolve a user-typed target the way run_file::run does, but without
+/// the canonicalize step (the caller canonicalizes).
+fn resolve_target_like_run_file(raw: &str, folder: &std::path::Path) -> Option<std::path::PathBuf> {
+    if raw == "~" {
+        return std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return std::env::var("HOME")
+            .ok()
+            .map(|h| std::path::PathBuf::from(h).join(rest));
+    }
+    let p = std::path::PathBuf::from(raw);
+    if p.is_absolute() {
+        Some(p)
+    } else {
+        Some(folder.join(p))
+    }
+}
+
+/// If the chain is exactly one Run or Cargo step whose target is already
+/// trusted for this invocation, return (verb, folder, args). Otherwise
+/// None. See TRUST_REUSE_NOTES.md for the caveats.
+fn run_if_trusted(
+    chain: &crate::chain::Chain,
+) -> Option<(Verb, std::path::PathBuf, Vec<String>)> {
+    if chain.steps.len() != 1 {
+        return None;
+    }
+    let step = &chain.steps[0];
+    match step.step.verb {
+        Verb::Run => {
+            if step.step.args.is_empty() {
+                return None;
+            }
+            let folder = step.path.clone();
+            let target_raw = &step.step.args[0];
+            let extra_args: Vec<String> = step.step.args[1..].to_vec();
+            let file = resolve_target_like_run_file(target_raw, &folder)?.canonicalize().ok()?;
+            let (sha, _) = crate::run_trust::read_for_entry(&file).ok()?;
+            let entry = crate::run_trust::load(&file, &extra_args);
+            match crate::run_trust::decide(entry.as_ref(), &sha) {
+                crate::run_trust::Decision::Trusted => {
+                    Some((Verb::Run, folder, step.step.args.clone()))
+                }
+                _ => None,
+            }
+        }
+        Verb::Cargo => {
+            let folder = step.path.clone();
+            let root = crate::surface::project_root(&folder)?;
+            let surf = crate::surface::collect(&root).ok()?;
+            let rec = crate::trust::load(&root)?;
+            if crate::trust::compare(&rec, &surf).is_empty() {
+                Some((Verb::Cargo, folder, step.step.args.clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 

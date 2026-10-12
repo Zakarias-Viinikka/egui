@@ -68,11 +68,7 @@ impl Default for NecessaryStructForEgui {
 impl eframe::App for NecessaryStructForEgui {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let mut decided: Option<app_core::shortcuts::Action> = None;
-        let stream_active = self
-            .stream
-            .as_ref()
-            .map(|s| !s.done)
-            .unwrap_or(false);
+        let has_stream = self.stream.is_some();
 
         for event in &raw_input.events {
             if let egui::Event::Key {
@@ -85,7 +81,7 @@ impl eframe::App for NecessaryStructForEgui {
                 if modifiers.ctrl {
                     decided = Some(if modifiers.shift {
                         app_core::shortcuts::Action::CopyAll
-                    } else if stream_active {
+                    } else if has_stream {
                         app_core::shortcuts::Action::CancelStream
                     } else {
                         app_core::shortcuts::Action::ClearInput
@@ -98,7 +94,7 @@ impl eframe::App for NecessaryStructForEgui {
         if decided.is_none()
             && raw_input.events.iter().any(|e| matches!(e, egui::Event::Copy))
         {
-            decided = Some(if stream_active {
+            decided = Some(if has_stream {
                 app_core::shortcuts::Action::CancelStream
             } else {
                 app_core::shortcuts::Action::ClearInput
@@ -165,6 +161,7 @@ impl eframe::App for NecessaryStructForEgui {
                     if let Some(stream) = &mut self.stream {
                         let _ = stream.session.send_cancel();
                     }
+                    self.stream = None;
                 }
                 app_core::shortcuts::Action::CopyAll => {
                     let (text, n, skipped) = self.build_scrollback(false);
