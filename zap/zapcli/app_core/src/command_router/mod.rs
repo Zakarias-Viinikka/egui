@@ -123,6 +123,15 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
             Ok(sess) => Outcome::Streaming(sess),
             Err(e) => Outcome::Print(vec![Line::error(e)]),
         },
+        "error" if args.is_empty() => {
+            match crate::general_util::socket::send("error") {
+                Ok(reply) if reply.starts_with("zap error:") => {
+                    Outcome::Print(vec![Line::error(reply)])
+                }
+                result => reply_outcome(result),
+            }
+        }
+        "error" => Outcome::Print(vec![Line::error("error: takes no arguments")]),
         "cd" => core_commands::cd::run(&args, session),
         "ls" => core_commands::ls::run(&args, session),
         "cat" => core_commands::cat::run(&args, session),

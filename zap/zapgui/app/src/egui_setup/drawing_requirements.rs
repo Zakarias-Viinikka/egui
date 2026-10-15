@@ -615,8 +615,8 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     None => {
                         let statuses = vec![StepStatus::Denied; c.steps.len()];
                         let rep = report::build(&c, &statuses, None);
-                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
                         popup::show("All denied");
+                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
                         app_core::terminal_router::clear_pending(&c);
                         c.finish(ChainOutcome::AllDenied);
                         self.shown = None;
@@ -662,9 +662,9 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                             })
                             .collect();
                         let rep = report::build(&c, &statuses, None);
-                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
                         let applied = wanted.iter().filter(|w| **w).count();
                         popup::show(&format!("Applied {} step(s)", applied));
+                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
                         app_core::terminal_router::clear_pending(&c);
                         c.finish(ChainOutcome::Applied(wanted.clone()));
                         self.shown = None;
@@ -685,8 +685,8 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                             .collect();
                         let rep = report::build(&c, &statuses, Some(reason.as_str()));
                         self.error_line = Some(rep.clone());
-                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
                         popup::show("Edit failed");
+                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
                     }
                 }
             }

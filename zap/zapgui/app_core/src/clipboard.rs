@@ -40,35 +40,49 @@ struct Record {
 
 static LAST_WRITE: Mutex<Option<Record>> = Mutex::new(None);
 
-/// Write `text` to the clipboard under the given mode. The record is
-/// updated either way. Returns Err with a human-readable reason if xclip
-/// fails, so a failed write can't look like success.
+#[derive(Clone)]
+struct PendingCopy {
+    text: String,
+    kind: RecordKind,
+}
+
+static PENDING_COPY: Mutex<Option<PendingCopy>> = Mutex::new(None);
+
+/// Write `text` to the clipboard under the given mode. Failed writes retain
+/// their final payload so the `error` command can retry them later.
 pub fn write(text: &str, kind: RecordKind, mode: WriteMode) -> Result<(), String> {
     let final_text = match mode {
         WriteMode::Replace => text.to_string(),
         WriteMode::Append => append_or_replace(text),
     };
 
-    let mut child = Command::new("xclip")
-        .args(["-selection", "clipboard"])
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("xclip could not start: {e}"))?;
+    if let Err(reason) = write_text_to_clipboard(&final_text) {
+        let retain_result = PENDING_COPY
+            .lock()
+            .map(|mut pending| {
+                *pending = Some(PendingCopy {
+                    text: final_text,
+                    kind,
+                });
+            })
+            .map_err(|e| format!("could not retain failed clipboard text: {e}"));
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(final_text.as_bytes())
-            .map_err(|e| format!("xclip write failed: {e}"))?;
+        crate::chain::popup::show("Failed to copy error to clipboard.");
+
+        return match retain_result {
+            Ok(()) => Err(reason),
+            Err(storage_error) => Err(format!("{reason}; {storage_error}")),
+        };
     }
 
-    let status = child.wait().map_err(|e| format!("xclip wait failed: {e}"))?;
-    if !status.success() {
-        return Err(format!("xclip exited with {status}"));
-    }
-
-    if let Ok(mut g) = LAST_WRITE.lock() {
-        *g = Some(Record { text: final_text, at: Instant::now(), kind });
-    }
+    let mut record = LAST_WRITE
+        .lock()
+        .map_err(|e| format!("clipboard record lock poisoned: {e}"))?;
+    *record = Some(Record {
+        text: final_text,
+        at: Instant::now(),
+        kind,
+    });
     Ok(())
 }
 
@@ -76,6 +90,104 @@ pub fn write(text: &str, kind: RecordKind, mode: WriteMode) -> Result<(), String
 /// record it as a report.
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     write(text, RecordKind::Report, WriteMode::Replace)
+}
+
+/// Retry copying the payload from the most recent failed clipboard write.
+/// The retained payload is cleared only after the write succeeds.
+pub fn retry_pending_error() -> Result<(), String> {
+    let pending = {
+        let guard = PENDING_COPY
+            .lock()
+            .map_err(|e| format!("pending clipboard lock poisoned: {e}"))?;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "no failed clipboard copy is pending".to_string())?
+    };
+
+    if let Err(reason) = write_text_to_clipboard(&pending.text) {
+        crate::chain::popup::show("Failed to copy error to clipboard.");
+        return Err(reason);
+    }
+
+    {
+        let mut record = LAST_WRITE
+            .lock()
+            .map_err(|e| format!("clipboard record lock poisoned: {e}"))?;
+        *record = Some(Record {
+            text: pending.text.clone(),
+            at: Instant::now(),
+            kind: pending.kind,
+        });
+    }
+
+    let mut guard = PENDING_COPY
+        .lock()
+        .map_err(|e| format!("pending clipboard lock poisoned: {e}"))?;
+    let same_payload = guard
+        .as_ref()
+        .map(|current| current.text == pending.text && current.kind == pending.kind)
+        .unwrap_or(false);
+    if same_payload {
+        *guard = None;
+    }
+
+    Ok(())
+}
+
+fn write_text_to_clipboard(text: &str) -> Result<(), String> {
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("xclip could not start: {e}"))?;
+
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("xclip stdin was unavailable".to_string());
+        }
+    };
+
+    if let Err(e) = stdin.write_all(text.as_bytes()) {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("xclip write failed: {e}"));
+    }
+    drop(stdin);
+
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("xclip exited with {status}")),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                return match child.wait() {
+                    Ok(status) if status.success() => Ok(()),
+                    Ok(_) => Err(format!(
+                        "xclip timed out after {} ms",
+                        TIMEOUT.as_millis()
+                    )),
+                    Err(e) => Err(format!(
+                        "xclip timed out after {} ms; wait failed: {e}",
+                        TIMEOUT.as_millis()
+                    )),
+                };
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("xclip wait failed: {e}"));
+            }
+        }
+    }
 }
 
 /// Read the clipboard, or None on any failure or empty result. "Unknown"

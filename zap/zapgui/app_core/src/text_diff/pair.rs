@@ -1,4 +1,4 @@
-use similar::{ChangeTag, TextDiff};
+use similar::{ChangeTag, TextDiff, DiffOp};
 
 use super::rows::{DiffRow, RowKind, Side};
 use super::similarity::{similarity, SIMILARITY_THRESHOLD};
@@ -17,8 +17,9 @@ pub fn pair_lines(old: &str, new: &str) -> Vec<DiffRow> {
     let mut rows: Vec<DiffRow> = Vec::new();
 
     for group in diff.grouped_ops(3) {
-        for op in group {
-            pair_one_op(&diff, &op, &mut rows);
+        let ops = merge_adjacent_delete_insert(&group);
+        for op in &ops {
+            pair_one_op(&diff, op, &mut rows);
         }
     }
 
@@ -32,11 +33,65 @@ pub fn pair_lines_full(old: &str, new: &str) -> Vec<DiffRow> {
     let diff = TextDiff::from_lines(old, new);
     let mut rows: Vec<DiffRow> = Vec::new();
 
-    for op in diff.ops() {
+    let ops = merge_adjacent_delete_insert(diff.ops());
+    for op in &ops {
         pair_one_op(&diff, op, &mut rows);
     }
 
     rows
+}
+
+fn merge_adjacent_delete_insert(ops: &[DiffOp]) -> Vec<DiffOp> {
+    let mut merged = Vec::with_capacity(ops.len());
+    let mut i = 0;
+
+    while i < ops.len() {
+        match (ops.get(i), ops.get(i + 1)) {
+            (
+                Some(DiffOp::Delete { old_index, old_len, new_index }),
+                Some(DiffOp::Insert {
+                    old_index: insert_old_index,
+                    new_index: insert_new_index,
+                    new_len,
+                }),
+            ) if *insert_old_index == *old_index + *old_len
+                && *insert_new_index == *new_index =>
+            {
+                merged.push(DiffOp::Replace {
+                    old_index: *old_index,
+                    old_len: *old_len,
+                    new_index: *new_index,
+                    new_len: *new_len,
+                });
+                i += 2;
+            }
+            (
+                Some(DiffOp::Insert {
+                    old_index: insert_old_index,
+                    new_index: insert_new_index,
+                    new_len: insert_new_len,
+                }),
+                Some(DiffOp::Delete { old_index, old_len, new_index }),
+            ) if *old_index == *insert_old_index
+                && *new_index == *insert_new_index + *insert_new_len =>
+            {
+                merged.push(DiffOp::Replace {
+                    old_index: *old_index,
+                    old_len: *old_len,
+                    new_index: *insert_new_index,
+                    new_len: *insert_new_len,
+                });
+                i += 2;
+            }
+            (Some(op), _) => {
+                merged.push(op.clone());
+                i += 1;
+            }
+            (None, _) => break,
+        }
+    }
+
+    merged
 }
 
 fn pair_one_op(
@@ -266,6 +321,30 @@ mod tests {
 
     fn kinds(rows: &[DiffRow]) -> Vec<RowKind> {
         rows.iter().map(|r| r.kind.clone()).collect()
+    }
+
+    #[test]
+    fn adjacent_delete_insert_ops_are_aligned_together() {
+        let diff = TextDiff::from_lines("let x = 1;\n", "let y = 1;\n");
+        let ops = vec![
+            DiffOp::Delete {
+                old_index: 0,
+                old_len: 1,
+                new_index: 0,
+            },
+            DiffOp::Insert {
+                old_index: 1,
+                new_index: 0,
+                new_len: 1,
+            },
+        ];
+        let merged = merge_adjacent_delete_insert(&ops);
+
+        assert_eq!(merged.len(), 1);
+
+        let mut rows = Vec::new();
+        pair_one_op(&diff, &merged[0], &mut rows);
+        assert_eq!(kinds(&rows), vec![RowKind::Change]);
     }
 
     #[test]

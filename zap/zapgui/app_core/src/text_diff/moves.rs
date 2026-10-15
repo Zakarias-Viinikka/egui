@@ -6,7 +6,7 @@
 //! every step of a chain at once, so a move between two files is found
 //! too.
 
-use super::pair::pair_lines;
+use super::pair::pair_lines_full;
 use super::rows::{DiffRow, RowKind};
 use super::similarity::{dice_over_tokens, similarity};
 
@@ -51,6 +51,9 @@ struct Run {
     role: MoveRole,
     first_line: u32,
     last_line: u32,
+    /// Positions in the complete diff output.
+    first_row: usize,
+    last_row: usize,
     lines: Vec<String>,
     chars: usize,
 }
@@ -188,7 +191,7 @@ pub fn detect(steps: &[(Vec<DiffRow>, String)]) -> Vec<Vec<MoveSpan>> {
 }
 
 fn runs_touch(f: &Run, t: &Run) -> bool {
-    f.last_line + 1 == t.first_line || t.last_line + 1 == f.first_line
+    f.last_row + 1 == t.first_row || t.last_row + 1 == f.first_row
 }
 
 /// Build runs of consecutive Delete-only (or Insert-only) rows from a flat
@@ -197,7 +200,7 @@ fn collect_runs(rows: &[DiffRow], step: usize) -> Vec<Run> {
     let mut out: Vec<Run> = Vec::new();
     let mut current: Option<Run> = None;
 
-    for row in rows {
+    for (row_idx, row) in rows.iter().enumerate() {
         let role = match row.kind {
             RowKind::Delete if row.left.is_some() && row.right.is_none() => {
                 Some(MoveRole::From)
@@ -228,8 +231,13 @@ fn collect_runs(rows: &[DiffRow], step: usize) -> Vec<Run> {
                 let chars = text.chars().filter(|c| !c.is_whitespace()).count();
 
                 match &mut current {
-                    Some(cur) if cur.role == r && cur.last_line + 1 == lineno => {
+                    Some(cur)
+                        if cur.role == r
+                            && cur.last_line + 1 == lineno
+                            && cur.last_row + 1 == row_idx =>
+                    {
                         cur.last_line = lineno;
+                        cur.last_row = row_idx;
                         cur.lines.push(text);
                         cur.chars += chars;
                     }
@@ -240,6 +248,8 @@ fn collect_runs(rows: &[DiffRow], step: usize) -> Vec<Run> {
                             role: r,
                             first_line: lineno,
                             last_line: lineno,
+                            first_row: row_idx,
+                            last_row: row_idx,
                             lines: vec![text],
                             chars,
                         });
@@ -270,7 +280,7 @@ fn lines_identical(a: &[String], b: &[String]) -> bool {
 /// Convenience: run detection on one step's before/after. Used by tests
 /// and any single-step caller.
 pub fn detect_one(before: &str, after: &str) -> Vec<MoveSpan> {
-    let rows = pair_lines(before, after);
+    let rows = pair_lines_full(before, after);
     let steps = vec![(rows, String::new())];
     detect(&steps).into_iter().next().unwrap_or_default()
 }
@@ -280,7 +290,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_block_moved_down_is_detected() {
+    fn inserting_lines_above_a_block_is_not_a_move() {
         // Ten lines, then some filler, then the same ten lines.
         let mut old = String::new();
         let mut new = String::new();
@@ -298,6 +308,35 @@ mod tests {
         new.push_str(block);
 
         let spans = detect_one(&old, &new);
+        assert!(spans.is_empty(), "a natural shift is not a move: {spans:?}");
+    }
+
+    fn stable_lines(group: &str) -> String {
+        (0..8)
+            .map(|i| format!("let stable_{group}_{i} = calculate_{group}_{i}();\n"))
+            .collect()
+    }
+
+    fn moved_block() -> String {
+        [
+            "let moved_alpha_value = calculate_alpha_value();",
+            "let moved_beta_value = calculate_beta_value();",
+            "let moved_gamma_value = calculate_gamma_value();",
+            "let moved_delta_value = calculate_delta_value();",
+            "let moved_epsilon_value = calculate_epsilon_value();",
+        ]
+        .join("\n") + "\n"
+    }
+
+    #[test]
+    fn a_block_reordered_within_a_file_is_detected() {
+        let prefix = stable_lines("prefix");
+        let suffix = stable_lines("suffix");
+        let block = moved_block();
+        let old = format!("{prefix}{block}{suffix}");
+        let new = format!("{prefix}{suffix}{block}");
+
+        let spans = detect_one(&old, &new);
         assert!(
             spans.iter().any(|s| s.role == MoveRole::From),
             "expected a From span, got {spans:?}"
@@ -309,6 +348,34 @@ mod tests {
     }
 
     #[test]
+    fn an_edited_move_is_detected_and_marked_edited() {
+        let prefix = stable_lines("prefix");
+        let suffix = stable_lines("suffix");
+        let block = moved_block();
+        let edited_block = block.replace(
+            "calculate_gamma_value()",
+            "calculate_updated_gamma_value()",
+        );
+        let old = format!("{prefix}{block}{suffix}");
+        let new = format!("{prefix}{suffix}{edited_block}");
+
+        let spans = detect_one(&old, &new);
+        let from = spans
+            .iter()
+            .find(|s| s.role == MoveRole::From)
+            .unwrap_or_else(|| panic!("expected a From span, got {spans:?}"));
+        let to = spans
+            .iter()
+            .find(|s| s.role == MoveRole::To)
+            .unwrap_or_else(|| panic!("expected a To span, got {spans:?}"));
+
+        assert!(from.edited, "expected edited=true, got {from:?}");
+        assert!(to.edited, "expected edited=true, got {to:?}");
+        assert!(from.label.contains("(edited)"), "got {:?}", from.label);
+        assert!(to.label.contains("(edited)"), "got {:?}", to.label);
+    }
+
+    #[test]
     fn small_runs_are_ignored() {
         let old = "one\n";
         let new = "\none\n";
@@ -317,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edited_move_is_detected_and_marked_edited() {
+    fn inserting_lines_above_a_block_with_an_edit_is_not_a_move() {
         let old = "line a here\nline b here\nline c here\nline d here\nline e here\n";
         let mut new = String::new();
         for _ in 0..4 {
@@ -325,8 +392,6 @@ mod tests {
         }
         new.push_str("line a here\nline b here\nline c CHANGED here\nline d here\nline e here\n");
         let spans = detect_one(old, new);
-        if let Some(s) = spans.iter().find(|s| s.role == MoveRole::From) {
-            assert!(s.edited, "expected edited=true, got {s:?}");
-        }
+        assert!(spans.is_empty(), "a shifted block is not a move: {spans:?}");
     }
 }

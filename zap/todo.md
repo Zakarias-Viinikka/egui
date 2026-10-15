@@ -1,41 +1,127 @@
 # todo — immediate
 
-Everything from the previous immediate list is done except the items
-below. Details are Claude's call.
+Details are Claude's call unless stated. Items marked [part 2] or
+[part 3] belong to a later split of the current work, not the diff
+engine pass that just landed.
 
-## viewer follow-ups
+## viewer
 
-- Word wrap arrow color is bright orange and stands out. If it turns out
-  too loud in practice, tone it down. Tune after living with it.
+- Word wrap arrow color is bright orange and stands out. If it turns
+  out too loud in practice, tone it down. Tune after living with it.
+- The diff viewer adds about one line above the actual edit, so a
+  one-line edit usually shows two lines as edited. Annoying. Fix the
+  context calculation so a one-line change shows as one line.
 
 ## chain internals
 
-- The move-detection thresholds (DICE_FLOOR, ALIGN_FLOOR, LONG_RUN) are
-  first guesses. Watch for false positives or missed moves and tune the
-  named constants in text_diff/moves.rs.
+- Move-detection thresholds (DICE_FLOOR, ALIGN_FLOOR, LONG_RUN) are
+  first guesses. The bug that made moves read as delete+insert is
+  fixed now, so these can be re-checked against real cases. Watch for
+  false positives or missed moves.
 
-## zapcli
+## zapcli — verbs
 
-- Chain writes still require absolute paths and this stays. If reads
-  ever cause a wrong-folder surprise, revisit.
-- [ ] Give the right-side glass buttons distinct colors based on the type of action or request they represent, so different operations are visually distinguishable.
-- [ ] Add a dedicated "Allow Special Request" confirmation button for execution requests such as `run` and `cargo`. These requests must not be approved by the ordinary green confirmation button. Give the associated glass panel a distinct colored border or accent to make special requests visually obvious.
-- [ ] Add a verification button for ordinary file reviews, allowing the user to explicitly mark a file as verified and move on without requiring special-request approval.
-- [ ] Fix copying errors to the clipboard, which is currently broken.
+- [part 2] Rename `rm` and `mv` to `zaprm` and `zapmv`. Old names stop
+  working. Any dangerous verb from now on starts with `zap`.
+- [part 2] `overwrite` with content identical to what's already there
+  should skip that step and continue the chain, not fail it.
+- [part 2] `retry`: re-run only the steps that didn't apply. Works for
+  both a failed chain and a chain where the user marked specific steps
+  and confirmed the rest. Denials and failures share one record.
+  `retry` with no args = everything not applied. `retry 2` = step 2.
+- [part 2] When `cat` can't find a file, the failure should also show
+  in the CLI terminal, not just the clipboard blob.
+- `rmdir <path> [<path>...]`, one line, no markers, matching `mkdir`.
+  Fails on a directory that isn't empty. Needed after a folder move,
+  because `rm` refuses directories and the old folder is left behind
+  empty.
+- Chain writes still require absolute paths and this stays.
+- `cd /path && c c` inside a chain is currently rejected with "cd must
+  be followed by cargo or run". A casual `cd` with `&&` shouldn't be a
+  chain candidate. Loosen the detection.
 
-- show an indicator of the max edit boundary — something like "edits are only happening in /home/zakke/ProgStuff/suggestion_for_leptos_book/" so it's visible at a glance that nothing above that path is being touched
+## zapcli — bugs
 
-- rename the rm and mv verbs to zaprm and zapmv so that pasting a zap command into a real terminal by mistake doesn't run a real rm or mv
+- When zap rejects an edit, it should report every rejection it can
+  find in the chain instead of stopping at the first one. Today the AI
+  fixes one error, resubmits, and hits the next one that was already
+  detectable.
+- Word wrap on the input line is wrong. Pasting wraps but continuation
+  lines start indented; typing runs past the right edge.
+- `last` should give diff plus current contents, and copy to clipboard
+  by default.
+- `s` opens settings today; it should do what `s` does in the bashrc.
+- Add `cdf`, defined in the bashrc.
+- [part 3] `edit` command: fzf-pick a file like the `run`/`cdf`
+  picker, then open the selected file in Mousepad.
+- If a shortcut is pressed and zapgui is already running, the shortcut
+  should open zapgui instead of launching a second one.
 
-- the smart diff logic is broken. an edit shows up as a delete plus an insert instead of an edit. the program should be able to tell the difference. it also shouldn't label as "delete and edit" something that just moved down because code got inserted or removed above it — that's a natural shift, not a delete.
+## zapcli — copy and paste
 
-- overwriting a file with content identical to what's already there shouldn't fail the chain. that step should just be skipped and the rest of the chain should continue.
-if a command failed because one thing wasn't right. there should be some kind of system so the ai doesn't have to rewrite the entier thing. instad it can do like "retry" command or soemthing and it tries to rerun the previous thing and it only has to rewrite the ones that failed
-when cat fails to find a file, it also shows in the cli terminal
+- [part 3] Select text and right-click should give a copy button.
 
-- [ ] `edit` command: fzf-pick a file like the normal terminal `run`/`cdf` picker, then open the selected file in Mousepad.
+## zapgui — permission flow
 
-##zapgui permission bug
-basically when there is a request appended at the end. i have to confirm the request then when i click confirm, it does a new popup for just the request that i have to confirm again. id prefer if it just made me do it once, and the glass panels on the right were color coded so i could easily see when i need to accept them.
+- [part 2] Right-side glass blocks should be colored by the type of
+  action or request they represent, so different operations are
+  visually distinguishable. Create/edit/move also need clearer
+  indicators than they have now.
+- [part 2] A dedicated "Allow Special Request" confirmation for
+  execution requests (`run`, `cargo`). These must not be approvable by
+  the ordinary green confirm. Give the panel a distinct colored border
+  or accent.
+- [part 2] A verification button for ordinary file reviews, so a file
+  can be explicitly marked verified and moved on without special-
+  request approval.
+- [part 2] Add a `Mark` button alongside Confirm and Deny All. Confirm
+  writes unmarked steps and leaves marked ones as the retry payload.
+  Mark toggles on the shown step. Deny All writes nothing and makes
+  the whole chain the retry payload; marks set before Deny All are
+  preserved. Retry is possible only when at least one step is marked,
+  or after Deny All.
+- [part 2] Double-confirm bug: when a run/cargo request is appended,
+  the user confirms it once, then a second popup appears for the same
+  request. Make it one confirmation.
+- [part 3] Show an indicator of the max edit boundary — something like
+  "edits are only happening in /abs/folder/" — so it's visible at a
+  glance that nothing above that path is being touched.
 
-also i feel like a system where isntead of just having to pick apply or deny, i could have a third option where i click "pause" where whatever i selected as "deny" is in mode "this is what the ai will edit" it's complicated to explain but the idea is basically. i somehow express "everythign was fine excepts the files i denied" something gets copied to my clipboard, then the ai im working with can express "ok that gives me the info i need to know which ones i need to change" and it gives me a command like "zap try again becauser user denied but wanted to redo not deny all" and it only needs to change the things i denied, and it knows what i denied and what i want it to do because it's explained in what gets automatically put in clipboard
+## security
+
+- [part 3] Even inside a whitelisted folder, editing `.sh` or `.toml`
+  files must require approval. Approval is remembered per path and
+  content hash, like run_trust. If content and path are unchanged
+  since the last approval, no re-ask.
+
+## feature adds
+
+- `ast-grep` support, and safe Rust renaming.
+- Whitelist a single file (not just a folder).
+- Mark a file as hidden and never show it. The AI can't touch it or
+  see it. If it asks for the file, or tries to cat it, the reply is a
+  clipboard line saying the file has been deliberately hidden by the
+  user.
+
+## from todo_later
+
+- report::build has no length cap; long chains make a long report.
+- popup position and wording are first guesses; tune once popups work.
+- rm path with a space: the line splits on whitespace, so `rm a b` is
+  two paths. Same class of bug may apply to the new rmdir.
+- file extensions should be an explicit allowlist, and every allowed
+  format needs a stated behavior per verb.
+- a chain that mixes auto-apply-safe steps with one rm/mv should only
+  ask for approval on the rm/mv step, not the whole chain.
+- a chmod step for chains: `chmod +x <path>`, always reviewed, with a
+  distinct "EXEC REQUEST" banner. Human approves before a file becomes
+  executable.
+- replace failures should be smart. When the old text isn't found,
+  locate the nearest matching lines and include them in the clipboard
+  sentence ("expected 1 occurrence of `fn foo() {`, found 0. Closest
+  match at line 47: `fn foo() -> bool {`."). Reuse text_diff/similarity.rs.
+  Same treatment for create-target-exists and overwrite-file-missing
+  when cheap.
+- the `edit_title` pen button should work: turn the block into a text
+  field, Enter commits.
+- a rename command.

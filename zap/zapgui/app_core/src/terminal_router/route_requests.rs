@@ -99,8 +99,8 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
         Ok(s) => s,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
-            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             crate::chain::popup::show("Edit failed");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             let _ = write_frame(stream, &Frame::reply(&sentence));
             return;
         }
@@ -114,8 +114,8 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
-            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             crate::chain::popup::show("Edit failed");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             let _ = write_frame(stream, &Frame::reply(&sentence));
             return;
         }
@@ -162,8 +162,8 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
             .map(|s| s.path.display().to_string())
             .unwrap_or_default();
         let sentence = format!("zap: replaced unconfirmed chain ({first}).");
-        let _ = crate::clipboard::copy_to_clipboard(&sentence);
         crate::chain::popup::show("Replaced");
+        let _ = crate::clipboard::copy_to_clipboard(&sentence);
     }
 
     let deadline = std::time::Instant::now() + Duration::from_secs(600);
@@ -326,6 +326,18 @@ fn stream_devstream(stream: &mut UnixStream) {
 }
 
 pub fn route(request: &str) -> String {
+    if let Some(text) = request.strip_prefix("copy-error\n") {
+        return match crate::clipboard::copy_to_clipboard(text) {
+            Ok(()) => "zap: copied error to clipboard.".to_string(),
+            Err(e) => format!("zap error: {e}"),
+        };
+    }
+    if request == "error" {
+        return match crate::clipboard::retry_pending_error() {
+            Ok(()) => "zap: copied the retained clipboard text.".to_string(),
+            Err(e) => format!("zap error: {e}"),
+        };
+    }
     if request == "focus" || request.starts_with("focus ") {
         focus_window();
         return String::new();
@@ -365,8 +377,8 @@ fn handle_chain(rest: &str) -> String {
         Ok(s) => s,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
-            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             crate::chain::popup::show("Edit failed");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             return sentence;
         }
     };
@@ -382,8 +394,8 @@ fn handle_chain(rest: &str) -> String {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
-            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             crate::chain::popup::show("Edit failed");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             return sentence;
         }
     };
@@ -411,14 +423,14 @@ fn handle_chain(rest: &str) -> String {
             Ok(()) => {
                 let statuses = vec![crate::chain::StepStatus::Applied; chain.steps.len()];
                 let rep = crate::chain::report::build(&chain, &statuses, None);
-                let _ = crate::clipboard::copy_to_clipboard(&rep);
                 crate::chain::popup::show("Change was made");
+                let _ = crate::clipboard::copy_to_clipboard(&rep);
                 String::new()
             }
             Err(e) => {
                 let sentence = format!("zap: nothing was written. {}.", e);
-                let _ = crate::clipboard::copy_to_clipboard(&sentence);
                 crate::chain::popup::show("Edit failed");
+                let _ = crate::clipboard::copy_to_clipboard(&sentence);
                 sentence
             }
         };
@@ -432,8 +444,8 @@ fn handle_chain(rest: &str) -> String {
                 .map(|s| s.path.display().to_string())
                 .unwrap_or_default();
             let sentence = format!("zap: replaced unconfirmed chain ({first}).");
-            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             crate::chain::popup::show("Replaced");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             sentence
         }
         None => String::new(),
@@ -480,8 +492,8 @@ fn handle_overwrite(rest: &str) -> String {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
-            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             crate::chain::popup::show("Edit failed");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
             return sentence;
         }
     };
@@ -501,14 +513,14 @@ fn handle_overwrite(rest: &str) -> String {
                 let statuses =
                     vec![crate::chain::StepStatus::Applied; chain.steps.len()];
                 let rep = crate::chain::report::build(&chain, &statuses, None);
-                let _ = crate::clipboard::copy_to_clipboard(&rep);
                 crate::chain::popup::show("Change was made");
+                let _ = crate::clipboard::copy_to_clipboard(&rep);
                 String::new()
             }
             Err(e) => {
                 let sentence = format!("zap: nothing was written. {}.", e);
-                let _ = crate::clipboard::copy_to_clipboard(&sentence);
                 crate::chain::popup::show("Edit failed");
+                let _ = crate::clipboard::copy_to_clipboard(&sentence);
                 sentence
             }
         };

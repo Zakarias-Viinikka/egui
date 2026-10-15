@@ -53,7 +53,12 @@ full-file toggle.
 
 `zapgui/app_core/src/run_trust.rs` — run-target trust entries.
 
-`zapgui/app_core/src/clipboard.rs` — xclip wrapper.
+`zapgui/app_core/src/clipboard.rs` — xclip wrapper. Failed writes retain
+their exact payload and record kind in memory. They show the popup
+`Failed to copy error to clipboard.` The zapcli `error` command asks zapgui
+to retry copying the retained payload; it remains pending until the retry
+succeeds. Callers must not show another popup after a failed clipboard write,
+or they can hide the clipboard-failure popup.
 
 `zapgui/app/src/egui_main.rs` — startup, icon, listener spawn, ctx storage,
 single-instance handoff.
@@ -74,6 +79,10 @@ selectable text, wrap markers. If you touch the viewer, read this file
 top to bottom once.
 
 ## 5. What zapcli is doing
+
+The zapcli `error` command asks zapgui to retry copying the most recent
+failed clipboard payload. If retry fails, the payload stays in zapgui
+memory until a successful retry or zapgui exits.
 
 `zapcli/app_core/src/command_router/mod.rs` — dispatch. Look at this to know
 what verbs exist. `create`, `replace`, `overwrite`, `append`, `rm`, `mv`,

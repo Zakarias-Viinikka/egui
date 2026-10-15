@@ -249,6 +249,18 @@ appears top-center-ish, sits for 800 ms, fades, exits. Click to dismiss.
 They are drawn directly against X11 (`override_redirect`) because an egui
 window on XFCE fights the window manager for focus.
 
+## Clipboard recovery
+
+A failed clipboard write retains the exact payload in zapgui memory and
+shows the popup `Failed to copy error to clipboard.` Run `error` in zapcli
+to retry copying that retained text. The command reports the result in
+zapcli. If the retry fails, the payload remains pending; it is cleared only
+after a successful retry. The pending payload is lost when zapgui exits.
+
+The failure popup is shown after the operation's ordinary popup would have
+appeared, so a clipboard failure is not hidden by a success or edit-failure
+message. The clipboard cannot be relied on to carry its own failure report.
+
 ## Whitelist
 
 `~/.config/zap/whitelist.txt` (honours `XDG_CONFIG_HOME`), one absolute

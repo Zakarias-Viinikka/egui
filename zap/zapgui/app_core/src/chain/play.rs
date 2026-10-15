@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 
 use crate::text_diff::moves as move_detect;
-use crate::text_diff::{pair_lines, process, DiffRowProcessedForUi, MoveSpan};
+use crate::text_diff::{pair_lines, pair_lines_full, process, DiffRowProcessedForUi, MoveSpan};
 
 use super::step::{Step, Verb};
 
@@ -110,7 +110,7 @@ pub fn play_forward(steps: Vec<Step>, cwd: &Path) -> Result<Chain, String> {
         .iter()
         .map(|s| {
             let before = s.before.as_deref().unwrap_or("");
-            let rows = pair_lines(before, &s.after);
+            let rows = pair_lines_full(before, &s.after);
             (rows, s.path.display().to_string())
         })
         .collect();

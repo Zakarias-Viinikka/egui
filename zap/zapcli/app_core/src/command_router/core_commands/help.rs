@@ -19,6 +19,7 @@ pub fn run() -> Outcome {
         Line::normal("  whitelist           open zapgui's whitelist menu"),
         Line::normal("  s | settings        show settings"),
         Line::normal("  copy [all]          copy the whole scrollback"),
+        Line::normal("  error               retry the last failed clipboard copy"),
         Line::normal("  cls | clear         clear the scrollback"),
         Line::normal("  head <file>         show the first lines of a file"),
         Line::normal("  tail <file>         show the last lines of a file"),
