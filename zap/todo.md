@@ -124,3 +124,12 @@ engine pass that just landed.
 ## trying to select text in zapgui by clickign and dragging, makes it select text from the other window too. it's really annoying
 
 ## i want to make it so <verb> --help copies something to my clipboard so ai can ask about details or help with how a command works. that way i can reduce my zap thing, so that for the niche and rare stuff ai knows the commadn exists and can just tell me "run command for x --help"
+
+## i dont know how cargo run is supported or if it is, but it shouldn't be allowed without me explicitly saying "allow" and same thing with running sh files. unless i whitelist the file in like a specific "white list file" way. but that also means the sh can't be modified without my permission. and modifying needs to ask me if i still want it whitelisted
+
+
+##my program still sucks at figuring out the difference between a replace and edit. if it find enough matching stuff between the old thing and the new one it should say "edit" not replace. an edit is different and should have a blue color thingy
+
+##hovering the verify, mark buttons and whatnot. should ahve good explanations for what they're for and meant to be used for, because it's hard for me to remember until i learn them otehrwise
+
+##  head should write to clipboard

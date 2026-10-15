@@ -368,11 +368,15 @@ pub fn route(request: &str) -> String {
         return handle_last(Some(rest.trim()));
     }
     if request == "retry" {
-        return handle_retry(None);
+        return handle_retry(None, None);
     }
     if let Some(rest) = request.strip_prefix("retry ") {
+        let (nums_part, body) = match rest.find('\n') {
+            Some(nl) => (&rest[..nl], Some(&rest[nl + 1..])),
+            None => (rest, None),
+        };
         let mut idx: Vec<usize> = Vec::new();
-        for tok in rest.split_whitespace() {
+        for tok in nums_part.split_whitespace() {
             match tok.parse::<usize>() {
                 Ok(n) if n >= 1 => idx.push(n - 1),
                 Ok(_) => {
@@ -386,7 +390,7 @@ pub fn route(request: &str) -> String {
         if idx.is_empty() {
             return "zapgui: retry takes step numbers or nothing".to_string();
         }
-        return handle_retry(Some(idx));
+        return handle_retry(Some(idx), body);
     }
     if let Some(rest) = request.strip_prefix("surfacereview ") {
         return handle_surface_review(rest);
@@ -617,11 +621,22 @@ fn _unused() {
 
 /// Rebuild a chain from the last review's unapplied steps and stash it
 /// for review. Writes nothing directly; the user confirms as usual.
-fn handle_retry(only: Option<Vec<usize>>) -> String {
+fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
     let Some(rec) = crate::terminal_router::retry::current() else {
         return "zapgui: nothing to retry".to_string();
     };
-    let chain = match crate::terminal_router::retry::build_retry_chain(&rec, only.as_deref()) {
+    let replacements = match body {
+        Some(b) if !b.trim().is_empty() => match crate::chain::parse(b) {
+            Ok(steps) => Some(steps),
+            Err(e) => return format!("zapgui: bad retry body: {e}"),
+        },
+        _ => None,
+    };
+    let chain = match crate::terminal_router::retry::build_retry_chain(
+        &rec,
+        only.as_deref(),
+        replacements.as_deref(),
+    ) {
         Ok(c) => c,
         Err(e) => return format!("zapgui: {e}"),
     };

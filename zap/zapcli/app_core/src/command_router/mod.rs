@@ -83,6 +83,13 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         return core_commands::chain::run(input, session);
     }
 
+    // retry forwards the raw input, not the trimmed word list, so a
+    // chain block pasted after the step numbers survives. Single-line
+    // "retry 2 5" produces the same payload it always did.
+    if trimmed == "retry" || trimmed.starts_with("retry ") {
+        return reply_outcome(crate::general_util::socket::send(trimmed));
+    }
+
     let mut parts = trimmed.split_whitespace();
     let Some(verb) = parts.next() else {
         return Outcome::Unknown;
@@ -141,14 +148,6 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         "tail" => core_commands::tail::run(&args, session),
         "wc" => core_commands::wc::run(&args, session),
         "last" => core_commands::last::run(&args, session),
-        "retry" => {
-            let payload = if args.is_empty() {
-                "retry".to_string()
-            } else {
-                format!("retry {}", args.join(" "))
-            };
-            reply_outcome(crate::general_util::socket::send(&payload))
-        }
         "s" | "settings" => core_commands::settings::run(),
         "help" => core_commands::help::run(),
         "whitelist" => core_commands::whitelist::run(),

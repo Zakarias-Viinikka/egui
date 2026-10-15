@@ -68,8 +68,26 @@ pub fn payload(rec: &RetryRecord, only: Option<&[usize]>) -> Vec<Step> {
 pub fn build_retry_chain(
     rec: &RetryRecord,
     only: Option<&[usize]>,
+    replacements: Option<&[Step]>,
 ) -> Result<Chain, String> {
-    let steps = payload(rec, only);
+    let steps = match replacements {
+        Some(repl) => {
+            let Some(indices) = only else {
+                return Err(
+                    "retry: replacements need step numbers before them".to_string()
+                );
+            };
+            if repl.len() != indices.len() {
+                return Err(format!(
+                    "retry: {} step number(s) but {} replacement step(s)",
+                    indices.len(),
+                    repl.len()
+                ));
+            }
+            repl.to_vec()
+        }
+        None => payload(rec, only),
+    };
     if steps.is_empty() {
         return Err("nothing to retry".to_string());
     }
@@ -188,7 +206,7 @@ mod tests {
             steps: vec![],
             statuses: vec![],
         };
-        let e = build_retry_chain(&rec, None).expect_err("empty");
+        let e = build_retry_chain(&rec, None, None).expect_err("empty");
         assert!(e.contains("nothing to retry"), "got: {e}");
     }
 
@@ -198,7 +216,7 @@ mod tests {
             steps: vec![make_step(Verb::Create, "/tmp/a")],
             statuses: vec![StepStatus::Applied],
         };
-        let e = build_retry_chain(&rec, None).expect_err("all applied");
+        let e = build_retry_chain(&rec, None, None).expect_err("all applied");
         assert!(e.contains("nothing to retry"), "got: {e}");
     }
 
@@ -211,7 +229,7 @@ mod tests {
             steps: vec![cargo],
             statuses: vec![StepStatus::Failed],
         };
-        let e = build_retry_chain(&rec, None).expect_err("run");
+        let e = build_retry_chain(&rec, None, None).expect_err("run");
         assert!(e.contains("run"), "got: {e}");
     }
 
@@ -224,7 +242,7 @@ mod tests {
             steps: vec![replace_step(&file, "hello", "world")],
             statuses: vec![StepStatus::Failed],
         };
-        let chain = build_retry_chain(&rec, None).expect("build");
+        let chain = build_retry_chain(&rec, None, None).expect("build");
         assert_eq!(chain.steps.len(), 1);
         assert_eq!(chain.steps[0].after, "world\n");
         let _ = fs::remove_dir_all(&dir);
@@ -244,7 +262,7 @@ mod tests {
             ],
             statuses: vec![StepStatus::Failed, StepStatus::Failed],
         };
-        let chain = build_retry_chain(&rec, Some(&[1])).expect("build");
+        let chain = build_retry_chain(&rec, Some(&[1]), None).expect("build");
         assert_eq!(chain.steps.len(), 1);
         assert_eq!(chain.steps[0].after, "TWO\n");
         let _ = fs::remove_dir_all(&dir);
@@ -277,5 +295,40 @@ mod tests {
 
         clear();
         assert!(current().is_none());
+    }
+
+    #[test]
+    fn build_retry_chain_uses_replacements() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let rec = RetryRecord {
+            steps: vec![replace_step(&file, "wrong", "wrong")],
+            statuses: vec![StepStatus::Failed],
+        };
+        let new_step = replace_step(&file, "hello", "goodbye");
+        let chain = build_retry_chain(&rec, Some(&[0]), Some(&[new_step]))
+            .expect("build");
+        assert_eq!(chain.steps.len(), 1);
+        assert_eq!(chain.steps[0].after, "goodbye\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_retry_chain_rejects_mismatched_replacements() {
+        let rec = RetryRecord {
+            steps: vec![make_step(Verb::Create, "/tmp/a")],
+            statuses: vec![StepStatus::Failed],
+        };
+        let err = build_retry_chain(
+            &rec,
+            Some(&[0]),
+            Some(&[
+                make_step(Verb::Create, "/tmp/a"),
+                make_step(Verb::Create, "/tmp/b"),
+            ]),
+        )
+        .expect_err("mismatch");
+        assert!(err.contains("step number"), "got: {err}");
     }
 }

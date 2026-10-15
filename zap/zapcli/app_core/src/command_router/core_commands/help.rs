@@ -27,10 +27,16 @@ pub fn run() -> Outcome {
         Line::normal("  wc <file>           line, word, byte counts"),
         Line::normal("  last [path]         show the last change zap made to a file"),
         Line::normal("  retry [step...]     re-review the last chain's unapplied steps"),
+        Line::normal("                      add step bodies to replace those steps instead"),
         Line::normal("  help                this list"),
         Line::normal("  exit | quit         close zapcli"),
         Line::cli("chain writes need absolute paths or ~/... . A chain may end"),
         Line::cli("with 'cd <folder>' then 'cargo <args>' or 'run <file> [args]'."),
+        Line::cli("retry 2 5 with step bodies after it replaces those slots:"),
+        Line::cli("  retry 2 5"),
+        Line::cli("  replace /abs/x.rs"),
+        Line::cli("  @old ... @new ... @end"),
+        Line::cli("one body per number, in the same order."),
         Line::cli("see ~/ProgStuff/egui/zap/CHAIN_CHEATSHEET.md"),
     ])
 }
