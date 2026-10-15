@@ -70,6 +70,7 @@ struct LaidRow {
     height: f32,
     block_start: bool,
     kind: RowKind,
+    row_kind: RowKind,
 }
 
 pub fn diff_viewer_ui(
@@ -261,6 +262,7 @@ fn diff_viewer_body(
                 height: h,
                 block_start: first,
                 kind: block.kind.clone(),
+                row_kind: row.kind.clone(),
             });
             first = false;
         }
@@ -313,7 +315,7 @@ fn diff_viewer_body(
                     Which::Left,
                     lr.left_lineno,
                     lr.left_in_move,
-                    &lr.kind,
+                    &lr.row_kind,
                     lr.left.is_some(),
                 );
                 draw_side_paint(
@@ -324,7 +326,7 @@ fn diff_viewer_body(
                     Which::Right,
                     lr.right_lineno,
                     lr.right_in_move,
-                    &lr.kind,
+                    &lr.row_kind,
                     lr.right.is_some(),
                 );
 

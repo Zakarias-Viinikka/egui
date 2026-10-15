@@ -21,8 +21,7 @@ engine pass that just landed.
 
 ## zapcli — verbs
 
-- [part 2] Rename `rm` and `mv` to `zaprm` and `zapmv`. Old names stop
-  working. Any dangerous verb from now on starts with `zap`.
+
 - [part 2] `overwrite` with content identical to what's already there
   should skip that step and continue the chain, not fail it.
 - [part 2] `retry`: re-run only the steps that didn't apply. Works for
@@ -31,10 +30,6 @@ engine pass that just landed.
   `retry` with no args = everything not applied. `retry 2` = step 2.
 - [part 2] When `cat` can't find a file, the failure should also show
   in the CLI terminal, not just the clipboard blob.
-- `rmdir <path> [<path>...]`, one line, no markers, matching `mkdir`.
-  Fails on a directory that isn't empty. Needed after a folder move,
-  because `rm` refuses directories and the old folder is left behind
-  empty.
 - Chain writes still require absolute paths and this stays.
 - `cd /path && c c` inside a chain is currently rejected with "cd must
   be followed by cargo or run". A casual `cd` with `&&` shouldn't be a

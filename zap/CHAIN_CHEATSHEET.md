@@ -12,6 +12,10 @@ included in `copy` (but is included in `copy all`).
 
 `last [path]` — show the last change zap made to a file.
 
+`retry [<step>...]` — rebuild a chain from the last review's unapplied
+steps and show it again. `retry 2` = step 2 of that chain, `retry 2 5`
+= those two. After a Deny All the whole chain is retryable.
+
 `whitelist` opens zapgui's menu of auto-apply folders.
 
 `zap <text>` sends a line to zapgui.
@@ -25,7 +29,7 @@ other than stable/beta/nightly. The AI cannot start a run by itself. A run
 can only be proposed as the last step of a chain (see below), and nothing
 runs until the human confirms in zapgui.
 
-`create`, `replace`, `overwrite`, `append`, `rm`, `mv`, `mkdir`,
+`create`, `replace`, `overwrite`, `append`, `zaprm`, `zapmv`, `mkdir`,
 `cd`/`cargo`/`run` — see "Chains" below.
 
 ## Paths
@@ -67,11 +71,12 @@ create, replace, overwrite and append have content between markers:
     <text to append>
     @end
 
-rm, mv, mkdir are one line, no body:
+zaprm, zapmv, mkdir, rmdir are one line, no body:
 
-    rm <path> [<path>...]
-    mv <from> <to>
+    zaprm <path> [<path>...]
+    zapmv <from> <to>
     mkdir [-p] <path> [<path>...]
+    rmdir <path> [<path>...]
 
 `replace` requires the old text to occur exactly once. `xN` means exactly N
 times; all N are replaced. `create` fails if the file exists; `overwrite`
@@ -81,9 +86,10 @@ and `append` adds a newline before the appended text if the file does not
 already end with one. `--no-newline` turns both off. Missing parent folders
 are made when the chain is applied.
 
-`rm` works on text files only, and only ones it can keep an undo copy of.
-It refuses directories. `mv` never overwrites: to replace a file, `rm` it
+`zaprm` works on text files only, and only ones it can keep an undo copy of.
+It refuses directories. `zapmv` never overwrites: to replace a file, `zaprm` it
 first in the same chain. `mkdir` accepts `-p` and always creates parents.
+`rmdir` removes an empty folder; it fails if the folder has anything in it.
 
 Nothing in a chain is interpreted. Backticks, `$`, quotes, and heredoc
 markers are all literal.
@@ -110,7 +116,7 @@ Rules of thumb: keep the old text small and unique. One chain can touch many
 files, and a step can target a file an earlier step made. All-or-nothing: if
 any step cannot be done, nothing is written.
 
-A chain with any `rm`, `mv`, `cargo` or `run` step always needs review, even
+A chain with any `zaprm`, `zapmv`, `cargo` or `run` step always needs review, even
 inside a whitelisted folder. Whitelisted folders auto-apply only create,
 replace, overwrite, append and mkdir.
 

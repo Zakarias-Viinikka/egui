@@ -33,6 +33,7 @@ pub fn handle_cargo_run(stream: &mut UnixStream, text: &str) {
         args,
         std::path::PathBuf::from(cwd),
         None,
+        false,
     ) {
         let _ = write_frame(stream, &Frame::stream_data(&format!("{e}\n")));
         let _ = write_frame(stream, &Frame::stream_done("error"));
@@ -52,6 +53,7 @@ pub fn handle_run_file(stream: &mut UnixStream, text: &str) {
         args,
         std::path::PathBuf::from(cwd),
         None,
+        false,
     ) {
         let _ = write_frame(stream, &Frame::stream_data(&format!("{e}\n")));
         let _ = write_frame(stream, &Frame::stream_done("error"));
@@ -138,12 +140,14 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
                 args,
                 folder,
                 Some(cancel.clone()),
+                false,
             ),
             Verb::Run => crate::terminal_router::run_file::run(
                 stream,
                 args,
                 folder,
                 Some(cancel.clone()),
+                false,
             ),
             _ => unreachable!(),
         };
@@ -211,12 +215,14 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
                     args,
                     folder,
                     Some(cancel.clone()),
+                    true,
                 ),
                 Verb::Run => crate::terminal_router::run_file::run(
                     stream,
                     args,
                     folder,
                     Some(cancel.clone()),
+                    true,
                 ),
                 _ => unreachable!(),
             };
@@ -352,6 +358,27 @@ pub fn route(request: &str) -> String {
     if let Some(rest) = request.strip_prefix("last ") {
         return handle_last(Some(rest.trim()));
     }
+    if request == "retry" {
+        return handle_retry(None);
+    }
+    if let Some(rest) = request.strip_prefix("retry ") {
+        let mut idx: Vec<usize> = Vec::new();
+        for tok in rest.split_whitespace() {
+            match tok.parse::<usize>() {
+                Ok(n) if n >= 1 => idx.push(n - 1),
+                Ok(_) => {
+                    return format!("zapgui: step numbers are 1-based (got {tok})");
+                }
+                Err(_) => {
+                    return format!("zapgui: bad step number {tok}");
+                }
+            }
+        }
+        if idx.is_empty() {
+            return "zapgui: retry takes step numbers or nothing".to_string();
+        }
+        return handle_retry(Some(idx));
+    }
     if let Some(rest) = request.strip_prefix("surfacereview ") {
         return handle_surface_review(rest);
     }
@@ -409,7 +436,7 @@ fn handle_chain(rest: &str) -> String {
     let has_remove_or_move = chain
         .steps
         .iter()
-        .any(|s| matches!(s.step.verb, Verb::Remove | Verb::Move));
+        .any(|s| matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir));
     let folders = crate::chain::whitelist::load();
     let all_whitelisted = !has_remove_or_move
         && !folders.is_empty()
@@ -559,6 +586,32 @@ fn _unused() {
     let _ = process(&pair_lines("", ""));
 }
 
+
+/// Rebuild a chain from the last review's unapplied steps and stash it
+/// for review. Writes nothing directly; the user confirms as usual.
+fn handle_retry(only: Option<Vec<usize>>) -> String {
+    let Some(rec) = crate::terminal_router::retry::current() else {
+        return "zapgui: nothing to retry".to_string();
+    };
+    let chain = match crate::terminal_router::retry::build_retry_chain(&rec, only.as_deref()) {
+        Ok(c) => c,
+        Err(e) => return format!("zapgui: {e}"),
+    };
+    match super::stash_pending_chain(chain) {
+        Some(displaced) => {
+            let first = displaced
+                .steps
+                .first()
+                .map(|s| s.path.display().to_string())
+                .unwrap_or_default();
+            let sentence = format!("zap: replaced unconfirmed chain ({first}).");
+            crate::chain::popup::show("Replaced");
+            let _ = crate::clipboard::copy_to_clipboard(&sentence);
+            sentence
+        }
+        None => String::new(),
+    }
+}
 
 /// Return a text reply showing the last change zapgui made to a file.
 /// `path_opt` is None for "the most recently changed file".

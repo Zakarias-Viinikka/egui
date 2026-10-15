@@ -22,6 +22,7 @@ pub fn run(
     args: Vec<String>,
     cwd: PathBuf,
     cancel_flag: Option<Arc<AtomicBool>>,
+    assume_approved: bool,
 ) -> Result<(), String> {
     if args.is_empty() {
         return Err("cargo: no subcommand".to_string());
@@ -66,37 +67,43 @@ pub fn run(
     };
 
     if !diffs.is_empty() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let caption = format!("execution surface changed for {}", root.display());
-        let review = crate::terminal_router::surface_review::SurfaceReview::new(
-            root.clone(),
-            diffs,
-            surface_now.clone(),
-            tx,
-            crate::terminal_router::surface_review::BannerKind::CargoRun,
-            caption,
-        );
-        if !crate::terminal_router::stash_surface_review(review) {
-            let _ = write_frame(stream, &Frame::stream_open(&title));
-            let _ = write_frame(
-                stream,
-                &Frame::stream_data("cargo: another surface review is showing\n"),
+        // When the run came in on a ChainRun frame, the chain review has
+        // already shown this step to the user and gotten one confirm. Skip
+        // the second prompt and just record the surface as trusted, so
+        // the same content won't re-prompt next time.
+        if !assume_approved {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let caption = format!("execution surface changed for {}", root.display());
+            let review = crate::terminal_router::surface_review::SurfaceReview::new(
+                root.clone(),
+                diffs,
+                surface_now.clone(),
+                tx,
+                crate::terminal_router::surface_review::BannerKind::CargoRun,
+                caption,
             );
-            let _ = write_frame(stream, &Frame::stream_done("busy"));
-            return Ok(());
-        }
-        let accepted = rx.recv_timeout(SURFACE_REVIEW_TIMEOUT).unwrap_or(false);
-        if !accepted {
-            let _ = write_frame(stream, &Frame::stream_open(&title));
-            let _ = write_frame(stream, &Frame::stream_data("cargo: surface review denied\n"));
-            let _ = write_frame(stream, &Frame::stream_done("denied"));
-            crate::chain::popup::show("Run denied");
-            let _ = clipboard::write(
-                &format!("zap: cargo run denied for {}", root.display()),
-                RecordKind::Report,
-                WriteMode::Replace,
-            );
-            return Ok(());
+            if !crate::terminal_router::stash_surface_review(review) {
+                let _ = write_frame(stream, &Frame::stream_open(&title));
+                let _ = write_frame(
+                    stream,
+                    &Frame::stream_data("cargo: another surface review is showing\n"),
+                );
+                let _ = write_frame(stream, &Frame::stream_done("busy"));
+                return Ok(());
+            }
+            let accepted = rx.recv_timeout(SURFACE_REVIEW_TIMEOUT).unwrap_or(false);
+            if !accepted {
+                let _ = write_frame(stream, &Frame::stream_open(&title));
+                let _ = write_frame(stream, &Frame::stream_data("cargo: surface review denied\n"));
+                let _ = write_frame(stream, &Frame::stream_done("denied"));
+                crate::chain::popup::show("Run denied");
+                let _ = clipboard::write(
+                    &format!("zap: cargo run denied for {}", root.display()),
+                    RecordKind::Report,
+                    WriteMode::Replace,
+                );
+                return Ok(());
+            }
         }
         let fresh = surface::collect(&root)?;
         if fresh != surface_now {

@@ -22,6 +22,10 @@ pub struct AppliedStep {
     /// Move spans detected across the whole chain. Empty until move
     /// detection lands.
     pub move_spans: Vec<MoveSpan>,
+    /// True when the step was a no-op: overwrite with identical content,
+    /// replace where old == new, append with empty text. The writer skips
+    /// these and the report describes them as "skipped".
+    pub no_op: bool,
 }
 
 pub struct Snapshot {
@@ -58,7 +62,7 @@ impl Chain {
         self.steps.iter().any(|s| {
             matches!(
                 s.step.verb,
-                Verb::Remove | Verb::Move | Verb::Cargo | Verb::Run
+                Verb::Remove | Verb::Move | Verb::RemoveDir | Verb::Cargo | Verb::Run
             )
         })
     }
@@ -81,6 +85,7 @@ pub fn play_forward(steps: Vec<Step>, cwd: &Path) -> Result<Chain, String> {
     let mut applied: Vec<AppliedStep> = Vec::new();
 
     let total = steps.len();
+    let mut failures: Vec<String> = Vec::new();
     for (idx, step) in steps.into_iter().enumerate() {
         let step_no = idx + 1;
         let verb = verb_name(step.verb);
@@ -96,11 +101,14 @@ pub fn play_forward(steps: Vec<Step>, cwd: &Path) -> Result<Chain, String> {
             &mut applied,
         );
         if let Err(reason) = result {
-            return Err(format!(
+            failures.push(format!(
                 "step {} of {} ({} {}) failed: {}",
                 step_no, total, verb, step_path, reason
             ));
         }
+    }
+    if !failures.is_empty() {
+        return Err(failures.join("; "));
     }
 
     // Move detection across all steps at once. Each step's rows plus its
@@ -135,9 +143,10 @@ fn verb_name(v: Verb) -> &'static str {
         Verb::Replace => "replace",
         Verb::Overwrite => "overwrite",
         Verb::Append => "append",
-        Verb::Remove => "delete",
-        Verb::Move => "rename",
+        Verb::Remove => "zaprm",
+        Verb::Move => "zapmv",
         Verb::Mkdir => "mkdir",
+        Verb::RemoveDir => "rmdir",
         Verb::Cargo => "cargo",
         Verb::Run => "run",
     }
@@ -174,6 +183,38 @@ fn play_one(
                 after,
                 rows,
                 move_spans: Vec::new(),
+                no_op: false,
+            });
+        }
+        Verb::RemoveDir => {
+            // If an earlier step in this chain made the folder, its real
+            // path may not exist yet. Trust the in-memory dir set then.
+            if dirs.contains(&path) {
+                dirs.remove(&path);
+            } else {
+                if !path.is_dir() {
+                    return Err(format!(
+                        "{} does not exist or is not a folder",
+                        path.display()
+                    ));
+                }
+                let mut entries = std::fs::read_dir(&path)
+                    .map_err(|e| format!("read_dir {}: {}", path.display(), e))?;
+                if entries.next().is_some() {
+                    return Err(format!("{} is not empty", path.display()));
+                }
+            }
+            let after = format!("(removed folder) {}/", path.display());
+            let rows = process(&pair_lines(&after, ""));
+            applied.push(AppliedStep {
+                step,
+                path,
+                dest: None,
+                before: Some(after),
+                after: String::new(),
+                rows,
+                move_spans: Vec::new(),
+                no_op: false,
             });
         }
         Verb::Remove => {
@@ -203,6 +244,7 @@ fn play_one(
                 after: String::new(),
                 rows,
                 move_spans: Vec::new(),
+                no_op: false,
             });
         }
         Verb::Move => {
@@ -243,12 +285,13 @@ fn play_one(
                 after: content,
                 rows,
                 move_spans: Vec::new(),
+                no_op: false,
             });
         }
         Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
             load_once(&path, files, snapshots, order)?;
             let current = files.get(&path).cloned().flatten();
-            let after = apply_step(&step, current.as_deref(), &path)?;
+            let (after, no_op) = apply_step(&step, current.as_deref(), &path)?;
             let before = current;
             let rows = match &before {
                 Some(b) => process(&pair_lines(b, &after)),
@@ -263,6 +306,7 @@ fn play_one(
                 after,
                 rows,
                 move_spans: Vec::new(),
+                no_op,
             });
         }
         Verb::Cargo | Verb::Run => {
@@ -284,6 +328,7 @@ fn play_one(
                 after,
                 rows,
                 move_spans: Vec::new(),
+                no_op: false,
             });
         }
     }
@@ -307,21 +352,25 @@ fn load_once(
     Ok(())
 }
 
-pub fn apply_step(step: &Step, current: Option<&str>, path: &Path) -> Result<String, String> {
+pub fn apply_step(
+    step: &Step,
+    current: Option<&str>,
+    path: &Path,
+) -> Result<(String, bool), String> {
     match step.verb {
         Verb::Create => {
             if current.is_some() {
                 return Err(format!("{} already exists", path.display()));
             }
-            Ok(step.new_text.clone())
+            Ok((step.new_text.clone(), false))
         }
         Verb::Overwrite => {
             let content =
                 current.ok_or_else(|| format!("{} does not exist", path.display()))?;
             if content == step.new_text {
-                return Err(format!("{} would not change", path.display()));
+                return Ok((content.to_string(), true));
             }
-            Ok(step.new_text.clone())
+            Ok((step.new_text.clone(), false))
         }
         Verb::Replace => {
             let content =
@@ -341,15 +390,15 @@ pub fn apply_step(step: &Step, current: Option<&str>, path: &Path) -> Result<Str
             }
             let result = content.replace(step.old_text.as_str(), step.new_text.as_str());
             if result == content {
-                return Err(format!("{} would not change", path.display()));
+                return Ok((content.to_string(), true));
             }
-            Ok(result)
+            Ok((result, false))
         }
         Verb::Append => {
             let content =
                 current.ok_or_else(|| format!("{} does not exist", path.display()))?;
             if step.new_text.is_empty() {
-                return Err(format!("{} would not change", path.display()));
+                return Ok((content.to_string(), true));
             }
             let mut out = content.to_string();
             if step.no_newline {
@@ -364,11 +413,11 @@ pub fn apply_step(step: &Step, current: Option<&str>, path: &Path) -> Result<Str
                 }
             }
             if out == content {
-                return Err(format!("{} would not change", path.display()));
+                return Ok((content.to_string(), true));
             }
-            Ok(out)
+            Ok((out, false))
         }
-        Verb::Remove | Verb::Move | Verb::Mkdir | Verb::Cargo | Verb::Run => {
+        Verb::Remove | Verb::Move | Verb::Mkdir | Verb::RemoveDir | Verb::Cargo | Verb::Run => {
             Err("apply_step: this verb is handled in play_forward".to_string())
         }
     }
@@ -469,6 +518,20 @@ mod tests {
         }
     }
 
+    fn rmdir_step(path: &Path) -> Step {
+        Step {
+            verb: Verb::RemoveDir,
+            path: path.display().to_string(),
+            dest: None,
+            old_text: String::new(),
+            new_text: String::new(),
+            count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
     #[test]
     fn create_then_replace_sees_earlier_step() {
         let dir = tmp();
@@ -517,6 +580,27 @@ mod tests {
         };
         assert!(err.starts_with("step 2 of 2"), "got: {err}");
         assert!(err.contains("replace"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reports_every_failure_in_one_sentence() {
+        let dir = tmp();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, "hello\n").expect("write");
+        fs::write(&b, "world\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &a, "nope", "x"),
+            text_step(Verb::Replace, &b, "missing", "y"),
+        ];
+        let err = match play_forward(steps, &dir) {
+            Ok(_) => panic!("should fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("step 1 of 2"), "got: {err}");
+        assert!(err.contains("step 2 of 2"), "got: {err}");
+        assert!(err.contains("; "), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -649,6 +733,56 @@ mod tests {
     }
 
     #[test]
+    fn rmdir_succeeds_on_empty_folder() {
+        let dir = tmp();
+        let sub = dir.join("olddir");
+        fs::create_dir_all(&sub).expect("mkdir");
+        let steps = vec![rmdir_step(&sub)];
+        let chain = play_forward(steps, &dir).expect("play");
+        assert_eq!(chain.steps.len(), 1);
+        assert_eq!(chain.steps[0].path, sub);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rmdir_refuses_non_empty() {
+        let dir = tmp();
+        let sub = dir.join("olddir");
+        fs::create_dir_all(&sub).expect("mkdir");
+        fs::write(sub.join("a.txt"), "x\n").expect("write");
+        let steps = vec![rmdir_step(&sub)];
+        let err = match play_forward(steps, &dir) {
+            Ok(_) => panic!("should fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("not empty"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rmdir_missing_folder_fails() {
+        let dir = tmp();
+        let sub = dir.join("missing");
+        let steps = vec![rmdir_step(&sub)];
+        let err = match play_forward(steps, &dir) {
+            Ok(_) => panic!("should fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("does not exist"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mkdir_then_rmdir_in_one_chain() {
+        let dir = tmp();
+        let sub = dir.join("newdir");
+        let steps = vec![mkdir_step(&sub), rmdir_step(&sub)];
+        let chain = play_forward(steps, &dir).expect("play");
+        assert_eq!(chain.steps.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn append_adds_a_line() {
         let dir = tmp();
         let file = dir.join("a.txt");
@@ -682,6 +816,40 @@ mod tests {
         s.no_newline = true;
         let chain = play_forward(vec![s], &dir).expect("play");
         assert_eq!(chain.steps[0].after, "onetwo");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overwrite_with_identical_content_is_a_no_op() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let s = text_step(Verb::Overwrite, &file, "", "hello\n");
+        let chain = play_forward(vec![s], &dir).expect("play");
+        assert!(chain.steps[0].no_op);
+        assert_eq!(chain.steps[0].after, "hello\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_with_identical_text_is_a_no_op() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let s = text_step(Verb::Replace, &file, "hello", "hello");
+        let chain = play_forward(vec![s], &dir).expect("play");
+        assert!(chain.steps[0].no_op);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_empty_text_is_a_no_op() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let s = text_step(Verb::Append, &file, "", "");
+        let chain = play_forward(vec![s], &dir).expect("play");
+        assert!(chain.steps[0].no_op);
         let _ = fs::remove_dir_all(&dir);
     }
 }

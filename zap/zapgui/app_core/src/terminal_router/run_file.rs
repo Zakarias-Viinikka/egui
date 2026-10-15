@@ -23,6 +23,7 @@ pub fn run(
     args: Vec<String>,
     cwd: PathBuf,
     cancel_flag: Option<Arc<AtomicBool>>,
+    assume_approved: bool,
 ) -> Result<(), String> {
     if args.is_empty() {
         return Err("run: missing file".to_string());
@@ -111,36 +112,42 @@ pub fn run(
             )
         };
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let review = crate::terminal_router::surface_review::SurfaceReview::new(
-            path.clone(),
-            vec![diff],
-            Vec::new(),
-            tx,
-            crate::terminal_router::surface_review::BannerKind::Execute,
-            caption,
-        );
-        if !crate::terminal_router::stash_surface_review(review) {
-            let _ = write_frame(stream, &Frame::stream_open("run"));
-            let _ = write_frame(
-                stream,
-                &Frame::stream_data("run: another surface review is showing\n"),
+        // When the run came in on a ChainRun frame, the chain review has
+        // already shown this step to the user and gotten one confirm. Skip
+        // the second prompt and just record the entry as trusted, so the
+        // same content won't re-prompt next time.
+        if !assume_approved {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let review = crate::terminal_router::surface_review::SurfaceReview::new(
+                path.clone(),
+                vec![diff],
+                Vec::new(),
+                tx,
+                crate::terminal_router::surface_review::BannerKind::Execute,
+                caption,
             );
-            let _ = write_frame(stream, &Frame::stream_done("busy"));
-            return Ok(());
-        }
-        let accepted = rx.recv_timeout(REVIEW_TIMEOUT).unwrap_or(false);
-        if !accepted {
-            let _ = write_frame(stream, &Frame::stream_open("run"));
-            let _ = write_frame(stream, &Frame::stream_data("run: denied\n"));
-            let _ = write_frame(stream, &Frame::stream_done("denied"));
-            crate::chain::popup::show("Run denied");
-            let _ = clipboard::write(
-                &format!("zap: run denied for {}", path.display()),
-                RecordKind::Report,
-                WriteMode::Replace,
-            );
-            return Ok(());
+            if !crate::terminal_router::stash_surface_review(review) {
+                let _ = write_frame(stream, &Frame::stream_open("run"));
+                let _ = write_frame(
+                    stream,
+                    &Frame::stream_data("run: another surface review is showing\n"),
+                );
+                let _ = write_frame(stream, &Frame::stream_done("busy"));
+                return Ok(());
+            }
+            let accepted = rx.recv_timeout(REVIEW_TIMEOUT).unwrap_or(false);
+            if !accepted {
+                let _ = write_frame(stream, &Frame::stream_open("run"));
+                let _ = write_frame(stream, &Frame::stream_data("run: denied\n"));
+                let _ = write_frame(stream, &Frame::stream_done("denied"));
+                crate::chain::popup::show("Run denied");
+                let _ = clipboard::write(
+                    &format!("zap: run denied for {}", path.display()),
+                    RecordKind::Report,
+                    WriteMode::Replace,
+                );
+                return Ok(());
+            }
         }
 
         // Re-read: the file must not have changed while the window was up.

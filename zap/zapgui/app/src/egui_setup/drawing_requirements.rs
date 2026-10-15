@@ -16,6 +16,7 @@ const CLICK_GUARD: Duration = Duration::from_millis(500);
 const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const CAPTION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
 const CAPTION_DENIED_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
+const CAPTION_MARKED_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
 const SURFACE_BANNER_BG: egui::Color32 = egui::Color32::from_rgb(60, 42, 12);
 const SURFACE_BANNER_BORDER: egui::Color32 = egui::Color32::from_rgb(230, 160, 40);
 const SURFACE_BANNER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 200, 110);
@@ -60,6 +61,17 @@ fn banner_hint(kind: BannerKind) -> &'static str {
         BannerKind::Execute => "confirm = run it, deny = don't",
         BannerKind::Delete => "confirm = delete it, deny = don't",
         BannerKind::Rename => "confirm = rename it, deny = don't",
+    }
+}
+
+fn verb_accent(v: Verb) -> egui::Color32 {
+    match v {
+        Verb::Create | Verb::Mkdir => egui::Color32::from_rgb(100, 200, 120),
+        Verb::Replace | Verb::Overwrite | Verb::Append => egui::Color32::from_rgb(100, 160, 220),
+        Verb::Remove | Verb::RemoveDir => egui::Color32::from_rgb(210, 80, 80),
+        Verb::Move => egui::Color32::from_rgb(90, 200, 220),
+        Verb::Cargo => egui::Color32::from_rgb(230, 160, 40),
+        Verb::Run => egui::Color32::from_rgb(200, 90, 220),
     }
 }
 
@@ -199,8 +211,9 @@ pub struct NecessaryStructForEgui {
     shown_at: Instant,
     error_line: Option<String>,
     shown_step: usize,
-    denied: Vec<bool>,
+    marked: Vec<bool>,
     visited: Vec<bool>,
+    verified: Vec<bool>,
     shown_surface: Option<Arc<SurfaceReview>>,
     surface_step: usize,
     menu_open: bool,
@@ -223,8 +236,9 @@ impl Default for NecessaryStructForEgui {
             shown_at: Instant::now(),
             error_line: None,
             shown_step: 0,
-            denied: Vec::new(),
+            marked: Vec::new(),
             visited: Vec::new(),
+            verified: Vec::new(),
             shown_surface: None,
             surface_step: 0,
             menu_open: false,
@@ -306,12 +320,17 @@ impl eframe::App for NecessaryStructForEgui {
             self.error_line = None;
             self.shown_step = 0;
             self.full_file = false;
-            self.denied = self
+            self.marked = self
                 .shown
                 .as_ref()
                 .map(|c| vec![false; c.steps.len()])
                 .unwrap_or_default();
             self.visited = self
+                .shown
+                .as_ref()
+                .map(|c| vec![false; c.steps.len()])
+                .unwrap_or_default();
+            self.verified = self
                 .shown
                 .as_ref()
                 .map(|c| vec![false; c.steps.len()])
@@ -370,6 +389,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             .and_then(|c| c.steps.get(self.shown_step))
             .and_then(|s| match s.step.verb {
                 Verb::Remove => Some(BannerKind::Delete),
+                Verb::RemoveDir => Some(BannerKind::Delete),
                 Verb::Move => Some(BannerKind::Rename),
                 Verb::Cargo => Some(BannerKind::CargoRun),
                 Verb::Run => Some(BannerKind::Execute),
@@ -381,13 +401,15 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         let (caption_galley, caption_color) = if let Some(c) = chain.as_ref() {
             if let Some(step) = c.steps.get(self.shown_step) {
-                let denied = self.denied.get(self.shown_step).copied().unwrap_or(false);
+                let marked = self.marked.get(self.shown_step).copied().unwrap_or(false);
+                let verified = self.verified.get(self.shown_step).copied().unwrap_or(false);
                 let verb = match step.step.verb {
                     Verb::Create => "create".to_string(),
                     Verb::Replace => "replace".to_string(),
                     Verb::Overwrite => "overwrite".to_string(),
                     Verb::Append => "append".to_string(),
                     Verb::Remove => "delete".to_string(),
+                    Verb::RemoveDir => "rmdir".to_string(),
                     Verb::Cargo => "cargo".to_string(),
                     Verb::Run => "run".to_string(),
                     Verb::Move => {
@@ -406,16 +428,19 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 };
                 let n = self.shown_step + 1;
                 let m = step_count;
-                let text = if denied {
-                    format!(
-                        "step {n} of {m} \u{00b7} {verb} {} \u{00b7} denied",
-                        step.path.display()
-                    )
+                let suffix = if marked {
+                    " \u{00b7} marked for retry"
+                } else if verified {
+                    " \u{00b7} verified"
                 } else {
-                    format!("step {n} of {m} \u{00b7} {verb} {}", step.path.display())
+                    ""
                 };
-                let color = if denied {
-                    CAPTION_DENIED_COLOR
+                let text = format!(
+                    "step {n} of {m} \u{00b7} {verb} {}{suffix}",
+                    step.path.display()
+                );
+                let color = if marked {
+                    CAPTION_MARKED_COLOR
                 } else {
                     CAPTION_COLOR
                 };
@@ -438,6 +463,19 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         if let (Some(kind), Some(banner_rect)) = (banner_kind, layout.banner) {
             draw_banner(ui, banner_rect, kind);
+        }
+
+        let caption_accent = chain
+            .as_ref()
+            .and_then(|c| c.steps.get(self.shown_step))
+            .map(|s| verb_accent(s.step.verb));
+
+        if let Some(accent) = caption_accent {
+            let bar = egui::Rect::from_min_size(
+                egui::pos2(layout.caption.left() - 8.0, layout.caption.top() + 4.0),
+                egui::vec2(3.0, (measured_caption_h - 8.0).max(4.0)),
+            );
+            ui.painter().rect_filled(bar, 1.0, accent);
         }
 
         if let Some(g) = caption_galley {
@@ -521,20 +559,25 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 + (step_count.saturating_sub(1)) as f32 * layout.gap;
             let start_y = layout.viewer.center().y - total / 2.0 + layout.block_size / 2.0;
             for i in 0..step_count {
-                let denied = self.denied.get(i).copied().unwrap_or(false);
+                let marked = self.marked.get(i).copied().unwrap_or(false);
                 let shown = i == self.shown_step;
-                let state = match (denied, shown) {
-                    (true, true) => BlockState::DeniedSelected,
-                    (true, false) => BlockState::Denied,
+                let state = match (marked, shown) {
+                    (true, true) => BlockState::MarkedSelected,
+                    (true, false) => BlockState::Marked,
                     (false, true) => BlockState::Selected,
                     (false, false) => BlockState::Normal,
                 };
+                let accent = chain
+                    .as_ref()
+                    .and_then(|c| c.steps.get(i))
+                    .map(|s| verb_accent(s.step.verb));
                 let y = start_y + i as f32 * (layout.block_size + layout.gap);
                 if glass_button::glass_step_block_ui(
                     ui,
                     egui::pos2(layout.block_col_x, y),
                     i,
                     state,
+                    accent,
                 ) {
                     clicked_step = Some(i);
                 }
@@ -561,89 +604,132 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         }
 
         let click_ok = self.shown_at.elapsed() >= CLICK_GUARD;
+        let shown_is_run = chain
+            .as_ref()
+            .and_then(|c| c.steps.get(self.shown_step))
+            .map(|s| matches!(s.step.verb, Verb::Cargo | Verb::Run))
+            .unwrap_or(false);
         let mut confirmed = false;
-        let mut denied_click = false;
+        let mut mark_clicked = false;
+        let mut deny_all_clicked = false;
+        let mut verify_clicked = false;
         if chain.is_some() {
-            let total_w = 2.0 * layout.button_size + layout.gap;
+            let total_w = 4.0 * layout.button_size + 3.0 * layout.gap;
             let start_x =
                 layout.viewer.center().x - total_w / 2.0 + layout.button_size / 2.0;
+            let step_x = layout.button_size + layout.gap;
             if glass_button::glass_button_ui(
                 ui,
                 egui::pos2(start_x, layout.button_y),
                 0,
-                GlassIcon::Confirm,
+                GlassIcon::Verify,
+            ) {
+                verify_clicked = true;
+            }
+            if glass_button::glass_button_ui(
+                ui,
+                egui::pos2(start_x + step_x, layout.button_y),
+                1,
+                GlassIcon::Mark,
+            ) {
+                mark_clicked = true;
+            }
+            let approve_icon = if shown_is_run {
+                GlassIcon::AllowRun
+            } else {
+                GlassIcon::Confirm
+            };
+            if glass_button::glass_button_ui(
+                ui,
+                egui::pos2(start_x + 2.0 * step_x, layout.button_y),
+                2,
+                approve_icon,
             ) && click_ok
             {
                 confirmed = true;
             }
             if glass_button::glass_button_ui(
                 ui,
-                egui::pos2(start_x + layout.button_size + layout.gap, layout.button_y),
-                1,
+                egui::pos2(start_x + 3.0 * step_x, layout.button_y),
+                3,
                 GlassIcon::Deny,
             ) && click_ok
             {
-                denied_click = true;
+                deny_all_clicked = true;
             }
         }
 
-        if denied_click {
-            if let Some(c) = chain.clone() {
-                if let Some(slot) = self.denied.get_mut(self.shown_step) {
-                    *slot = true;
-                }
+        if verify_clicked {
+            if let Some(slot) = self.verified.get_mut(self.shown_step) {
+                *slot = !*slot;
                 self.shown_at = Instant::now();
-                let next = self
-                    .denied
+            }
+        }
+
+        if mark_clicked {
+            if let Some(slot) = self.marked.get_mut(self.shown_step) {
+                *slot = !*slot;
+                self.shown_at = Instant::now();
+            }
+        }
+
+        if deny_all_clicked {
+            if let Some(c) = chain.clone() {
+                let statuses: Vec<StepStatus> = self
+                    .marked
                     .iter()
-                    .enumerate()
-                    .skip(self.shown_step + 1)
-                    .find(|(_, d)| !**d)
-                    .map(|(i, _)| i)
-                    .or_else(|| {
-                        self.denied
-                            .iter()
-                            .enumerate()
-                            .take(self.shown_step)
-                            .find(|(_, d)| !**d)
-                            .map(|(i, _)| i)
-                    });
-                match next {
-                    Some(i) => {
-                        self.shown_step = i;
-                    }
-                    None => {
-                        let statuses = vec![StepStatus::Denied; c.steps.len()];
-                        let rep = report::build(&c, &statuses, None);
-                        popup::show("All denied");
-                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
-                        app_core::terminal_router::clear_pending(&c);
-                        c.finish(ChainOutcome::AllDenied);
-                        self.shown = None;
-                        self.error_line = None;
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    }
-                }
+                    .map(|m| {
+                        if *m {
+                            StepStatus::Marked
+                        } else {
+                            StepStatus::Denied
+                        }
+                    })
+                    .collect();
+                app_core::terminal_router::retry::save_from_chain(&c, &statuses);
+                let rep = report::build(&c, &statuses, None);
+                popup::show("Denied all");
+                let _ = app_core::clipboard::copy_to_clipboard(&rep);
+                app_core::terminal_router::clear_pending(&c);
+                c.finish(ChainOutcome::AllDenied);
+                self.shown = None;
+                self.error_line = None;
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
         }
 
         if confirmed {
             if let Some(c) = chain.clone() {
-                let wanted: Vec<bool> = self.denied.iter().map(|d| !*d).collect();
-                let unvisited_destructive = c.steps.iter().enumerate().position(|(i, s)| {
-                    wanted.get(i).copied().unwrap_or(true)
-                        && matches!(
-                            s.step.verb,
-                            Verb::Remove | Verb::Move | Verb::Cargo | Verb::Run
-                        )
-                        && !self.visited.get(i).copied().unwrap_or(false)
+                let wanted: Vec<bool> = self.marked.iter().map(|m| !*m).collect();
+                let unapproved_special = c.steps.iter().enumerate().position(|(i, s)| {
+                    let wanted = wanted.get(i).copied().unwrap_or(true);
+                    if !wanted {
+                        return false;
+                    }
+                    let is_special = matches!(
+                        s.step.verb,
+                        Verb::Remove | Verb::Move | Verb::RemoveDir
+                    );
+                    let is_run = matches!(s.step.verb, Verb::Cargo | Verb::Run);
+                    let verified = self.verified.get(i).copied().unwrap_or(false);
+                    if is_run {
+                        !verified
+                    } else if is_special {
+                        !self.visited.get(i).copied().unwrap_or(false)
+                    } else {
+                        false
+                    }
                 });
-                if let Some(i) = unvisited_destructive {
+                if let Some(i) = unapproved_special {
                     self.shown_step = i;
                     self.shown_at = Instant::now();
+                    let verb_word = match c.steps[i].step.verb {
+                        Verb::Cargo | Verb::Run => "run a command",
+                        _ => "delete or rename a file",
+                    };
                     self.error_line = Some(format!(
-                        "look at step {} before confirming; it deletes or renames a file",
+                        "step {} needs Verify before confirming; it can {verb_word}",
                         i + 1
                     ));
                     return;
@@ -657,10 +743,11 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                                 if *w {
                                     StepStatus::Applied
                                 } else {
-                                    StepStatus::Denied
+                                    StepStatus::Marked
                                 }
                             })
                             .collect();
+                        app_core::terminal_router::retry::save_from_chain(&c, &statuses);
                         let rep = report::build(&c, &statuses, None);
                         let applied = wanted.iter().filter(|w| **w).count();
                         popup::show(&format!("Applied {} step(s)", applied));
@@ -673,6 +760,17 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                             .send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     }
                     Err(reason) => {
+                        let retry_statuses: Vec<StepStatus> = wanted
+                            .iter()
+                            .map(|w| {
+                                if *w {
+                                    StepStatus::Failed
+                                } else {
+                                    StepStatus::Denied
+                                }
+                            })
+                            .collect();
+                        app_core::terminal_router::retry::save_from_chain(&c, &retry_statuses);
                         let statuses: Vec<StepStatus> = wanted
                             .iter()
                             .map(|w| {
@@ -811,6 +909,7 @@ impl NecessaryStructForEgui {
                     egui::pos2(layout.block_col_x, y),
                     1000 + i,
                     state,
+                    None,
                 ) {
                     self.surface_step = i;
                 }

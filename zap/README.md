@@ -63,7 +63,7 @@ Request shapes:
 `Request` with text `chain <cwd>\n<chain block>` — a chain that only does
 file work. zapgui parses the block, plays it forward in memory, then either
 applies it (if every touched file is inside a whitelisted folder and the
-chain has no `rm`, `mv`, `cargo` or `run`) or stashes it for review and
+chain has no `zaprm`, `zapmv`, `cargo` or `run`) or stashes it for review and
 raises the window. Reply is empty unless a failure or a displaced chain
 happened; in those cases the reply is a one-line report and the same
 sentence lands on the clipboard with a popup.
@@ -122,7 +122,7 @@ re-exports, so old code that says `crate::chain::Step` still compiles.
 
 See `CHAIN_CHEATSHEET.md` for the operator's view. Short version:
 `create`, `replace`, `overwrite`, `append` carry content between `@new`
-/ `@old` / `@end` markers. `rm`, `mv`, `mkdir` are one-liners. A chain may
+/ `@old` / `@end` markers. `zaprm`, `zapmv`, `mkdir`, `rmdir` are one-liners. A chain may
 end with a `cd <folder>` line and a `cargo <args>` or `run <file> [args]`
 line; that run step must be the last step and needs its `cd`.
 
@@ -273,7 +273,7 @@ A file counts as inside a folder after resolving symlinks and `..`, compared
 by whole path components, not string prefixes. For a file that doesn't exist
 yet, its nearest existing parent is used.
 
-A chain with any `rm`, `mv`, `cargo` or `run` step goes to review even
+A chain with any `zaprm`, `zapmv`, `cargo` or `run` step goes to review even
 inside a whitelisted folder, so an auto-applied edit can never be paired
 with an auto-applied delete, rename or execution.
 
@@ -367,13 +367,13 @@ itself wrote is already trusted because the write was reviewed as a diff.
 ## Rename-aware trust
 
 A trust entry means: this exact content, at this path, with these args, was
-approved. A rename through a confirmed `mv` step re-keys every entry whose
+approved. A rename through a confirmed `zapmv` step re-keys every entry whose
 path was the source, keeping the same sha and text. At the next `run`, if
 the content is unchanged, no prompt. If the content changed since approval,
 the review shows a diff from the old approved text.
 
-A `rm` step drops the entries for that path. Recreating a file at the same
-path is new and needs a full review. A chain with any `rm` or `mv` skips
+A `zaprm` step drops the entries for that path. Recreating a file at the same
+path is new and needs a full review. A chain with any `zaprm` or `zapmv` skips
 the surface content refresh — moved content never appeared as a diff, so
 nothing is auto-trusted. Chains without `rm` or `mv` keep the old behaviour
 of refreshing the cargo surface for files the chain wrote.
@@ -478,7 +478,7 @@ and `ui.rs`.
 
 `zapcli/app_core/src/command_router/` — dispatch, plus
 `core_commands/<name>.rs` per verb. `core_commands/chain.rs` forwards
-create, replace, overwrite, append, rm, mv, mkdir and run chains; the
+create, replace, overwrite, append, zaprm, zapmv, mkdir and run chains; the
 cargo and run verbs live inline in `mod.rs` because they open streaming
 sessions.
 

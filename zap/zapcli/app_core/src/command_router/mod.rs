@@ -135,10 +135,20 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         "cd" => core_commands::cd::run(&args, session),
         "ls" => core_commands::ls::run(&args, session),
         "cat" => core_commands::cat::run(&args, session),
+        "rm" => Outcome::Print(vec![Line::error("use zaprm")]),
+        "mv" => Outcome::Print(vec![Line::error("use zapmv")]),
         "head" => core_commands::head::run(&args, session),
         "tail" => core_commands::tail::run(&args, session),
         "wc" => core_commands::wc::run(&args, session),
         "last" => core_commands::last::run(&args, session),
+        "retry" => {
+            let payload = if args.is_empty() {
+                "retry".to_string()
+            } else {
+                format!("retry {}", args.join(" "))
+            };
+            reply_outcome(crate::general_util::socket::send(&payload))
+        }
         "s" | "settings" => core_commands::settings::run(),
         "help" => core_commands::help::run(),
         "whitelist" => core_commands::whitelist::run(),
@@ -176,12 +186,21 @@ fn first_word_is_chain_verb(input: &str) -> bool {
     // verbs and are dispatched below.
     let non_blank: Vec<&str> = input.lines().filter(|l| !l.trim().is_empty()).collect();
     if non_blank.len() >= 2 {
-        let first = non_blank[0]
-            .trim_start()
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
-        if matches!(first, "cd" | "cargo" | "run") {
+        let first_line = non_blank[0].trim_start();
+        let first = first_line.split_whitespace().next().unwrap_or("");
+        if first == "cd" {
+            // A cd is a chain directive only if it is a bare `cd <folder>`.
+            // `cd /path && c c` is a shell idiom; leave it to the
+            // single-line dispatcher, which will reject it.
+            let rest = first_line[2..].trim();
+            if !rest.is_empty()
+                && !rest.contains("&&")
+                && !rest.contains(';')
+                && !rest.contains('|')
+            {
+                return true;
+            }
+        } else if matches!(first, "cargo" | "run") {
             return true;
         }
     }
@@ -197,7 +216,14 @@ fn first_word_is_chain_verb(input: &str) -> bool {
     let first = trimmed.split_whitespace().next().unwrap_or("");
     if !matches!(
         first,
-        "create" | "replace" | "overwrite" | "append" | "rm" | "mv" | "mkdir"
+        "create"
+            | "replace"
+            | "overwrite"
+            | "append"
+            | "zaprm"
+            | "zapmv"
+            | "mkdir"
+            | "rmdir"
     ) {
         return false;
     }

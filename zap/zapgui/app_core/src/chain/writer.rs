@@ -9,6 +9,7 @@ enum Undo {
     RestoreText { path: PathBuf, content: String },
     RemoveFile { path: PathBuf },
     RemoveDir { path: PathBuf },
+    CreateDir { path: PathBuf },
     RenameBack { from: PathBuf, to: PathBuf },
 }
 
@@ -61,7 +62,9 @@ pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
                 reason
             ));
         }
-        record_last_change(applied);
+        if !applied.no_op {
+            record_last_change(applied);
+        }
     }
 
     Ok(())
@@ -73,15 +76,19 @@ fn verb_name(v: Verb) -> &'static str {
         Verb::Replace => "replace",
         Verb::Overwrite => "overwrite",
         Verb::Append => "append",
-        Verb::Remove => "delete",
-        Verb::Move => "rename",
+        Verb::Remove => "zaprm",
+        Verb::Move => "zapmv",
         Verb::Mkdir => "mkdir",
+        Verb::RemoveDir => "rmdir",
         Verb::Cargo => "cargo",
         Verb::Run => "run",
     }
 }
 
 fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), String> {
+    if applied.no_op {
+        return Ok(());
+    }
     match applied.step.verb {
         Verb::Mkdir => {
             if applied.path.exists() {
@@ -90,6 +97,23 @@ fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), Stri
             std::fs::create_dir_all(&applied.path)
                 .map_err(|e| format!("create_dir_all {}: {}", applied.path.display(), e))?;
             undos.push(Undo::RemoveDir { path: applied.path.clone() });
+            Ok(())
+        }
+        Verb::RemoveDir => {
+            if !applied.path.is_dir() {
+                return Err(format!(
+                    "{} does not exist or is not a folder",
+                    applied.path.display()
+                ));
+            }
+            let mut entries = std::fs::read_dir(&applied.path)
+                .map_err(|e| format!("read_dir {}: {}", applied.path.display(), e))?;
+            if entries.next().is_some() {
+                return Err(format!("{} is not empty", applied.path.display()));
+            }
+            std::fs::remove_dir(&applied.path)
+                .map_err(|e| format!("remove_dir {}: {}", applied.path.display(), e))?;
+            undos.push(Undo::CreateDir { path: applied.path.clone() });
             Ok(())
         }
         Verb::Remove => {
@@ -187,6 +211,9 @@ fn undo_all(undos: &mut Vec<Undo>) {
             Undo::RemoveDir { path } => {
                 let _ = std::fs::remove_dir(&path);
             }
+            Undo::CreateDir { path } => {
+                let _ = std::fs::create_dir(&path);
+            }
             Undo::RenameBack { from, to } => {
                 let _ = std::fs::rename(&from, &to);
             }
@@ -242,7 +269,7 @@ fn record_last_change(applied: &AppliedStep) {
                 None,
             );
         }
-        Verb::Mkdir | Verb::Cargo | Verb::Run => {}
+        Verb::Mkdir | Verb::RemoveDir | Verb::Cargo | Verb::Run => {}
     }
 }
 
@@ -309,6 +336,20 @@ mod tests {
     fn mkdir_step(path: &Path) -> Step {
         Step {
             verb: Verb::Mkdir,
+            path: path.display().to_string(),
+            dest: None,
+            old_text: String::new(),
+            new_text: String::new(),
+            count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    fn rmdir_step(path: &Path) -> Step {
+        Step {
+            verb: Verb::RemoveDir,
             path: path.display().to_string(),
             dest: None,
             old_text: String::new(),
@@ -418,6 +459,56 @@ mod tests {
         apply(&chain, &[true; 4]).expect("apply");
         assert!(sub.is_dir());
         assert!(!moved.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rmdir_removes_empty_folder() {
+        let dir = tmp();
+        let sub = dir.join("olddir");
+        fs::create_dir_all(&sub).expect("mkdir");
+        let chain = play_forward(vec![rmdir_step(&sub)], &dir).expect("play");
+        apply(&chain, &[true]).expect("apply");
+        assert!(!sub.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rmdir_refuses_non_empty_at_write_time() {
+        let dir = tmp();
+        let sub = dir.join("olddir");
+        fs::create_dir_all(&sub).expect("mkdir");
+        let chain = play_forward(vec![rmdir_step(&sub)], &dir).expect("play");
+        fs::write(sub.join("a.txt"), "x\n").expect("write");
+        let err = apply(&chain, &[true]).expect_err("should fail");
+        assert!(err.contains("not empty"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_op_overwrite_writes_nothing() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let s = text_step(Verb::Overwrite, &file, "", "hello\n");
+        let chain = play_forward(vec![s], &dir).expect("play");
+        apply(&chain, &[true]).expect("apply");
+        assert_eq!(fs::read_to_string(&file).expect("read"), "hello\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_op_then_real_edit_writes_only_the_real_edit() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Overwrite, &file, "", "hello\n"),
+            text_step(Verb::Replace, &file, "hello", "world"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        apply(&chain, &[true, true]).expect("apply");
+        assert_eq!(fs::read_to_string(&file).expect("read"), "world\n");
         let _ = fs::remove_dir_all(&dir);
     }
 }

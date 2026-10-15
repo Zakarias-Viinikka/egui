@@ -8,12 +8,14 @@ pub enum StepStatus {
     Denied,
     Failed,
     Pending,
+    Marked,
 }
 
 pub fn build(chain: &Chain, statuses: &[StepStatus], failure: Option<&str>) -> String {
     let total = chain.steps.len();
     let applied = statuses.iter().filter(|s| **s == StepStatus::Applied).count();
     let denied = statuses.iter().filter(|s| **s == StepStatus::Denied).count();
+    let marked = statuses.iter().filter(|s| **s == StepStatus::Marked).count();
 
     let mut out = String::from("zap: ");
     if let Some(f) = failure {
@@ -21,9 +23,12 @@ pub fn build(chain: &Chain, statuses: &[StepStatus], failure: Option<&str>) -> S
     } else if total > 0 && applied == total {
         out.push_str(&format!("applied {} step(s).", total));
     } else if total > 0 && denied == total {
-        out.push_str(&format!("denied all {} step(s).", total));
+        out.push_str(&format!("denied all {} step(s). retry is possible.", total));
     } else {
-        out.push_str(&format!("applied {} of {} step(s), denied {}.", applied, total, denied));
+        out.push_str(&format!(
+            "applied {} of {} step(s), denied {}, marked {} for retry.",
+            applied, total, denied, marked
+        ));
     }
 
     for (i, applied_step) in chain.steps.iter().enumerate() {
@@ -38,6 +43,17 @@ pub fn build(chain: &Chain, statuses: &[StepStatus], failure: Option<&str>) -> S
                 out.push_str(&describe(applied_step, true));
                 out.push('.');
             }
+            StepStatus::Marked => {
+                out.push(' ');
+                out.push_str(&format!(
+                    "step {} of {} ({} {}) marked for retry",
+                    i + 1,
+                    total,
+                    verb_of(applied_step),
+                    applied_step.path.display()
+                ));
+                out.push('.');
+            }
             _ => {}
         }
     }
@@ -48,6 +64,9 @@ pub fn build(chain: &Chain, statuses: &[StepStatus], failure: Option<&str>) -> S
 fn describe(applied: &AppliedStep, would_have: bool) -> String {
     let prefix = if would_have { "would have " } else { "" };
     let path = applied.path.display();
+    if applied.no_op {
+        return format!("{}skipped {} (no change)", prefix, path);
+    }
     match applied.step.verb {
         Verb::Create => {
             let lines = applied.after.lines().count();
@@ -76,6 +95,7 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
             format!("{}moved {} to {}", prefix, path, dest)
         }
         Verb::Mkdir => format!("{}created folder {}", prefix, path),
+        Verb::RemoveDir => format!("{}removed folder {}", prefix, path),
         Verb::Cargo => {
             let args = applied.step.args.join(" ");
             let cwd = applied.step.cwd.as_deref().unwrap_or("");
@@ -94,6 +114,21 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
                 format!("will run {} in {}", file, cwd)
             }
         }
+    }
+}
+
+fn verb_of(applied: &AppliedStep) -> &'static str {
+    match applied.step.verb {
+        Verb::Create => "create",
+        Verb::Replace => "replace",
+        Verb::Overwrite => "overwrite",
+        Verb::Append => "append",
+        Verb::Remove => "zaprm",
+        Verb::Move => "zapmv",
+        Verb::Mkdir => "mkdir",
+        Verb::RemoveDir => "rmdir",
+        Verb::Cargo => "cargo",
+        Verb::Run => "run",
     }
 }
 

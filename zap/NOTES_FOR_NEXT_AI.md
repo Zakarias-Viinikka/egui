@@ -17,8 +17,8 @@ heredoc that asserts the old text is present before replacing. Never sed
 or perl. Never nest heredocs. Absolute paths from `$HOME`.
 
 They prefer zap chains when the change fits the grammar. `replace`,
-`overwrite`, `append`, `create` with markers. A chain with any `rm` or
-`mv` always goes to review, so a same-file edit that also deletes is two
+`overwrite`, `append`, `create` with markers. A chain with any `zaprm` or
+`zapmv` always goes to review, so a same-file edit that also deletes is two
 steps in one chain and one review window.
 
 When a chain has many fiddly edits, use Python heredoc instead. The
@@ -44,9 +44,9 @@ fontdue compiles. Don't remove it.
 
 - zapcli with ls, cd, cat (multi-file, `=== path ===` headers), settings,
   exit/quit, cls/clear, copy, copy all, zap, overwrite, create, replace,
-  rm, mv, mkdir, append, head, tail, wc, last, help, whitelist, cargo,
+  zaprm, zapmv, mkdir, append, head, tail, wc, last, help, whitelist, cargo,
   run.
-- Chains: create/replace/overwrite/append/rm/mv/mkdir blocks that play
+- Chains: create/replace/overwrite/append/zaprm/zapmv/mkdir blocks that play
   forward in memory and are written all-or-nothing. See
   `CHAIN_CHEATSHEET.md`.
 - Shared parser in `zap_wire::chain`. Both zapcli and zapgui call it, so
@@ -86,7 +86,7 @@ fontdue compiles. Don't remove it.
   `~/ProgStuff/egui/reusable_components`. `build_both.sh` builds and
   installs it.
 - Distinct banners for RUN / EXECUTE / DELETE / RENAME requests.
-- Mis-click guard: Confirm refuses to apply an rm, mv, cargo or run step
+- Mis-click guard: Confirm refuses to apply a zaprm, zapmv, cargo or run
   the user never looked at.
 - Whitelist: `~/.config/zap/whitelist.txt` and every chain that only
   touches files inside it applies silently, unless it has rm, mv, cargo

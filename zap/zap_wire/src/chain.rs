@@ -19,6 +19,7 @@ pub enum Verb {
     Remove,
     Move,
     Mkdir,
+    RemoveDir,
     Cargo,
     Run,
 }
@@ -30,9 +31,10 @@ impl Verb {
             Verb::Replace => "replace",
             Verb::Overwrite => "overwrite",
             Verb::Append => "append",
-            Verb::Remove => "rm",
-            Verb::Move => "mv",
+            Verb::Remove => "zaprm",
+            Verb::Move => "zapmv",
             Verb::Mkdir => "mkdir",
+            Verb::RemoveDir => "rmdir",
             Verb::Cargo => "cargo",
             Verb::Run => "run",
         }
@@ -132,7 +134,7 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
         }
 
         match verb {
-            Verb::Remove | Verb::Move | Verb::Mkdir => {
+            Verb::Remove | Verb::Move | Verb::Mkdir | Verb::RemoveDir => {
                 if let Some((_, cd_line)) = &pending_cwd {
                     return Err(ParseError {
                         line: *cd_line,
@@ -296,9 +298,22 @@ fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> 
         "replace" => Verb::Replace,
         "overwrite" => Verb::Overwrite,
         "append" => Verb::Append,
-        "rm" => Verb::Remove,
-        "mv" => Verb::Move,
+        "zaprm" => Verb::Remove,
+        "zapmv" => Verb::Move,
+        "rm" => {
+            return Err(ParseError {
+                line: line_no,
+                message: "use zaprm".to_string(),
+            })
+        }
+        "mv" => {
+            return Err(ParseError {
+                line: line_no,
+                message: "use zapmv".to_string(),
+            })
+        }
         "mkdir" => Verb::Mkdir,
+        "rmdir" => Verb::RemoveDir,
         "cargo" => Verb::Cargo,
         "run" => Verb::Run,
         _ => {
@@ -410,6 +425,36 @@ fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, P
                 return Err(ParseError {
                     line,
                     message: "mkdir: missing path".to_string(),
+                });
+            }
+            Ok(steps)
+        }
+        Verb::RemoveDir => {
+            let mut steps = Vec::new();
+            for a in &args {
+                if a.starts_with('-') && a.len() > 1 {
+                    return Err(ParseError {
+                        line,
+                        message: format!("rmdir: unsupported option {a}"),
+                    });
+                }
+                require_absolute(a, line, verb)?;
+                steps.push(Step {
+                    verb: Verb::RemoveDir,
+                    path: a.clone(),
+                    dest: None,
+                    old_text: String::new(),
+                    new_text: String::new(),
+                    count: None,
+                    no_newline: false,
+                    args: Vec::new(),
+                    cwd: None,
+                });
+            }
+            if steps.is_empty() {
+                return Err(ParseError {
+                    line,
+                    message: "rmdir: missing path".to_string(),
                 });
             }
             Ok(steps)
@@ -648,14 +693,26 @@ mod tests {
 
     #[test]
     fn parses_a_remove() {
-        let steps = parse("rm /tmp/a.rs\n").expect("parse");
+        let steps = parse("zaprm /tmp/a.rs\n").expect("parse");
         assert_eq!(steps[0].verb, Verb::Remove);
     }
 
     #[test]
     fn parses_a_move() {
-        let steps = parse("mv /tmp/a.rs /tmp/b.rs\n").expect("parse");
+        let steps = parse("zapmv /tmp/a.rs /tmp/b.rs\n").expect("parse");
         assert_eq!(steps[0].dest.as_deref(), Some("/tmp/b.rs"));
+    }
+
+    #[test]
+    fn old_rm_name_is_rejected() {
+        let err = parse("rm /tmp/a.rs\n").expect_err("should fail");
+        assert!(err.message.contains("zaprm"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn old_mv_name_is_rejected() {
+        let err = parse("mv /tmp/a.rs /tmp/b.rs\n").expect_err("should fail");
+        assert!(err.message.contains("zapmv"), "got: {}", err.message);
     }
 
     #[test]
@@ -668,6 +725,28 @@ mod tests {
     fn parses_mkdir_with_p_flag() {
         let steps = parse("mkdir -p /tmp/newdir\n").expect("parse");
         assert_eq!(steps[0].path, "/tmp/newdir");
+    }
+
+    #[test]
+    fn parses_rmdir() {
+        let steps = parse("rmdir /tmp/olddir\n").expect("parse");
+        assert_eq!(steps[0].verb, Verb::RemoveDir);
+    }
+
+    #[test]
+    fn rmdir_rejects_options() {
+        let err = parse("rmdir -p /tmp/olddir\n").expect_err("should fail");
+        assert!(
+            err.message.contains("unsupported option"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn rmdir_needs_absolute_path() {
+        let err = parse("rmdir olddir\n").expect_err("should fail");
+        assert!(err.message.contains("absolute"), "got: {}", err.message);
     }
 
     #[test]

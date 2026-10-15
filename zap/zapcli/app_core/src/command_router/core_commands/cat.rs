@@ -62,10 +62,17 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
         )
     };
 
-    Outcome::PrintAndCopy {
-        lines: vec![Line::cli(summary)],
-        text: copy,
+    let mut lines: Vec<Line> = Vec::new();
+    for raw in &failed {
+        let resolved = resolve(raw, &session.cwd);
+        lines.push(Line::error(format!(
+            "cat: couldn't read {}",
+            resolved.display()
+        )));
     }
+    lines.push(Line::cli(summary));
+
+    Outcome::PrintAndCopy { lines, text: copy }
 }
 
 fn nearest_existing(path: &Path) -> Option<PathBuf> {

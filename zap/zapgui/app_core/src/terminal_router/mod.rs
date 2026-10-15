@@ -3,6 +3,7 @@ pub mod listener;
 pub mod run_file;
 pub mod stream_run;
 pub mod pending_overwrite;
+pub mod retry;
 pub mod route_requests;
 pub mod surface_review;
 
