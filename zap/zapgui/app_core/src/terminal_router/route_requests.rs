@@ -112,10 +112,12 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
         return;
     }
 
-    let mut chain = match play_forward(steps, std::path::Path::new(cwd)) {
+    let mut chain = match play_forward(steps.clone(), std::path::Path::new(cwd)) {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
+            let statuses = vec![crate::chain::StepStatus::Failed; steps.len()];
+            crate::terminal_router::retry::save_from_steps(steps, statuses);
             crate::chain::popup::show("Edit failed");
             let _ = crate::clipboard::copy_to_clipboard(&sentence);
             let _ = write_frame(stream, &Frame::reply(&sentence));
@@ -348,6 +350,13 @@ pub fn route(request: &str) -> String {
         focus_window();
         return String::new();
     }
+    if request == "focus-if-busy" {
+        if super::something_waiting() {
+            super::request_show();
+            return "shown".to_string();
+        }
+        return "idle".to_string();
+    }
     if request == "menu" {
         super::request_menu();
         return String::new();
@@ -417,10 +426,12 @@ fn handle_chain(rest: &str) -> String {
         return "zapgui: this chain has a run step; send it as a ChainRun frame".to_string();
     }
 
-    let chain = match play_forward(steps, std::path::Path::new(cwd)) {
+    let chain = match play_forward(steps.clone(), std::path::Path::new(cwd)) {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
+            let statuses = vec![crate::chain::StepStatus::Failed; steps.len()];
+            crate::terminal_router::retry::save_from_steps(steps, statuses);
             crate::chain::popup::show("Edit failed");
             let _ = crate::clipboard::copy_to_clipboard(&sentence);
             return sentence;
@@ -438,7 +449,21 @@ fn handle_chain(rest: &str) -> String {
         .iter()
         .any(|s| matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir));
     let folders = crate::chain::whitelist::load();
+    // .sh and .toml files always need review the first time, even inside a
+    // whitelisted folder. Once approved at a given content, the approval
+    // sticks until the file changes.
+    let sensitive_paths: Vec<std::path::PathBuf> = chain
+        .steps
+        .iter()
+        .filter(|s| {
+            !matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir)
+        })
+        .map(|s| s.path.clone())
+        .filter(|p| crate::terminal_router::file_trust::is_sensitive(p))
+        .collect();
+    let sensitive_ok = crate::terminal_router::file_trust::all_approved(&sensitive_paths);
     let all_whitelisted = !has_remove_or_move
+        && sensitive_ok
         && !folders.is_empty()
         && chain
             .snapshots
@@ -456,6 +481,9 @@ fn handle_chain(rest: &str) -> String {
             }
             Err(e) => {
                 let sentence = format!("zap: nothing was written. {}.", e);
+                let statuses =
+                    vec![crate::chain::StepStatus::Failed; chain.steps.len()];
+                crate::terminal_router::retry::save_from_chain(&chain, &statuses);
                 crate::chain::popup::show("Edit failed");
                 let _ = crate::clipboard::copy_to_clipboard(&sentence);
                 sentence
@@ -656,9 +684,11 @@ fn handle_last(path_opt: Option<&str>) -> String {
         }
     };
 
-    let after_text = match &record.kind {
-        Kind::Removed => String::new(),
-        _ => std::fs::read_to_string(&path).unwrap_or_default(),
+    let removed = matches!(record.kind, Kind::Removed);
+    let after_text = if removed {
+        String::new()
+    } else {
+        std::fs::read_to_string(&path).unwrap_or_default()
     };
 
     if let Some(expected) = record.after_hash {
@@ -674,12 +704,22 @@ fn handle_last(path_opt: Option<&str>) -> String {
     let mut count = 0;
     for line in s.lines() {
         if count >= 400 {
-            out.push_str("... truncated at 400 lines\n");
+            out.push_str("... diff truncated at 400 lines\n");
             break;
         }
         out.push_str(line);
         out.push('\n');
         count += 1;
+    }
+
+    out.push_str("\n--- current contents ---\n");
+    if removed {
+        out.push_str("(file was removed)\n");
+    } else {
+        out.push_str(&after_text);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
     }
     out
 }

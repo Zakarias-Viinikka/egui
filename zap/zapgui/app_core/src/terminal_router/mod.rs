@@ -1,4 +1,5 @@
 pub mod cargo_run;
+pub mod file_trust;
 pub mod listener;
 pub mod run_file;
 pub mod stream_run;
@@ -68,6 +69,32 @@ pub fn request_menu() {
 /// Consume any pending menu request.
 pub fn take_menu_request() -> bool {
     MENU_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+static SHOW_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the UI thread to make the window visible and raise it, without
+/// opening the menu. Used by the "focus-if-busy" request: an external
+/// shortcut asks whether zapgui has a review pending, and if so, this is
+/// how it gets shown.
+pub fn request_show() {
+    SHOW_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(ctx) = CTX.get() {
+        ctx.request_repaint();
+    }
+}
+
+/// Consume any pending show request.
+pub fn take_show_request() -> bool {
+    SHOW_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// True if anything is waiting for the user: a pending chain review or a
+/// pending surface review. The menu is not counted here because it's UI
+/// state, not router state.
+pub fn something_waiting() -> bool {
+    current_pending().is_some() || current_surface_review().is_some()
 }
 
 /// The pending surface review, if any. A chain review or a menu can coexist

@@ -11,6 +11,11 @@ egui patch, and the parts that will confuse you if you don't read it.
 Then `CHAIN_CHEATSHEET.md` for the chain grammar. The escape rule, the
 absolute-path rule and the `cd`/`cargo`/`run` steps are all there.
 
+Then these, for specific subsystems:
+`CHAIN_REVIEW_UI.md` (the review window's layout, buttons, flags),
+`FILE_TRUST.md` (`.sh` / `.toml` approval),
+`RETRY.md` (the retry record and verb).
+
 ## 2. The shared parser
 
 `zap_wire/src/chain.rs` holds `parse`, `ParseError`, `Step` and `Verb`.
@@ -36,10 +41,18 @@ dispatches on FrameKind (Request, CargoRun, RunFile, ChainRun), writes
 replies.
 
 `zapgui/app_core/src/terminal_router/route_requests.rs` — parses the
-request shape, dispatches to chain / overwrite / last, auto-applies
-whitelisted chains (never when the chain has rm, mv, cargo or run), and
-contains `handle_chain_run`, the blocking handler for a chain that ends in
-a run step.
+request shape, dispatches to chain / overwrite / last / retry /
+focus-if-busy, auto-applies whitelisted chains (never when the chain has
+zaprm, zapmv, rmdir, cargo or run, and never for an unapproved `.sh` or
+`.toml`), and contains `handle_chain_run`, the blocking handler for a
+chain that ends in a run step.
+
+`zapgui/app_core/src/terminal_router/retry.rs` — the last finished
+review's record and `build_retry_chain`. Written by the UI when a chain
+finishes; read by `handle_retry` in route_requests. See RETRY.md.
+
+`zapgui/app_core/src/terminal_router/file_trust.rs` — the `.sh` / `.toml`
+approval store, keyed by (path, content hash). See FILE_TRUST.md.
 
 `zapgui/app_core/src/terminal_router/stream_run.rs` — the shared process
 loop both cargo and run use. `cargo_run.rs` and `run_file.rs` are the two

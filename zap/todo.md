@@ -120,3 +120,7 @@ engine pass that just landed.
 - the `edit_title` pen button should work: turn the block into a text
   field, Enter commits.
 - a rename command.
+
+## trying to select text in zapgui by clickign and dragging, makes it select text from the other window too. it's really annoying
+
+## i want to make it so <verb> --help copies something to my clipboard so ai can ask about details or help with how a command works. that way i can reduce my zap thing, so that for the niche and rare stuff ai knows the commadn exists and can just tell me "run command for x --help"

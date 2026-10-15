@@ -15,8 +15,8 @@ use every_page_ever::ReusableComponents::glass_button::ui::{
 const CLICK_GUARD: Duration = Duration::from_millis(500);
 const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const CAPTION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
-const CAPTION_DENIED_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const CAPTION_MARKED_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
+const BOUNDARY_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 150, 160);
 const SURFACE_BANNER_BG: egui::Color32 = egui::Color32::from_rgb(60, 42, 12);
 const SURFACE_BANNER_BORDER: egui::Color32 = egui::Color32::from_rgb(230, 160, 40);
 const SURFACE_BANNER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 200, 110);
@@ -61,6 +61,14 @@ fn banner_hint(kind: BannerKind) -> &'static str {
         BannerKind::Execute => "confirm = run it, deny = don't",
         BannerKind::Delete => "confirm = delete it, deny = don't",
         BannerKind::Rename => "confirm = rename it, deny = don't",
+    }
+}
+
+fn boundary_line(boundary: &std::path::Path) -> String {
+    if boundary == std::path::Path::new("/") {
+        "edits confined to /".to_string()
+    } else {
+        format!("edits confined to {}/", boundary.display())
     }
 }
 
@@ -206,6 +214,37 @@ fn layout_caption(
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// Caption with a second, dimmer line naming the deepest common folder
+/// of everything the chain touches. Used by the chain review; the
+/// surface review keeps the single-line caption.
+fn layout_caption_with_boundary(
+    ui: &egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    boundary: &str,
+    wrap_width: f32,
+) -> Arc<egui::Galley> {
+    let mut job = LayoutJob::default();
+    let caption_format = egui::TextFormat {
+        font_id: egui::FontId::monospace(13.0),
+        color,
+        ..Default::default()
+    };
+    let boundary_format = egui::TextFormat {
+        font_id: egui::FontId::monospace(11.0),
+        color: BOUNDARY_COLOR,
+        ..Default::default()
+    };
+    job.append(text, 0.0, caption_format.clone());
+    job.append("\n", 0.0, caption_format);
+    job.append(boundary, 0.0, boundary_format);
+    job.wrap = TextWrapping {
+        max_width: wrap_width,
+        ..Default::default()
+    };
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
 pub struct NecessaryStructForEgui {
     shown: Option<Arc<Chain>>,
     shown_at: Instant,
@@ -269,6 +308,12 @@ impl eframe::App for NecessaryStructForEgui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if app_core::terminal_router::take_menu_request() {
             self.open_menu();
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            app_core::terminal_router::route_requests::focus_window();
+        }
+
+        if app_core::terminal_router::take_show_request() {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(true));
             app_core::terminal_router::route_requests::focus_window();
@@ -444,7 +489,14 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 } else {
                     CAPTION_COLOR
                 };
-                let g = layout_caption(ui, &text, color, wrap_width);
+                let boundary_label = boundary_line(&c.boundary);
+                let g = layout_caption_with_boundary(
+                    ui,
+                    &text,
+                    color,
+                    &boundary_label,
+                    wrap_width,
+                );
                 (Some(g), color)
             } else {
                 (None, CAPTION_COLOR)
@@ -1072,6 +1124,7 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
             Verb::Move => {
                 if let Some(dest) = &step.dest {
                     app_core::run_trust::rename(&step.path, dest);
+                    app_core::terminal_router::file_trust::remove_approval(&step.path);
                     let from_root = app_core::surface::project_root(&step.path);
                     let to_root = app_core::surface::project_root(dest);
                     match (from_root, to_root) {
@@ -1085,8 +1138,9 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
                     }
                 }
             }
-            Verb::Remove => {
+            Verb::Remove | Verb::RemoveDir => {
                 app_core::run_trust::remove_all_at_path(&step.path);
+                app_core::terminal_router::file_trust::remove_approval(&step.path);
                 if let Some(root) = app_core::surface::project_root(&step.path) {
                     app_core::trust::remove_from_record(&root, &step.path);
                 }
@@ -1094,6 +1148,20 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
             _ => {}
         }
     }
+
+    // Approvals for .sh / .toml files. The user just confirmed this write,
+    // so save the file's content hash so a later edit that lands at the
+    // same state won't re-prompt.
+    let approved: Vec<PathBuf> = chain
+        .steps
+        .iter()
+        .filter(|s| {
+            !matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir)
+        })
+        .map(|s| s.path.clone())
+        .filter(|p| app_core::terminal_router::file_trust::is_sensitive(p))
+        .collect();
+    let _ = app_core::terminal_router::file_trust::record_approved(&approved);
 
     if has_move_or_remove {
         return;

@@ -373,7 +373,6 @@ impl NecessaryStructForEgui {
     fn draw_history(&mut self, ui: &mut egui::Ui) {
         let mono = egui::FontId::monospace(FONT_SIZE);
         let prompt = self.prompt();
-        let input_width = ui.available_width();
         egui::ScrollArea::vertical()
             .id_salt("history")
             .auto_shrink([false, false])
@@ -424,12 +423,16 @@ impl NecessaryStructForEgui {
                             .font(mono.clone())
                             .color(PROMPT),
                     );
+                    // Ask the horizontal layout for its real remaining
+                    // width after the prompt. A guessed width made the
+                    // TextEdit wrap past the right edge.
+                    let remaining = ui.available_width().max(80.0);
                     let out = egui::TextEdit::multiline(&mut self.typed)
                         .id(id)
                         .font(mono.clone())
                         .text_color(TEXT)
                         .desired_rows(1)
-                        .desired_width(input_width - 40.0)
+                        .desired_width(remaining)
                         .frame(egui::Frame::NONE)
                         .show(ui);
                     // Focus the input when nothing else holds focus. This

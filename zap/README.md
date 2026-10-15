@@ -83,6 +83,16 @@ word for the replace verb.)
 `Request` with text `last [<path>]` — a peek-only reply from zapgui's
 in-memory last-change record.
 
+`Request` with text `retry` or `retry <n> [<n>...]` — rebuild a chain
+from the last finished review's unapplied steps and stash it for review.
+Replies empty unless there's nothing to retry or the request is
+malformed. See RETRY.md.
+
+`Request` with text `focus-if-busy` — reply is `shown` if a chain or
+surface review is waiting (and zapgui is asked to show itself), `idle`
+otherwise. Used by the external zap-front shortcut so it can hand off to
+zapgui instead of focusing zapcli.
+
 `CargoRun` frame, text `<cwd>\0<arg1>\0...` — the standalone `cargo`
 verb. Streams output into zapcli's bottom pane.
 
@@ -164,19 +174,38 @@ so the run step's path and args are still available.
 The pending chain lives in one slot in `terminal_router`, as an `Arc<Chain>`
 holding the steps, their diffs, and a snapshot of each touched file as it
 was when the chain was built. The UI reads the slot every frame and renders
-from the last Arc it saw. Glass buttons below the diff do the work: confirm
-on the left, deny on the right.
+from the last Arc it saw.
 
-Confirm applies every step that is not denied. If a step fails (its file
-changed on disk since the snapshot, a create target already exists, a
-replace old text no longer matches), nothing is written and the window
-stays with a red error line, and the failure report goes on the clipboard
-with a popup. A failure report names the step index and verb:
+Four glass buttons below the diff. Left to right: Verify, Mark,
+Allow/Confirm, Deny All.
+
+Confirm writes every step that isn't marked. A step marked for retry is
+skipped and stays in the retry payload (see RETRY.md). Verify is a
+per-step flag: it's what lets Confirm write a run or cargo step; without
+Verify on a run step, Confirm refuses and jumps to that step with a
+message. Mark toggles the shown step's "leave for retry" state and turns
+its block amber. Deny All writes nothing, puts the whole chain into the
+retry payload, and preserves any Marks set before it.
+
+If a step fails at write time (its file changed on disk since the
+snapshot, a create target already exists, a replace old text no longer
+matches), nothing is written and the window stays with a red error line,
+and the failure report goes on the clipboard with a popup. A failure
+report names the step index and verb:
 `zap: nothing was written. step 3 of 7 (replace /abs/x.rs) failed: ...`.
 
-Deny marks the currently shown step denied, dims its block in the column on
-the right, and moves to the next undecided step. When every step is denied
-the window closes. Nothing is written.
+A chain with more than one step shows a column of glass blocks on the
+right, one per step. Each block's border is tinted by the step's verb
+(create/edit/delete/rename/cargo/run each have a distinct accent). The
+shown step's block is brighter; marked steps are amber; the caption
+above the diff carries a matching accent bar on its left and reads
+`step n of m · verb path`, with ` · marked for retry` or
+` · verified` appended when the shown step carries that flag.
+
+Below the caption, a dimmer line names the deepest common folder of
+every path the chain touches: `edits confined to /abs/folder/`. It is
+computed once in `play_forward`, over all step paths and move
+destinations, and stored on the Chain as `boundary`.
 
 A chain with more than one step shows a column of glass blocks on the right,
 one per step. The shown step's block is brighter, denied blocks are red,
@@ -188,9 +217,9 @@ On success the slot empties (only if it still holds the same Arc, so a newer
 chain survives) and the window hides with `ViewportCommand::Visible(false)`,
 not `Close`, so the process and its listener stay alive.
 
-Clicks are ignored for 500 ms after the displayed diff changes, after a deny,
-or after the window appears, so a click meant for something else can't land
-on a freshly shown diff.
+Clicks are ignored for 500 ms after the displayed diff changes, after a
+Mark, or after the window appears, so a click meant for something else
+can't land on a freshly shown diff.
 
 A new chain while one is showing replaces it. The reply and clipboard both
 say `zap: replaced unconfirmed chain (<first path>).` so it doesn't
@@ -276,6 +305,11 @@ yet, its nearest existing parent is used.
 A chain with any `zaprm`, `zapmv`, `cargo` or `run` step goes to review even
 inside a whitelisted folder, so an auto-applied edit can never be paired
 with an auto-applied delete, rename or execution.
+
+A `.sh` or `.toml` file whose content has not been approved at that exact
+state also goes to review, even inside a whitelisted folder. Approval is
+per (path, content hash) and sticks until the file changes. See
+FILE_TRUST.md.
 
 When zapgui is launched normally (without `--hidden`) it shows a menu. One
 entry for now: Whitelisted folders. zapcli's auto-launch passes `--hidden`
@@ -460,6 +494,11 @@ file and matching. `popup.rs` wraps `fading_popup`.
 `zapgui/app_core/src/terminal_router/` — socket listener,
 `route_requests`, the blocking `handle_chain_run`, the shared slot in
 `mod.rs`. The slot holds an `Arc<Chain>`.
+
+`zapgui/app_core/src/terminal_router/retry.rs` — the last finished
+review's record and the `retry` verb's builder. See RETRY.md.
+`terminal_router/file_trust.rs` — the `.sh` / `.toml` approval store.
+See FILE_TRUST.md.
 
 `zapgui/app_core/src/terminal_router/stream_run.rs` — the shared process
 loop both `cargo` and `run` use. `cargo_run.rs` and `run_file.rs` are the

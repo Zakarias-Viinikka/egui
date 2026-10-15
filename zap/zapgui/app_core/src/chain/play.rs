@@ -41,6 +41,10 @@ pub struct Chain {
     /// Mutex because mpsc::Sender is Send but not Sync, and Chain is
     /// stored inside an Arc.
     pub notify: Option<Mutex<Sender<ChainOutcome>>>,
+    /// Deepest common folder of every path the chain touches. For a
+    /// single-file chain this is the file's own parent. Used by the
+    /// review window to say "edits confined to <this>".
+    pub boundary: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -134,7 +138,54 @@ pub fn play_forward(steps: Vec<Step>, cwd: &Path) -> Result<Chain, String> {
         .map(|p| Snapshot { content: snapshots.get(&p).cloned().flatten(), path: p })
         .collect();
 
-    Ok(Chain { steps: applied, snapshots, notify: None })
+    let boundary = common_folder(applied.iter().flat_map(|s| {
+        let mut v: Vec<&Path> = vec![s.path.as_path()];
+        if let Some(d) = &s.dest {
+            v.push(d.as_path());
+        }
+        v
+    }));
+
+    Ok(Chain { steps: applied, snapshots, notify: None, boundary })
+}
+
+/// Deepest common folder of every path's parent, by whole components.
+/// Returns `/` when the paths don't share a parent (or the list is empty).
+fn common_folder<'a, I: IntoIterator<Item = &'a Path>>(paths: I) -> PathBuf {
+    let mut iter = paths.into_iter();
+    let Some(first) = iter.next() else {
+        return PathBuf::from("/");
+    };
+    let Some(first_parent) = first.parent() else {
+        return PathBuf::from("/");
+    };
+    let mut common: Vec<std::path::Component> = first_parent.components().collect();
+    for p in iter {
+        let Some(parent) = p.parent() else {
+            return PathBuf::from("/");
+        };
+        let comps: Vec<std::path::Component> = parent.components().collect();
+        let mut i = 0;
+        while i < common.len() && i < comps.len() && common[i] == comps[i] {
+            i += 1;
+        }
+        common.truncate(i);
+        if common.is_empty() {
+            return PathBuf::from("/");
+        }
+    }
+    if common.is_empty() {
+        return PathBuf::from("/");
+    }
+    let mut out = PathBuf::new();
+    for c in common {
+        out.push(c.as_os_str());
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from("/")
+    } else {
+        out
+    }
 }
 
 fn verb_name(v: Verb) -> &'static str {

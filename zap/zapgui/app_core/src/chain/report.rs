@@ -2,6 +2,11 @@
 use super::play::{AppliedStep, Chain};
 use super::step::Verb;
 
+/// Total size of the clipboard sentence, in bytes. Very long chains make
+/// very long sentences; past this the per-step enumeration is cut short
+/// and ends with a "(+ N more steps)" tail.
+const REPORT_MAX_BYTES: usize = 4000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepStatus {
     Applied,
@@ -31,31 +36,37 @@ pub fn build(chain: &Chain, statuses: &[StepStatus], failure: Option<&str>) -> S
         ));
     }
 
+    let mut emitted = 0usize;
+    let mut skipped = 0usize;
     for (i, applied_step) in chain.steps.iter().enumerate() {
-        match statuses.get(i).copied().unwrap_or(StepStatus::Pending) {
-            StepStatus::Applied => {
-                out.push(' ');
-                out.push_str(&describe(applied_step, false));
-                out.push('.');
-            }
-            StepStatus::Denied => {
-                out.push(' ');
-                out.push_str(&describe(applied_step, true));
-                out.push('.');
-            }
-            StepStatus::Marked => {
-                out.push(' ');
-                out.push_str(&format!(
-                    "step {} of {} ({} {}) marked for retry",
-                    i + 1,
-                    total,
-                    verb_of(applied_step),
-                    applied_step.path.display()
-                ));
-                out.push('.');
-            }
-            _ => {}
+        let clause = match statuses.get(i).copied().unwrap_or(StepStatus::Pending) {
+            StepStatus::Applied => Some(describe(applied_step, false)),
+            StepStatus::Denied => Some(describe(applied_step, true)),
+            StepStatus::Marked => Some(format!(
+                "step {} of {} ({} {}) marked for retry",
+                i + 1,
+                total,
+                verb_of(applied_step),
+                applied_step.path.display()
+            )),
+            _ => None,
+        };
+        let Some(clause) = clause else { continue };
+        let next = clause.chars().count() + 2;
+        if out.len() + next > REPORT_MAX_BYTES {
+            skipped += 1;
+            continue;
         }
+        out.push(' ');
+        out.push_str(&clause);
+        out.push('.');
+        emitted += 1;
+    }
+    if skipped > 0 {
+        if emitted > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("(+ {skipped} more step(s))"));
     }
 
     out

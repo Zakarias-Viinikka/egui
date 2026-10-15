@@ -98,10 +98,32 @@ fontdue compiles. Don't remove it.
 - Cargo and run stream into a bottom pane, with the progress bar drawn.
 - Run targets are trusted per (path, args, content hash); rename through
   a confirmed mv carries the trust.
-- `last` shows the last change zap made to a file.
+- `last` shows the last change zap made to a file: diff plus the file's
+  current contents; zapcli copies the whole thing to the clipboard by
+  default and marks the lines peek-only so `copy` skips them.
 - head/tail/wc/last output is peek-only; copy skips it.
 - Input line is an egui TextEdit: Ctrl+Z, click-to-position, selection.
 - Ctrl+C clears input, Ctrl+Shift+C is unreliable (see README).
+- `rmdir` verb: one line, no markers, refuses non-empty folders,
+  always reviewed.
+- `retry [<step>...]` verb: rebuild a chain from the last finished
+  review's unapplied steps. See RETRY.md.
+- `zaprm` and `zapmv` replaced `rm` and `mv`. Old names give a clear
+  "use zaprm" / "use zapmv" error at parse time.
+- The chain review window has four buttons: Verify, Mark,
+  Allow/Confirm, Deny All. Run and cargo steps need Verify before
+  Confirm will fire; the Confirm icon becomes a purple play arrow on
+  those steps.
+- Step blocks are bordered by verb (create / edit / delete / rename /
+  cargo / run each have an accent); the caption carries a matching bar.
+- A second caption line names the deepest common folder of everything
+  the chain touches: `edits confined to /abs/folder/`.
+- `.sh` and `.toml` files need approval even inside a whitelisted
+  folder, once per (path, content hash). See FILE_TRUST.md.
+- Chain failures report every failing step in one sentence instead of
+  stopping at the first.
+- `cd /path && c c` is no longer treated as a chain candidate.
+- Popup position tracks the display size instead of assuming 1920x1080.
 - Both projects under `~/ProgStuff/egui/zap/`.
 
 ## What's spec'd but not built
