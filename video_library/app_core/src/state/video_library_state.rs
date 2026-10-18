@@ -4,9 +4,7 @@ use super::render_job::{RenderJob, RenderOutcome};
 use super::timeline::TimelineState;
 use super::video_view::VideoViewState;
 use crate::error::{AppError, AppResult};
-use crate::thumbnails::{cache, lru};
 use crate::video::decoder::VideoDecoder;
-use image::{imageops::FilterType, RgbaImage};
 use std::path::PathBuf;
 use std::time::Duration;
 use video_library_core_core::black_and_white::core::BwPreset;
@@ -23,6 +21,8 @@ pub struct VideoLibraryState {
     pub kdenlive: KdenliveState,
     pub log: Vec<LogEntry>,
     pub last_render_output: Option<PathBuf>,
+    pub last_error_message: Option<String>,
+    pub pending_pull_name: Option<String>,
     last_render_seen: Option<RenderOutcome>,
 }
 
@@ -38,6 +38,8 @@ impl VideoLibraryState {
             kdenlive: KdenliveState::new(),
             log: Vec::new(),
             last_render_output: None,
+            last_error_message: None,
+            pending_pull_name: None,
             last_render_seen: None,
         }
     }
@@ -51,7 +53,9 @@ impl VideoLibraryState {
     pub fn push_log(&mut self, kind: LogKind, text: impl Into<String>) {
         let text: String = text.into();
         if matches!(kind, LogKind::Error) {
+            eprintln!("[video_lib] ERROR: {text}");
             crate::popup::spawn_popup(&text);
+            self.last_error_message = Some(text.clone());
         }
         self.log.push(LogEntry::new(kind, text));
         if self.log.len() > MAX_LOG {
@@ -76,8 +80,24 @@ impl VideoLibraryState {
             self.push_log(LogKind::Error, format!("First frame decode failed: {e}"));
         }
 
-        let thumb_path = path.clone();
-        std::thread::spawn(move || spawn_thumbnail_gen(thumb_path, duration));
+        Ok(())
+    }
+
+    pub fn start_bw_render_auto(&mut self) -> AppResult<()> {
+        let Some(source) = self.picked_path.clone() else {
+            return Err(AppError::new("no video picked", "video_library_state::start_bw_render_auto", file!()));
+        };
+        let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        let parent = source
+            .parent()
+            .ok_or_else(|| AppError::new("source has no parent dir", "video_library_state::start_bw_render_auto", file!()))?;
+        let output = parent.join(format!("{stem}_bw.mp4"));
+        let total_us = self.timeline.duration.as_micros().min(u64::MAX as u128) as u64;
+        let job = RenderJob::start(source, output.clone(), self.bw_preset, total_us)?;
+        self.last_render_output = Some(output.clone());
+        self.last_render_seen = None;
+        self.push_log(LogKind::Info, format!("Rendering B&W → {}", output.display()));
+        self.render_job = Some(job);
         Ok(())
     }
 
@@ -89,7 +109,7 @@ impl VideoLibraryState {
         let job = RenderJob::start(source, output.clone(), self.bw_preset, total_us)?;
         self.last_render_output = Some(output.clone());
         self.last_render_seen = None;
-        self.push_log(LogKind::Info, format!("Rendering B&W to {}", output.display()));
+        self.push_log(LogKind::Info, format!("Rendering B&W → {}", output.display()));
         self.render_job = Some(job);
         Ok(())
     }
@@ -105,19 +125,21 @@ impl VideoLibraryState {
             self.push_log(LogKind::Info, "Busy — another job is running");
             return;
         }
-        self.push_log(LogKind::Info, "Pulling clip from Kdenlive...");
-        self.kdenlive.start_pull();
+        let output_dir = resolve_output_dir();
+        self.push_log(
+            LogKind::Info,
+            format!("Pulling from Kdenlive → {}", output_dir.display()),
+        );
+        self.kdenlive.start_pull(output_dir);
     }
 
     pub fn start_push_to_kdenlive(&mut self) {
+        eprintln!("[video_lib] push requested");
         if self.kdenlive.is_busy() {
+            eprintln!("[video_lib] push skipped: busy");
             self.push_log(LogKind::Info, "Busy — another job is running");
             return;
         }
-        let Some(pulled) = self.kdenlive.pulled.as_ref() else {
-            self.push_log(LogKind::Error, "Send back: no clip was pulled");
-            return;
-        };
         let source = self
             .last_render_output
             .clone()
@@ -126,15 +148,11 @@ impl VideoLibraryState {
             self.push_log(LogKind::Error, "Send back: no file to send");
             return;
         };
-        let (id, track_id, position) = {
-            let info = &pulled.info;
-            (info.id, info.track_id, info.position)
-        };
         self.push_log(
             LogKind::Info,
-            format!("Sending {} to Kdenlive (track {track_id}, position {position})...", source.display()),
+            format!("Adding {} to Kdenlive project...", source.display()),
         );
-        self.kdenlive.start_push(source, id, track_id, position);
+        self.kdenlive.start_push(source);
     }
 
     /// Called once per frame before drawing. Returns true when visible state changed.
@@ -159,10 +177,17 @@ impl VideoLibraryState {
             match pull_result {
                 Ok(pulled) => {
                     let temp = pulled.temp_file.clone();
-                    let info_name = pulled.info.name.clone();
+                    let count = pulled.original_clips.len();
+                    let name = pulled.display_name();
+                    self.pending_pull_name = Some(name.clone());
                     self.kdenlive.pulled = Some(pulled);
+                    let success_msg = if count == 1 {
+                        format!("Pulled '{name}' from Kdenlive")
+                    } else {
+                        format!("Pulled {count} glued clips as '{name}' from Kdenlive")
+                    };
                     match self.load_video(temp) {
-                        Ok(()) => self.push_log(LogKind::Success, format!("Pulled '{info_name}' from Kdenlive")),
+                        Ok(()) => self.push_log(LogKind::Success, success_msg),
                         Err(e) => self.push_log(LogKind::Error, format!("Pulled but load failed: {e}")),
                     }
                 }
@@ -173,14 +198,30 @@ impl VideoLibraryState {
         if let Some(push_result) = self.kdenlive.poll_push() {
             changed = true;
             match push_result {
-                Ok(new_id) => {
-                    self.push_log(LogKind::Success, format!("Sent back to Kdenlive (new clip id {new_id})"));
-                    self.kdenlive.pulled = None;
+                Ok(bin_id) => {
+                    let msg = format!("Added to Kdenlive bin as {bin_id}");
+                    crate::popup::spawn_popup(&msg);
+                    self.push_log(
+                        LogKind::Success,
+                        format!("{msg}. Drag it onto the timeline to replace."),
+                    );
                 }
-                Err(e) => self.push_log(LogKind::Error, format!("Send back failed: {e}")),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("imported (bin id not reported") {
+                        crate::popup::spawn_popup("Added to Kdenlive bin");
+                        self.push_log(
+                            LogKind::Info,
+                            "File imported to Kdenlive bin (bin id not reported; check the bin and drag onto timeline)",
+                        );
+                    } else {
+                        self.push_log(LogKind::Error, format!("Send back failed: {msg}"));
+                    }
+                }
             }
         }
 
+        let mut clear_render_job = false;
         if let Some(job) = &self.render_job {
             let now = job.outcome();
             if !same_outcome(&self.last_render_seen, &now) {
@@ -190,11 +231,18 @@ impl VideoLibraryState {
                     RenderOutcome::Failed(msg) => self.push_log(LogKind::Error, format!("Render failed: {msg}")),
                     RenderOutcome::Running => {}
                 }
-                self.last_render_seen = Some(now);
+                self.last_render_seen = Some(now.clone());
                 changed = true;
+
+                if matches!(now, RenderOutcome::Done | RenderOutcome::Cancelled) {
+                    clear_render_job = true;
+                }
             }
         } else {
             self.last_render_seen = None;
+        }
+        if clear_render_job {
+            self.render_job = None;
         }
 
         changed
@@ -210,43 +258,20 @@ fn same_outcome(a: &Option<RenderOutcome>, b: &RenderOutcome) -> bool {
     )
 }
 
-fn spawn_thumbnail_gen(video: PathBuf, duration: Duration) {
-    if let Err(e) = cache::ensure_cache_dir() {
-        eprintln!("thumb cache dir: {e}");
-        return;
-    }
-    let mut decoder = match VideoDecoder::open(&video) {
-        Ok(d) => d,
-        Err(e) => { eprintln!("thumb decoder open: {e}"); return; }
-    };
-    for i in 0..cache::THUMB_COUNT {
-        let path = cache::thumb_path(&video, i);
-        if path.exists() { continue; }
-        let ts = if cache::THUMB_COUNT > 1 {
-            duration.mul_f64(i as f64 / cache::THUMB_COUNT as f64)
-        } else { Duration::ZERO };
-        match decoder.frame_at(ts) {
-            Ok(frame) => {
-                let Some(img) = RgbaImage::from_raw(frame.width, frame.height, frame.rgba) else { continue };
-                let (tw, th) = thumb_dims(frame.width, frame.height);
-                let resized = image::imageops::resize(&img, tw, th, FilterType::Triangle);
-                if let Err(e) = resized.save(&path) { eprintln!("save thumb {i}: {e}"); }
+
+fn resolve_output_dir() -> PathBuf {
+    if let Ok(project_path) = crate::kdenlive::talker::get_project_path() {
+        if !project_path.is_empty() {
+            let p = std::path::Path::new(&project_path);
+            if let Some(parent) = p.parent() {
+                let stem = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("project");
+                return parent.join(format!("{stem}_extracts"));
             }
-            Err(e) => eprintln!("thumb frame_at {i}: {e}"),
         }
     }
-    lru::evict_default();
-}
-
-fn thumb_dims(w: u32, h: u32) -> (u32, u32) {
-    if w == 0 || h == 0 { return (cache::THUMB_WIDTH, cache::THUMB_HEIGHT); }
-    let aspect = w as f32 / h as f32;
-    let target = cache::THUMB_WIDTH as f32 / cache::THUMB_HEIGHT as f32;
-    if aspect > target {
-        let th = (cache::THUMB_WIDTH as f32 / aspect) as u32;
-        (cache::THUMB_WIDTH, th.max(1))
-    } else {
-        let tw = (cache::THUMB_HEIGHT as f32 * aspect) as u32;
-        (tw.max(1), cache::THUMB_HEIGHT)
-    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".cache/video_library/pulled")
 }

@@ -34,7 +34,7 @@ pub struct KdenliveState {
     pub pull_job: Option<Job>,
     pull_slot: Option<Arc<Mutex<Option<AppResult<PulledClip>>>>>,
     pub push_job: Option<Job>,
-    push_slot: Option<Arc<Mutex<Option<AppResult<i32>>>>>,
+    push_slot: Option<Arc<Mutex<Option<AppResult<String>>>>>,
 }
 
 impl KdenliveState {
@@ -89,7 +89,7 @@ impl KdenliveState {
             || self.push_job.as_ref().is_some_and(|j| j.is_running())
     }
 
-    pub fn start_pull(&mut self) {
+    pub fn start_pull(&mut self, output_dir: PathBuf) {
         if self.is_busy() { return; }
         let status = Arc::new(Mutex::new(JobStatus::Running));
         let slot: Arc<Mutex<Option<AppResult<PulledClip>>>> = Arc::new(Mutex::new(None));
@@ -97,7 +97,7 @@ impl KdenliveState {
         let s = status.clone();
         let sl = slot.clone();
         std::thread::spawn(move || {
-            let out = pull_from_kdenlive();
+            let out = pull_from_kdenlive(&output_dir);
             match &out {
                 Ok(_) => *s.lock().unwrap() = JobStatus::Done,
                 Err(e) => *s.lock().unwrap() = JobStatus::Failed(e.to_string()),
@@ -112,20 +112,24 @@ impl KdenliveState {
     pub fn poll_pull(&mut self) -> Option<AppResult<PulledClip>> {
         let job = self.pull_job.as_ref()?;
         if job.is_running() { return None; }
-        let slot = self.pull_slot.take()?;
-        self.pull_job = None;
-        slot.lock().unwrap().take()
+        let slot = self.pull_slot.as_ref()?;
+        let result = slot.lock().unwrap().take();
+        if result.is_some() {
+            self.pull_slot = None;
+            self.pull_job = None;
+        }
+        result
     }
 
-    pub fn start_push(&mut self, source: PathBuf, original_id: i32, track: i32, position: i32) {
+    pub fn start_push(&mut self, source: PathBuf) {
         if self.is_busy() { return; }
         let status = Arc::new(Mutex::new(JobStatus::Running));
-        let slot: Arc<Mutex<Option<AppResult<i32>>>> = Arc::new(Mutex::new(None));
+        let slot: Arc<Mutex<Option<AppResult<String>>>> = Arc::new(Mutex::new(None));
 
         let s = status.clone();
         let sl = slot.clone();
         std::thread::spawn(move || {
-            let out = push_to_kdenlive(&source, original_id, track, position);
+            let out = push_to_kdenlive(&source);
             match &out {
                 Ok(_) => *s.lock().unwrap() = JobStatus::Done,
                 Err(e) => *s.lock().unwrap() = JobStatus::Failed(e.to_string()),
@@ -137,11 +141,15 @@ impl KdenliveState {
         self.push_slot = Some(slot);
     }
 
-    pub fn poll_push(&mut self) -> Option<AppResult<i32>> {
+    pub fn poll_push(&mut self) -> Option<AppResult<String>> {
         let job = self.push_job.as_ref()?;
         if job.is_running() { return None; }
-        let slot = self.push_slot.take()?;
-        self.push_job = None;
-        slot.lock().unwrap().take()
+        let slot = self.push_slot.as_ref()?;
+        let result = slot.lock().unwrap().take();
+        if result.is_some() {
+            self.push_slot = None;
+            self.push_job = None;
+        }
+        result
     }
 }

@@ -22,11 +22,16 @@ pub fn draw(ui: &mut egui::Ui, state: &VideoLibraryState) {
         ui.label(egui::RichText::new(format!("🖼 {res}")).weak());
 
         if let Some(pulled) = state.kdenlive.pulled.as_ref() {
-            let info = &pulled.info;
+            let count = pulled.original_clips.len();
             ui.separator();
-            ui.label(egui::RichText::new("🔗 from Kdenlive").color(egui::Color32::from_rgb(120, 200, 255)));
-            ui.label(egui::RichText::new(format!("track {}", info.track_id)).weak());
-            ui.label(egui::RichText::new(format!("pos {}", info.position)).weak());
+            let label = if count == 1 {
+                "🔗 from Kdenlive".to_string()
+            } else {
+                format!("🔗 bundle of {count} clips from Kdenlive")
+            };
+            ui.label(egui::RichText::new(label).color(egui::Color32::from_rgb(120, 200, 255)));
+            ui.label(egui::RichText::new(format!("track {}", pulled.track_id)).weak());
+            ui.label(egui::RichText::new(format!("pos {}", pulled.start_position)).weak());
         }
     });
 }

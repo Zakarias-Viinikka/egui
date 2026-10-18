@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 const POPUP_BIN: &str = "fading_popup";
-const MAX_CHARS: usize = 40;
 
 pub fn spawn_popup(message: &str) {
     let Some(path) = popup_binary_path() else {
@@ -9,9 +8,7 @@ pub fn spawn_popup(message: &str) {
         return;
     };
 
-    let short = truncate(message, MAX_CHARS);
-
-    match std::process::Command::new(&path).arg(&short).spawn() {
+    match std::process::Command::new(&path).arg(message).spawn() {
         Ok(_) => {}
         Err(e) => eprintln!("[popup] spawn failed: {e}"),
     }
@@ -25,12 +22,4 @@ fn popup_binary_path() -> Option<PathBuf> {
         return Some(candidate);
     }
     None
-}
-
-fn truncate(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(max_chars - 3).collect();
-    format!("{head}...")
 }

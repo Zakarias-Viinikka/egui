@@ -2,6 +2,7 @@
 name = "app"
 version.workspace = true
 edition.workspace = true
+default-run = "app"
 
 [dependencies]
 eframe.workspace = true

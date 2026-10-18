@@ -23,8 +23,17 @@ pub trait KdenliveMainWindow {
     fn script_get_timeline_clip_info(&self, clip_id: i32) -> zbus::Result<HashMap<String, OwnedValue>>;
     #[zbus(name = "scriptGetProjectFps")]
     fn script_get_project_fps(&self) -> zbus::Result<f64>;
+    #[zbus(name = "scriptGetProjectPath")]
+    fn script_get_project_path(&self) -> zbus::Result<String>;
     #[zbus(name = "scriptImportMedia")]
     fn script_import_media(&self, file_paths: Vec<String>, folder_id: String) -> zbus::Result<Vec<String>>;
+    #[zbus(name = "scriptGetAllClipIds")]
+    fn script_get_all_clip_ids(&self) -> zbus::Result<Vec<String>>;
+    #[zbus(name = "scriptGetClipProperties")]
+    fn script_get_clip_properties(
+        &self,
+        bin_id: &str,
+    ) -> zbus::Result<HashMap<String, OwnedValue>>;
     #[zbus(name = "scriptDeleteTimelineClip")]
     fn script_delete_timeline_clip(&self, clip_id: i32) -> zbus::Result<bool>;
     #[zbus(name = "scriptInsertClip")]
@@ -111,4 +120,12 @@ pub fn build_proxy<'a>(
         .map_err(|e| AppError::new(format!("path: {e}"), "kdenlive::talker::build", file!()))?
         .build()
         .map_err(|e| AppError::new(format!("build: {e}"), "kdenlive::talker::build", file!()))
+}
+
+pub fn get_project_path() -> AppResult<String> {
+    let (conn, name) = connect()?;
+    let proxy = build_proxy(&conn, &name)?;
+    proxy
+        .script_get_project_path()
+        .map_err(|e| AppError::new(format!("get_project_path: {e}"), "kdenlive::talker::get_project_path", file!()))
 }

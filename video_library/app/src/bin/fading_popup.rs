@@ -6,14 +6,18 @@ use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
 
-const W: u16 = 260;
-const H: u16 = 60;
+const MIN_W: f32 = 200.0;
+const MIN_H: f32 = 52.0;
+const MAX_TEXT_W: f32 = 620.0;
+const PAD_X: f32 = 22.0;
+const PAD_Y: f32 = 16.0;
+const LINE_MULT: f32 = 1.42;
 const CORNER_RADIUS: f32 = 6.0;
 const BORDER_WIDTH: f32 = 1.5;
-const LINGER_MS: u64 = 800;
-const FADE_MS: u64 = 500;
+const LINGER_MS: u64 = 4000;
+const FADE_MS: u64 = 800;
 const FADE_STEPS: u64 = 25;
-const FONT_SIZE: f32 = 18.0;
+const FONT_SIZE: f32 = 17.0;
 
 const BG: (u8, u8, u8) = (0x14, 0x14, 0x14);
 const FG: (u8, u8, u8) = (0xF0, 0xF0, 0xF0);
@@ -25,11 +29,68 @@ fn load_font() -> Option<Font> {
     Font::from_bytes(FONT_BYTES, FontSettings::default()).ok()
 }
 
+fn measure_text(font: &Font, text: &str, size: f32) -> f32 {
+    text.chars().map(|c| font.metrics(c, size).advance_width).sum()
+}
+
+fn wrap_text(font: &Font, text: &str, size: f32, max_px: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0.0f32;
+    let space_w = font.metrics(' ', size).advance_width;
+
+    for word in text.split_whitespace() {
+        let word_w = measure_text(font, word, size);
+        let extra = if current.is_empty() { 0.0 } else { space_w };
+        if current_w + extra + word_w > max_px && !current.is_empty() {
+            lines.push(current.clone());
+            current.clear();
+            current_w = 0.0;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+            current_w += space_w;
+        }
+        current.push_str(word);
+        current_w += word_w;
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn compute_size(lines: &[String], font: Option<&Font>) -> (u16, u16) {
+    let max_line_w = lines
+        .iter()
+        .map(|l| match font {
+            Some(f) => measure_text(f, l, FONT_SIZE),
+            None => l.len() as f32 * 8.0,
+        })
+        .fold(0.0f32, |a, b| a.max(b));
+    let w = (max_line_w + PAD_X * 2.0)
+        .max(MIN_W)
+        .min(MAX_TEXT_W + PAD_X * 2.0);
+    let line_h = FONT_SIZE * LINE_MULT;
+    let h = (lines.len() as f32 * line_h + PAD_Y * 2.0).max(MIN_H);
+    (w.round() as u16, h.round() as u16)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let body = args.get(1).cloned().unwrap_or_default();
     let x: i16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(800);
     let y: i16 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(10);
+
+    let font = load_font();
+    let lines = match &font {
+        Some(f) => wrap_text(f, &body, FONT_SIZE, MAX_TEXT_W),
+        None => vec![body.clone()],
+    };
+    let (w, h) = compute_size(&lines, font.as_ref());
 
     let (conn, screen_num) = x11rb::connect(None)?;
     let screen = &conn.setup().roots[screen_num];
@@ -71,8 +132,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         screen.root,
         x,
         y,
-        W,
-        H,
+        w,
+        h,
         0,
         WindowClass::INPUT_OUTPUT,
         visual,
@@ -110,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     conn.map_window(win)?;
     conn.flush()?;
 
-    let buf = render_content(W as u32, H as u32, &body);
+    let buf = render_content(w as u32, h as u32, &lines, font.as_ref());
     let mut drawn = false;
     let start = Instant::now();
     let mut faded = false;
@@ -119,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(event) = conn.poll_for_event()? {
             match event {
                 Event::Expose(_) => {
-                    if put_buffer(&conn, win, W, H, depth, &buf).is_ok() {
+                    if put_buffer(&conn, win, w, h, depth, &buf).is_ok() {
                         let _ = conn.sync();
                         drawn = true;
                     }
@@ -134,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if !drawn {
-            if put_buffer(&conn, win, W, H, depth, &buf).is_ok() {
+            if put_buffer(&conn, win, w, h, depth, &buf).is_ok() {
                 let _ = conn.sync();
             }
             drawn = true;
@@ -170,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn render_content(w: u32, h: u32, text: &str) -> Vec<u32> {
+fn render_content(w: u32, h: u32, lines: &[String], font: Option<&Font>) -> Vec<u32> {
     let wf = w as f32;
     let hf = h as f32;
     let r = CORNER_RADIUS;
@@ -206,53 +267,53 @@ fn render_content(w: u32, h: u32, text: &str) -> Vec<u32> {
         }
     }
 
-    if let Some(font) = load_font() {
-        if let Some(lm) = font.horizontal_line_metrics(FONT_SIZE) {
-            let ascent = lm.ascent;
-            let descent = lm.descent;
+    let Some(font) = font else { return buf };
+    let Some(lm) = font.horizontal_line_metrics(FONT_SIZE) else { return buf };
+    let ascent = lm.ascent;
+    let line_h = FONT_SIZE * LINE_MULT;
+    let block_h = lines.len() as f32 * line_h;
+    let block_top = (hf - block_h) / 2.0;
 
-            let mut pen_x: i32 = 0;
-            let mut glyphs: Vec<(fontdue::Metrics, Vec<u8>, i32)> = Vec::new();
-            for ch in text.chars() {
-                let (m, bmp) = font.rasterize(ch, FONT_SIZE);
-                glyphs.push((m, bmp, pen_x + m.xmin));
-                pen_x += m.advance_width.round() as i32;
-            }
-            let text_w = pen_x;
-            let start_x = (w as i32 - text_w) / 2;
-            let baseline_y = (h as i32 / 2) + ((ascent + descent) / 2.0).round() as i32;
+    for (idx, line_text) in lines.iter().enumerate() {
+        let text_w = measure_text(font, line_text, FONT_SIZE);
+        let start_x = (wf - text_w) / 2.0;
+        let baseline_y = block_top + idx as f32 * line_h + ascent;
 
-            for (m, bmp, gx) in glyphs {
-                let bitmap_top_rel = -(m.ymin + m.height as i32);
-                for row in 0..m.height {
-                    for col in 0..m.width {
-                        let cov = bmp[row * m.width + col];
-                        if cov == 0 {
-                            continue;
-                        }
-                        let px = start_x + gx + col as i32;
-                        let py = baseline_y + bitmap_top_rel + row as i32;
-                        if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
-                            continue;
-                        }
-                        let idx = (py as u32 * w + px as u32) as usize;
-                        let existing = buf[idx];
-                        let ea = (existing >> 24) & 0xFF;
-                        if ea == 0 {
-                            continue;
-                        }
-                        let er = (existing >> 16) & 0xFF;
-                        let eg = (existing >> 8) & 0xFF;
-                        let eb = existing & 0xFF;
+        let mut pen_x = start_x;
+        for ch in line_text.chars() {
+            let (m, bmp) = font.rasterize(ch, FONT_SIZE);
+            let gx = pen_x.round() as i32 + m.xmin;
+            let bitmap_top_rel = -(m.ymin + m.height as i32);
 
-                        let a = boost_curve(cov as u32) as f32 / 255.0;
-                        let nr = (FG.0 as f32 * a + er as f32 * (1.0 - a)).round() as u32;
-                        let ng = (FG.1 as f32 * a + eg as f32 * (1.0 - a)).round() as u32;
-                        let nb = (FG.2 as f32 * a + eb as f32 * (1.0 - a)).round() as u32;
-                        buf[idx] = (ea << 24) | (nr << 16) | (ng << 8) | nb;
+            for row in 0..m.height {
+                for col in 0..m.width {
+                    let cov = bmp[row * m.width + col];
+                    if cov == 0 {
+                        continue;
                     }
+                    let px = gx + col as i32;
+                    let py = baseline_y.round() as i32 + bitmap_top_rel + row as i32;
+                    if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
+                        continue;
+                    }
+                    let idx2 = (py as u32 * w + px as u32) as usize;
+                    let existing = buf[idx2];
+                    let ea = (existing >> 24) & 0xFF;
+                    if ea == 0 {
+                        continue;
+                    }
+                    let er = (existing >> 16) & 0xFF;
+                    let eg = (existing >> 8) & 0xFF;
+                    let eb = existing & 0xFF;
+
+                    let a = boost_curve(cov as u32) as f32 / 255.0;
+                    let nr = (FG.0 as f32 * a + er as f32 * (1.0 - a)).round() as u32;
+                    let ng = (FG.1 as f32 * a + eg as f32 * (1.0 - a)).round() as u32;
+                    let nb = (FG.2 as f32 * a + eb as f32 * (1.0 - a)).round() as u32;
+                    buf[idx2] = (ea << 24) | (nr << 16) | (ng << 8) | nb;
                 }
             }
+            pen_x += m.advance_width;
         }
     }
 

@@ -5,8 +5,12 @@ use eframe::egui;
 
 pub fn draw(ctx: &egui::Context, state: &VideoLibraryState, actions: &mut Actions) {
     let Some(job) = &state.render_job else { return };
-    let fraction = job.fraction();
     let outcome = job.outcome();
+    let fraction = if matches!(outcome, RenderOutcome::Done) {
+        1.0
+    } else {
+        job.fraction()
+    };
 
     egui::Window::new("Rendering")
         .collapsible(false)

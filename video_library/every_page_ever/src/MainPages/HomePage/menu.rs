@@ -8,9 +8,10 @@ const BTN_SIZE: f32 = 15.0;
 const LABEL_SIZE: f32 = 14.0;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, actions: &mut Actions) {
-    let busy = state.kdenlive.is_busy();
-    let has_pulled = state.kdenlive.pulled.is_some();
     let connected = state.kdenlive.is_connected();
+    let pulling = state.kdenlive.pull_job.is_some();
+    let pushing = state.kdenlive.push_job.is_some();
+    let busy = pulling || pushing;
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
@@ -27,7 +28,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, actions: &mut Acti
         ui.separator();
         ui.add_space(4.0);
 
-        let pull_label = if busy { "⏳ Pulling..." } else { "⬇ Pull from Kdenlive" };
+        let pull_label = if pulling { "⏳ Pulling..." } else { "⬇ Pull from Kdenlive" };
         if ui
             .add_enabled(
                 connected && !busy,
@@ -39,13 +40,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, actions: &mut Acti
             actions.pull_from_kdenlive = true;
         }
 
-        let push_label = if busy { "⏳ Sending..." } else { "⬆ Send to Kdenlive" };
+        let push_label = if pushing { "⏳ Sending..." } else { "⬆ Add to Kdenlive bin" };
+        let has_output = state.last_render_output.is_some() || state.picked_path.is_some();
         if ui
             .add_enabled(
-                connected && has_pulled && !busy,
+                connected && has_output && !busy,
                 egui::Button::new(egui::RichText::new(push_label).size(BTN_SIZE)),
             )
-            .on_hover_text("Replace the original timeline clip with the current edit")
+            .on_hover_text("Import the current file into Kdenlive's project bin")
             .clicked()
         {
             actions.push_to_kdenlive = true;
@@ -55,15 +57,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, actions: &mut Acti
         ui.separator();
         ui.add_space(4.0);
 
-        let bw_enabled = state.picked_path.is_some() && state.render_job.is_none();
+        let bw_enabled = state.picked_path.is_some() && !state.is_rendering();
         if ui
             .add_enabled(
                 bw_enabled,
                 egui::Button::new(egui::RichText::new("🎨 Black and White").size(BTN_SIZE)),
             )
+            .on_hover_text("Saves next to the current file as <name>_bw.mp4")
             .clicked()
         {
-            actions.open_bw_save_picker = true;
+            actions.start_bw_render = true;
         }
 
         ui.menu_button(egui::RichText::new("⚙").size(BTN_SIZE), |ui| {

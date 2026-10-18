@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::video::decoder::VideoDecoder;
+use crate::video::frame::Frame;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,6 +23,12 @@ impl VideoViewState {
         self.decoder = Some(decoder);
         self.current_frame_rgba = None;
         self.frame_id = 0;
+    }
+
+    pub fn decode_frame_at(&mut self, ts: Duration) -> AppResult<Frame> {
+        let decoder = self.decoder.as_mut()
+            .ok_or_else(|| AppError::new("no decoder", "video_view::decode_frame_at", file!()))?;
+        decoder.frame_at(ts)
     }
 
     pub fn scrub_to(&mut self, ts: Duration) -> AppResult<()> {

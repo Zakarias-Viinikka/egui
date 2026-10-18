@@ -14,10 +14,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, ui_state: &mut Hom
     let duration = state.timeline.duration;
     if duration.is_zero() { return; }
 
-    ensure_thumbnails_loaded(ui, &video_path, ui_state);
-
-    if ui_state.thumbnail_textures.iter().any(|t| t.is_none()) {
-        ui.ctx().request_repaint_after(Duration::from_millis(200));
+    let n = cache::THUMB_COUNT;
+    if ui_state.thumbnail_textures.len() != n {
+        ui_state.thumbnail_textures = vec![None; n];
     }
 
     let desired_size = egui::vec2(ui.available_width(), TIMELINE_HEIGHT);
@@ -25,14 +24,25 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, ui_state: &mut Hom
 
     ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, ui.visuals().extreme_bg_color);
 
-    let n = cache::THUMB_COUNT;
+    // Hover-driven thumbnail generation. Only decode the slot under the cursor.
+    if let Some(pos) = response.hover_pos().or_else(|| response.interact_pointer_pos()) {
+        let frac = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let slot = ((frac * n as f32) as usize).min(n - 1);
+        if ui_state.thumbnail_textures[slot].is_none() {
+            load_or_decode_slot(ui, state, ui_state, &video_path, slot, duration, n);
+        }
+    }
+
     if n > 0 {
         let slot_w = rect.width() / n as f32;
         for i in 0..n {
             if let Some(Some(texture)) = ui_state.thumbnail_textures.get(i) {
                 let x0 = rect.left() + i as f32 * slot_w;
                 let x1 = x0 + slot_w;
-                let thumb_rect = egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom()));
+                let thumb_rect = egui::Rect::from_min_max(
+                    egui::pos2(x0, rect.top()),
+                    egui::pos2(x1, rect.bottom()),
+                );
                 ui.painter().image(
                     texture.id(),
                     thumb_rect,
@@ -65,19 +75,44 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, ui_state: &mut Hom
     );
 }
 
-fn ensure_thumbnails_loaded(ui: &egui::Ui, video_path: &Path, ui_state: &mut HomePageUiState) {
-    let n = cache::THUMB_COUNT;
-    if ui_state.thumbnail_textures.len() != n {
-        ui_state.thumbnail_textures = vec![None; n];
-    }
-    for i in 0..n {
-        if ui_state.thumbnail_textures[i].is_some() { continue; }
-        let path = cache::thumb_path(video_path, i);
-        if !path.exists() { continue; }
-        if let Some((w, h, rgba)) = cache::load_thumb_rgba(&path) {
+fn load_or_decode_slot(
+    ui: &egui::Ui,
+    state: &mut VideoLibraryState,
+    ui_state: &mut HomePageUiState,
+    video_path: &Path,
+    slot: usize,
+    duration: Duration,
+    n: usize,
+) {
+    let thumb_png = cache::thumb_path(video_path, slot);
+
+    if thumb_png.exists() {
+        if let Some((w, h, rgba)) = cache::load_thumb_rgba(&thumb_png) {
             let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-            let texture = ui.ctx().load_texture(format!("thumb_{i}"), color, egui::TextureOptions::LINEAR);
-            ui_state.thumbnail_textures[i] = Some(texture);
+            let texture = ui.ctx().load_texture(format!("thumb_{slot}"), color, egui::TextureOptions::LINEAR);
+            ui_state.thumbnail_textures[slot] = Some(texture);
+            return;
         }
     }
+
+    let ts = if n > 1 { duration.mul_f64(slot as f64 / n as f64) } else { Duration::ZERO };
+    let frame = match state.video_view.decode_frame_at(ts) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("decode thumb {slot}: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = cache::ensure_cache_dir() {
+        eprintln!("thumb cache dir: {e}");
+        return;
+    }
+    if cache::save_thumb_from_frame(&thumb_png, frame.width, frame.height, &frame.rgba).is_none() {
+        eprintln!("save thumb {slot}: failed");
+    }
+
+    let color = egui::ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
+    let texture = ui.ctx().load_texture(format!("thumb_{slot}"), color, egui::TextureOptions::LINEAR);
+    ui_state.thumbnail_textures[slot] = Some(texture);
 }

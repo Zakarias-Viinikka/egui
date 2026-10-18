@@ -8,7 +8,6 @@ use zutil_db::init::init_db;
 
 pub struct NecessaryStructForEgui {
     pub video_picker: FileDialog,
-    pub save_picker: FileDialog,
     pub side_panel: SidePanelState,
     pub db: LiveForever,
     pub video_library: VideoLibraryState,
@@ -31,15 +30,8 @@ impl NecessaryStructForEgui {
             .show_left_panel(false)
             .as_modal(false);
 
-        let save_picker = FileDialog::new()
-            .default_size([900.0, 680.0])
-            .default_pos([30.0, 50.0])
-            .title("Select where to save to")
-            .as_modal(false);
-
         Self {
             video_picker,
-            save_picker,
             side_panel: SidePanelState::new(starred),
             db,
             video_library: VideoLibraryState::new(),
@@ -72,14 +64,15 @@ impl eframe::App for NecessaryStructForEgui {
             job_started = true;
         }
 
-        if actions.open_bw_save_picker {
-            if let Some(src) = self.video_library.picked_path.clone() {
-                let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-                let name = format!("{}_bw.mp4", stem);
-                let old = std::mem::replace(&mut self.save_picker, FileDialog::new());
-                self.save_picker = old.default_file_name(&name);
-                self.save_picker.save_file();
+        if actions.start_bw_render {
+            eprintln!("[video_lib] B&W button clicked");
+            if let Err(e) = self.video_library.start_bw_render_auto() {
+                self.video_library.push_log(
+                    app_core::state::log::LogKind::Error,
+                    format!("Could not start B&W render: {e}"),
+                );
             }
+            job_started = true;
         }
 
         if actions.cancel_render {
@@ -101,35 +94,23 @@ impl eframe::App for NecessaryStructForEgui {
             ui.ctx().request_repaint();
         }
 
-        self.save_picker.update(ui.ctx());
-        if let Some(output) = self.save_picker.take_picked() {
-            if let Err(e) = self.video_library.start_bw_render(output) {
-                self.video_library.last_error = Some(format!("start render failed: {e}"));
-            }
-            ui.ctx().request_repaint();
-        }
-
         let video_open = matches!(self.video_picker.state(), DialogState::Open);
-        let save_open = matches!(self.save_picker.state(), DialogState::Open);
 
-        if video_open || save_open {
-            let Self { video_picker, save_picker, side_panel, db, .. } = self;
-            let active = if video_open { video_picker } else { save_picker };
+        if video_open {
+            let Self { video_picker, side_panel, db, .. } = self;
             egui::Window::new("Folders")
                 .default_size([400.0, 680.0])
                 .default_pos([950.0, 50.0])
                 .resizable(true)
                 .min_width(260.0)
                 .show(ui.ctx(), |ui| {
-                    render_side_panel(ui, active, side_panel, db);
+                    render_side_panel(ui, video_picker, side_panel, db);
                 });
         }
 
         if let Some(path) = self.side_panel.pending_jump.take() {
             if video_open {
                 jump_picker_to(&mut self.video_picker, path);
-            } else if save_open {
-                jump_picker_to(&mut self.save_picker, path);
             }
         }
 

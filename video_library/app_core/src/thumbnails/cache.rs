@@ -42,3 +42,26 @@ pub fn load_thumb_rgba(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
     let (w, h) = rgba.dimensions();
     Some((w, h, rgba.into_raw()))
 }
+
+pub fn save_thumb_from_frame(path: &Path, frame_w: u32, frame_h: u32, rgba: &[u8]) -> Option<()> {
+    let img = image::RgbaImage::from_raw(frame_w, frame_h, rgba.to_vec())?;
+    let (tw, th) = thumb_dims(frame_w, frame_h);
+    let resized = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle);
+    resized.save(path).ok()?;
+    Some(())
+}
+
+pub fn thumb_dims(w: u32, h: u32) -> (u32, u32) {
+    if w == 0 || h == 0 {
+        return (THUMB_WIDTH, THUMB_HEIGHT);
+    }
+    let aspect = w as f32 / h as f32;
+    let target = THUMB_WIDTH as f32 / THUMB_HEIGHT as f32;
+    if aspect > target {
+        let th = (THUMB_WIDTH as f32 / aspect) as u32;
+        (THUMB_WIDTH, th.max(1))
+    } else {
+        let tw = (THUMB_HEIGHT as f32 * aspect) as u32;
+        (tw.max(1), THUMB_HEIGHT)
+    }
+}
