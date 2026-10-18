@@ -1,0 +1,10 @@
+[package]
+name = "draw_lab"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+app_core.workspace = true
+opencv = { version = "0.94", default-features = false, features = ["clang-runtime", "imgproc"] }
+image = "0.25"

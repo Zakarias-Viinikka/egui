@@ -4,7 +4,7 @@ use super::render_job::{RenderJob, RenderOutcome};
 use super::timeline::TimelineState;
 use super::video_view::VideoViewState;
 use crate::error::{AppError, AppResult};
-use crate::video::decoder::VideoDecoder;
+
 use std::path::PathBuf;
 use std::time::Duration;
 use video_library_core_core::black_and_white::core::BwPreset;
@@ -64,22 +64,21 @@ impl VideoLibraryState {
     }
 
     pub fn load_video(&mut self, path: PathBuf) -> AppResult<()> {
-        let decoder = VideoDecoder::open(&path)?;
-        let duration = decoder.duration();
+        let proxy = crate::video::proxy::ensure(&path)?;
+        self.video_view.on_load(path.clone(), proxy)?;
+        let duration = self.video_view.duration;
         if duration.is_zero() {
-            return Err(AppError::new("video has zero duration", "video_library_state::load_video", file!()));
+            return Err(AppError::new(
+                "video has zero duration",
+                "video_library_state::load_video",
+                file!(),
+            ));
         }
-        self.video_view.on_load(path.clone(), duration, decoder);
         self.timeline.on_load(duration, path.clone());
         self.picked_path = Some(path.clone());
         self.last_error = None;
+        self.video_view.request_frame(Duration::ZERO);
         self.push_log(LogKind::Success, format!("Loaded {}", path.display()));
-
-        if let Err(e) = self.video_view.scrub_to(Duration::ZERO) {
-            self.last_error = Some(format!("first frame decode failed: {e}"));
-            self.push_log(LogKind::Error, format!("First frame decode failed: {e}"));
-        }
-
         Ok(())
     }
 
@@ -158,6 +157,12 @@ impl VideoLibraryState {
     /// Called once per frame before drawing. Returns true when visible state changed.
     pub fn tick(&mut self) -> bool {
         let mut changed = false;
+        if self.video_view.poll() {
+            if let Some(err) = self.video_view.error.clone() {
+                self.push_log(LogKind::Error, format!("Decode failed: {err}"));
+            }
+            changed = true;
+        }
         let status_before = self.kdenlive.status.clone();
 
         if let Some(msg) = self.kdenlive.maybe_refresh_status() {

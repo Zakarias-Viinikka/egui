@@ -29,15 +29,22 @@ pub struct VideoDecoder {
     width: u32,
     height: u32,
     duration: Duration,
+    fps: f64,
     path: PathBuf,
+    proxy_path: PathBuf,
 }
 
 impl VideoDecoder {
     pub fn open(path: &Path) -> AppResult<Self> {
+        let proxy_path = crate::video::proxy::ensure(path)?;
+        Self::open_proxy(path, &proxy_path)
+    }
+
+    pub fn open_proxy(source: &Path, proxy_path: &Path) -> AppResult<Self> {
         ffmpeg::init()
             .map_err(|e| AppError::new(format!("{e}"), METHOD_OPEN, file!()))?;
 
-        let input = ffmpeg::format::input(path)
+        let input = ffmpeg::format::input(proxy_path)
             .map_err(|e| AppError::new(format!("{e}"), METHOD_OPEN, file!()))?;
 
         let stream = input
@@ -76,6 +83,15 @@ impl VideoDecoder {
             Duration::ZERO
         };
 
+        let fps = {
+            let rate = stream.avg_frame_rate();
+            if rate.0 > 0 && rate.1 > 0 {
+                rate.0 as f64 / rate.1 as f64
+            } else {
+                25.0
+            }
+        };
+
         Ok(Self {
             input,
             decoder,
@@ -85,7 +101,9 @@ impl VideoDecoder {
             width,
             height,
             duration,
-            path: path.to_path_buf(),
+            fps,
+            path: source.to_path_buf(),
+            proxy_path: proxy_path.to_path_buf(),
         })
     }
 
@@ -105,6 +123,14 @@ impl VideoDecoder {
         &self.path
     }
 
+    pub fn proxy_path(&self) -> &Path {
+        &self.proxy_path
+    }
+
+    pub fn fps(&self) -> f64 {
+        self.fps
+    }
+
     /// Seeks to the nearest keyframe at or before `timestamp` and decodes
     /// forward until a frame with pts >= `timestamp` is produced.
     /// Returns that frame as RGBA.
@@ -120,6 +146,7 @@ impl VideoDecoder {
         let stream_index = self.stream_index;
         let time_base = self.time_base;
         let mut found: Option<(RawFrame, Duration)> = None;
+        let mut last_seen: Option<(RawFrame, Duration)> = None;
 
         {
             let decoder = &mut self.decoder;
@@ -159,6 +186,7 @@ impl VideoDecoder {
                         found = Some((decoded, frame_ts));
                         break;
                     }
+                    last_seen = Some((decoded, frame_ts));
                 }
 
                 if found.is_some() {
@@ -167,7 +195,7 @@ impl VideoDecoder {
             }
         }
 
-        let (frame, ts) = found.ok_or_else(|| {
+        let (frame, ts) = found.or(last_seen).ok_or_else(|| {
             AppError::new(
                 "no frame decoded at or after target timestamp",
                 METHOD_FRAME_AT,

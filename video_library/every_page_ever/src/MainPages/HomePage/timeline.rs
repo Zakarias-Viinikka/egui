@@ -59,9 +59,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, ui_state: &mut Hom
             let new_us = (duration.as_micros() as f64 * frac as f64) as u64;
             let new_pos = Duration::from_micros(new_us);
             state.timeline.position = new_pos;
-            if let Err(e) = state.video_view.scrub_to(new_pos) {
-                state.last_error = Some(format!("scrub failed: {e}"));
-            }
+            state.video_view.request_frame(new_pos);
         }
     }
 

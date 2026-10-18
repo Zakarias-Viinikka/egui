@@ -3,3 +3,9 @@ target/
 .idea/
 .vscode/
 .cargo/
+
+# video_library_lab: reinstallable, not source
+.venv/
+Cutie/
+*.pyc
+__pycache__/

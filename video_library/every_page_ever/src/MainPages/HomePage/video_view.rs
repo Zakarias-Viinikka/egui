@@ -18,6 +18,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut VideoLibraryState, ui_state: &mut Hom
         ui_state.video_texture = Some(texture);
         ui_state.last_uploaded_frame_id = Some(state.video_view.frame_id);
     }
+    if state.video_view.has_pending() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    }
     let Some(texture) = &ui_state.video_texture else { return };
 
     let available = ui.available_size();

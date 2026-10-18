@@ -1,0 +1,12 @@
+[workspace]
+members = ["draw_lab"]
+resolver = "2"
+default-members = ["draw_lab"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+eframe = "0.36.2"
+app_core = { path = "../video_library/app_core" }
