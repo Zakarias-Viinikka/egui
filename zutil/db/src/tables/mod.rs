@@ -33,6 +33,7 @@ pub mod tbl_projects;
 pub mod tbl_main_nav_clicks;
 pub mod tbl_shortcuts;
 pub mod tbl_error_log;
+pub mod tbl_starred_folders;
 
 use crate::migration::helpers::ADbTable;
 
@@ -49,5 +50,6 @@ pub fn entire_table() -> Vec<ADbTable> {
         ADbTable { table_name: tbl_main_nav_clicks::TABLE_NAME.to_string(), columns: tbl_main_nav_clicks::new_table_main_nav_clicks(), foreign_keys: Vec::new() },
         ADbTable { table_name: tbl_shortcuts::TABLE_NAME.to_string(), columns: tbl_shortcuts::new_table_shortcuts(), foreign_keys: Vec::new() },
         ADbTable { table_name: tbl_error_log::TABLE_NAME.to_string(), columns: tbl_error_log::new_table_error_log(), foreign_keys: Vec::new() },
+        ADbTable { table_name: tbl_starred_folders::TABLE_NAME.to_string(), columns: tbl_starred_folders::new_table_starred_folders(), foreign_keys: Vec::new() },
     ]
 }

@@ -1,5 +1,13 @@
 # egui_template
 
+## Structure
+
+- `app` — the binary. Wires up eframe and owns the window.
+- `every_page_ever` — all UI. Anything that draws goes here.
+- `app_core` — all logic. Never imports `eframe` or `egui`.
+
+Rule of thumb: if it draws, it belongs in `every_page_ever`. If it computes, decides, or touches the outside world (files, network, db), it belongs in `app_core`.
+
 ## new.sh
 
 makes a copy of this template next to it with a name you type.

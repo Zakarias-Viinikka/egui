@@ -1,0 +1,10 @@
+[package]
+name = "app_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ffmpeg-next.workspace = true
+image = "0.25"
+video_library_core_core = { path = "../video_library_core_core" }
+zbus = { version = "5", features = ["blocking-api"] }

@@ -194,9 +194,14 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "app_core",
  "eframe",
  "every_page_ever",
 ]
+
+[[package]]
+name = "app_core"
+version = "0.1.0"
 
 [[package]]
 name = "arboard"

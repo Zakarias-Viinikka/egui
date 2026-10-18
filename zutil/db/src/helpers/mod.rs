@@ -10,3 +10,4 @@ pub mod project;
 pub mod popularity;
 pub mod shortcuts;
 pub mod error_log;
+pub mod starred_folders;

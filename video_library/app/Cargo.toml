@@ -1,0 +1,15 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+every_page_ever = { path = "../every_page_ever" }
+egui-file-dialog = "0.15.0"
+x11rb = { version = "0.13", features = ["shape"] }
+fontdue = "0.9"
+zutil_db = { path = "../../zutil/db" }
+db_wrapper = { path = "../../../z_db/db_wrapper", default-features = false, features = ["native"] }
+app_core = { path = "../app_core" }
+video_library_core_core = { path = "../video_library_core_core" }

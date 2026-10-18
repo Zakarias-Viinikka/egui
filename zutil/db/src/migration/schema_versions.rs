@@ -8,9 +8,10 @@ pub enum SchemaVersion {
     Version5,
     Version6,
     Version7,
+    Version8,
 }
 
-pub const CURRENT_VERSION: SchemaVersion = SchemaVersion::Version7;
+pub const CURRENT_VERSION: SchemaVersion = SchemaVersion::Version8;
 
 impl SchemaVersion {
     pub fn to_int(self) -> i64 {
@@ -23,6 +24,7 @@ impl SchemaVersion {
             SchemaVersion::Version5 => 5,
             SchemaVersion::Version6 => 6,
             SchemaVersion::Version7 => 7,
+            SchemaVersion::Version8 => 8,
         }
     }
 
@@ -36,6 +38,7 @@ impl SchemaVersion {
             5 => Some(SchemaVersion::Version5),
             6 => Some(SchemaVersion::Version6),
             7 => Some(SchemaVersion::Version7),
+            8 => Some(SchemaVersion::Version8),
             _ => None,
         }
     }
