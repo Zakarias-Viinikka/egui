@@ -9,7 +9,7 @@ pub fn draw(ui: &mut egui::Ui, box_rect: egui::Rect, data: &mut GlobalData) {
     let now = std::time::Instant::now();
     let hold = std::time::Duration::from_millis(200);
     let mut hovered_id: Option<u64> = None;
-    let mut clicked: Option<(u64, String)> = None;
+    // let mut clicked: Option<(u64, String)> = None;
 
     let inner = box_rect.shrink(10.0);
     ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
@@ -59,23 +59,23 @@ pub fn draw(ui: &mut egui::Ui, box_rect: egui::Rect, data: &mut GlobalData) {
                             });
                         });
 
-                    let row_id = egui::Id::new(("ram_row", p.pid));
-                    let row_resp = ui.interact(
-                        row.response.rect,
-                        row_id,
-                        if modal_open {
-                            egui::Sense::hover()
-                        } else {
-                            egui::Sense::click()
-                        },
-                    );
+                    // let row_id = egui::Id::new(("ram_row", p.pid));
+                    // let row_resp = ui.interact(
+                    //     row.response.rect,
+                    //     row_id,
+                    //     if modal_open {
+                    //         egui::Sense::hover()
+                    //     } else {
+                    //         egui::Sense::click()
+                    //     },
+                    // );
 
                     if !modal_open && ui.rect_contains_pointer(row.response.rect) {
                         hovered_id = Some(p.id);
                     }
-                    if !modal_open && row_resp.clicked() {
-                        clicked = Some((p.id, p.name.clone()));
-                    }
+                    // if !modal_open && row_resp.clicked() {
+                    //     clicked = Some((p.id, p.name.clone()));
+                    // }
 
                     if i + 1 < len {
                         ui.add_space(2.0);
@@ -84,9 +84,9 @@ pub fn draw(ui: &mut egui::Ui, box_rect: egui::Rect, data: &mut GlobalData) {
             });
     });
 
-    if let Some((id, name)) = clicked {
-        data.confirm_target = Some((id, name));
-    }
+    // if let Some((id, name)) = clicked {
+    //     data.confirm_target = Some((id, name));
+    // }
 
     let next_selected = match hovered_id {
         Some(id) => {

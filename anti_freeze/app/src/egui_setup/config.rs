@@ -4,7 +4,7 @@ pub fn fullscreen_no_menu() -> eframe::NativeOptions {
             .with_fullscreen(true)
             .with_decorations(false)
             .with_transparent(true)
-            .with_visible(cfg!(debug_assertions)),
+            .with_visible(false),
         ..Default::default()
     }
 }

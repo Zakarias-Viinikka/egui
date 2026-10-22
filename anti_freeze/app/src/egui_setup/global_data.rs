@@ -18,6 +18,7 @@ pub struct GlobalData {
     pub confirm_target: Option<(u64, String)>,
     pub hotkey_rx: Receiver<Cmd>,
     pub visible: bool,
+    pub did_first_frame: bool,
     pub tmp_stats: Arc<Mutex<TmpStats>>,
     pub frozen_pids: Vec<u32>,
     pub cmd_tx: std::sync::mpsc::Sender<Cmd>,
