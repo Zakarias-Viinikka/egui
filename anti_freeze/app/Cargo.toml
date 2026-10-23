@@ -1,8 +1,12 @@
 [package]
 name = "app"
-default-run = "app"
+default-run = "anti_freeze"
 version.workspace = true
 edition.workspace = true
+
+[[bin]]
+name = "anti_freeze"
+path = "src/main.rs"
 
 [dependencies]
 eframe.workspace = true

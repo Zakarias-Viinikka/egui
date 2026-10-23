@@ -59,6 +59,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         if !ctx.global_data.did_first_frame {
             ctx.global_data.did_first_frame = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
@@ -75,13 +76,17 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 }
                 crate::hotkeys::Cmd::ToggleVisible => {
                     ctx.global_data.visible = !ctx.global_data.visible;
-                    if !ctx.global_data.visible {
+                    if ctx.global_data.visible {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+                        crate::x11_window::raise_self();
+                    } else {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
                         // crate::cmp::freeze_button::unfreeze_all(ctx.global_data);
                         crate::ram_monitor::restart(ctx.global_data, ui.ctx());
                     }
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(
-                        ctx.global_data.visible,
-                    ));
+                    ui.ctx().request_repaint();
                 }
             }
         }

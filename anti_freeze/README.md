@@ -10,34 +10,49 @@ memory crosses 90%, it trips.
 
 On trip: shows a popup saying "RAM cap engaged" and applies a cgroup memory
 limit (via the sudo helper at `/usr/local/bin/anti_freeze_cap`) to the top
-five memory-consuming programs. No freeze, no window raise — the trip is
-silent apart from the popup.
+five memory-consuming programs. The trip does not raise the window.
 
 A watcher thread then wakes every 60 seconds, checks whether usage has
 dropped below 75%, and lifts the cap when it has. If it hasn't, sleeps
 another 60 and checks again. No fixed duration, no ceiling.
 
+The cap is the default anti-freeze behaviour. It runs from startup
+regardless of whether the window has ever been shown.
+
 ## The GUI
 
-Open it with Super+Page_Up. What it's for:
+Super+Page_Up toggles the window. First press brings it up fullscreen with
+focus, second press hides it. On launch, the window does not show at all —
+the first frame sends `Fullscreen(false)` and `Visible(false)` before
+drawing anything else.
 
-- See the top memory processes
-- Right-click a row to end it (with a confirm)
-- Freeze/Unfreeze button — manual. Freezing SIGSTOPs every other process
-  you own, except the ones in `killing::NEVER_STOP` (the WM, session, and
-  the watchdog). Unfreezing resumes them.
+The list of top memory processes is refreshed while the window is visible:
+on show (focus change) and every 5 seconds after. Nothing is refreshed
+while the window is hidden.
 
-The trip does not use the freeze button. Freeze is only ever a manual
-action.
-
-Closing the GUI (Super+Page_Up again) automatically unfreezes anything
-frozen, so you can't leave the system stuck.
+Freeze is currently disabled. The `Freeze`/`Unfreeze` button, its click
+handler, and the row-click confirmation are commented out in
+`freeze_button.rs`, `modal.rs`, and `ram_list.rs`. The backing code
+(`killing.rs`, `watchdog.rs`, the `frozen_pids` field) is still there so it
+can be turned back on later, but nothing in the running GUI calls it.
 
 ## The watchdog
 
 `main` spawns a separate `watchdog` binary that outlives us. If anti_freeze
 crashes while processes are frozen, the watchdog resumes them. The list of
 frozen pids is in `/tmp/anti_freeze_frozen_<our_pid>`.
+
+Since freeze is disabled, the watchdog currently has nothing to do. The
+binary must be installed at `~/.local/bin/watchdog` or `main` prints a
+warning on every launch. That warning is expected when `watchdog` isn't
+installed.
+
+## Renaming the binary
+
+The crate is still named `app`, but `app/Cargo.toml` declares
+`[[bin]] name = "anti_freeze"`, so the built binary is
+`target/release/anti_freeze`. `build_and_install.sh` installs it as
+`~/.local/bin/anti_freeze` and kills any running copy first.
 
 ## What it does not do
 
