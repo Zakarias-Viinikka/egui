@@ -179,3 +179,6 @@ In `todo.md` and `todo_later.md`. Highlights:
 Every command returns a `Vec<Line>` where each Line knows its own style.
 The UI never inspects line text to decide colour. If you add a command,
 pick a LineStyle per line. Don't guess from content.
+## Where the pending decisions live
+
+`implementation_plan_2026-10-16.md` is the source of truth for the next batch of work. Its header is the session contract; steps 1-3 are the format template and step 4 onward are the settled designs. Every design choice the planning AI made — theme list and default, EDIT_THRESHOLD and its two-sided split, what final_writes means, the shape of Allow Special Request, the chmod grammar and mode function, the HiddenSet's two forms, review_indices and the stale-hidden-step reveal — is stated there, not in this file. When a step's design meets implementation and turns out wrong, amend the step in the plan file; do not restate it here.
