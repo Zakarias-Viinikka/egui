@@ -26,15 +26,20 @@ struct SettingsApp {
     modal_open: bool,
     draft: String,
     error: Option<String>,
+    theme: String,
+    theme_error: Option<String>,
 }
 
 impl Default for SettingsApp {
     fn default() -> Self {
+        let (theme, theme_error) = load_theme();
         Self {
             folder: default_folder(),
             modal_open: false,
             draft: String::new(),
             error: None,
+            theme,
+            theme_error,
         }
     }
 }
@@ -54,6 +59,32 @@ impl eframe::App for SettingsApp {
                 self.draft = self.folder.display().to_string();
                 self.error = None;
                 self.modal_open = true;
+            }
+
+            ui.add_space(12.0);
+            let before = self.theme.clone();
+            let current_label = zap_wire::config::theme_label(&self.theme).unwrap_or("Unknown");
+            ui.horizontal(|ui| {
+                ui.label("Code colors:");
+                egui::ComboBox::from_id_salt("theme_combo")
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
+                        for (id, label) in zap_wire::config::THEMES {
+                            ui.selectable_value(&mut self.theme, id.to_string(), *label);
+                        }
+                    });
+            });
+            if self.theme != before {
+                match zap_wire::config::set_key(&settings_file(), "theme", &self.theme) {
+                    Ok(()) => self.theme_error = None,
+                    Err(e) => {
+                        self.theme_error = Some(format!("could not save: {e}"));
+                        self.theme = before;
+                    }
+                }
+            }
+            if let Some(err) = &self.theme_error {
+                ui.colored_label(egui::Color32::from_rgb(220, 120, 120), err);
             }
         });
 
@@ -112,11 +143,21 @@ fn expand(input: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
-fn write_setting(folder: &PathBuf) -> std::io::Result<()> {
-    let path = settings_file();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+fn write_setting(folder: &PathBuf) -> Result<(), zap_wire::config::ConfigError> {
+    zap_wire::config::set_key(
+        &settings_file(),
+        "default_folder",
+        &folder.display().to_string(),
+    )
+}
+
+fn load_theme() -> (String, Option<String>) {
+    match zap_wire::config::get_key(&settings_file(), "theme") {
+        Ok(Some(id)) if zap_wire::config::is_known_theme(&id) => (id, None),
+        Ok(_) => (zap_wire::config::DEFAULT_THEME.to_string(), None),
+        Err(e) => (
+            zap_wire::config::DEFAULT_THEME.to_string(),
+            Some(e.to_string()),
+        ),
     }
-    let body = format!("default_folder={}\n", folder.display());
-    std::fs::write(path, body)
 }

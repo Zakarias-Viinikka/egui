@@ -108,17 +108,11 @@ mod tests {
     use super::*;
 
     fn row(kind: RowKind, left: &str, right: &str) -> DiffRow {
-        DiffRow {
-            left: Some(Side {
-                lineno: None,
-                text: left.to_string(),
-            }),
-            right: Some(Side {
-                lineno: None,
-                text: right.to_string(),
-            }),
+        DiffRow::new(
+            Some(Side::new(None, left.to_string())),
+            Some(Side::new(None, right.to_string())),
             kind,
-        }
+        )
     }
 
     #[test]

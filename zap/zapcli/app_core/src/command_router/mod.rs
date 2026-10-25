@@ -247,7 +247,7 @@ pub fn reply_outcome(result: Result<String, String>) -> Outcome {
 }
 
 pub fn settings_file() -> PathBuf {
-    home_dir().join(".config/zap/settings")
+    zap_wire::config::settings_path()
 }
 
 pub fn default_folder() -> PathBuf {

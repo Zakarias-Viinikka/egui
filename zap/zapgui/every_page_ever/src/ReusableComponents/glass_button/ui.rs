@@ -185,6 +185,7 @@ pub fn glass_step_block_ui(
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     state: BlockState,
     accent: Option<egui::Color32>,
+    glyph: &str,
     tip: &str,
 ) -> bool {
     let rect = egui::Rect::from_center_size(center, egui::vec2(SIZE, SIZE));
@@ -207,6 +208,16 @@ pub fn glass_step_block_ui(
         egui::Stroke::new(1.0, border),
         egui::StrokeKind::Inside,
     );
+
+    if !glyph.is_empty() {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::monospace(14.0),
+            accent.unwrap_or(STEEL),
+        );
+    }
 
     response.on_hover_text(tip).clicked()
 }

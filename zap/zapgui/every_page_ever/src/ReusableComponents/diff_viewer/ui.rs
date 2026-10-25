@@ -4,6 +4,9 @@ use app_core::text_diff::{DiffRowProcessedForUi, MoveRole, MoveSpan, RowKind};
 use eframe::egui;
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{Galley, TextFormat};
+use std::ops::Range;
+
+use super::syntax::{Run, SyntaxTable};
 
 const CONTENT_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 230);
 const BORDER: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 70, 70, 90);
@@ -14,6 +17,12 @@ const TEXT_DIM_MOVED: egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
 const BAR_DEL: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const BAR_INS: egui::Color32 = egui::Color32::from_rgb(80, 180, 80);
 const BAR_MOVE: egui::Color32 = egui::Color32::from_rgb(170, 120, 220);
+// Same blue as verb_accent for replace, overwrite and append.
+const BAR_EDIT: egui::Color32 = egui::Color32::from_rgb(100, 160, 220);
+// Translucent so the syntax color underneath stays readable.
+const HL_EDIT: egui::Color32 = egui::Color32::from_rgba_premultiplied(31, 50, 69, 80);
+const HL_DEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(66, 25, 25, 80);
+const HL_INS: egui::Color32 = egui::Color32::from_rgba_premultiplied(25, 56, 25, 80);
 const STRIP_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(60, 40, 90, 170);
 const STRIP_TEXT: egui::Color32 = egui::Color32::from_rgb(210, 180, 240);
 
@@ -52,6 +61,10 @@ pub struct DiffViewerParams<'a> {
     /// How moves are drawn. Chain review snippet view passes Dimmed;
     /// full-file view and surface reviews pass Classic.
     pub moves: MoveDisplay,
+    /// Syntax colors for the left ("before") and right ("after") text,
+    /// looked up by each row's line number. None draws plain TEXT.
+    pub left_colors: Option<&'a SyntaxTable>,
+    pub right_colors: Option<&'a SyntaxTable>,
 }
 
 impl Default for DiffViewerParams<'_> {
@@ -62,6 +75,8 @@ impl Default for DiffViewerParams<'_> {
             scroll_to_change_once: false,
             right_accent: None,
             moves: MoveDisplay::Classic,
+            left_colors: None,
+            right_colors: None,
         }
     }
 }
@@ -85,6 +100,7 @@ struct LaidRow {
     block_start: bool,
     kind: RowKind,
     row_kind: RowKind,
+    edit: bool,
 }
 
 pub fn diff_viewer_ui(
@@ -105,21 +121,73 @@ pub fn diff_viewer_ui_no_copy(
     diff_viewer_body(ui, rect, blocks, false, params);
 }
 
+/// One section per run. With no runs, one plain section in `color`.
+fn build_job(
+    text: &str,
+    font: &egui::FontId,
+    color: egui::Color32,
+    runs: &[Run],
+    highlights: &[Range<usize>],
+    hl_bg: egui::Color32,
+) -> LayoutJob {
+    let plain = || {
+        LayoutJob::single_section(
+            text.to_string(),
+            TextFormat {
+                font_id: font.clone(),
+                color,
+                ..Default::default()
+            },
+        )
+    };
+    if runs.is_empty() && highlights.is_empty() {
+        return plain();
+    }
+    let segs = segments_for_line(text.len(), runs, highlights);
+    if segs.is_empty() {
+        return plain();
+    }
+    let fits = segs.iter().all(|s| {
+        s.end <= text.len() && text.is_char_boundary(s.start) && text.is_char_boundary(s.end)
+    });
+    if !fits {
+        eprintln!(
+            "zap: diff_viewer::build_job: syntax runs do not fit the line text, drawing it plain"
+        );
+        return plain();
+    }
+    let mut job = LayoutJob::default();
+    for seg in &segs {
+        job.append(
+            &text[seg.start..seg.end],
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color: seg.color,
+                italics: seg.italic,
+                background: if is_highlighted(seg, highlights) {
+                    hl_bg
+                } else {
+                    egui::Color32::TRANSPARENT
+                },
+                ..Default::default()
+            },
+        );
+    }
+    job
+}
+
 fn layout_one(
     ui: &egui::Ui,
     text: &str,
     font: &egui::FontId,
     color: egui::Color32,
     wrap_width: f32,
+    runs: &[Run],
+    highlights: &[Range<usize>],
+    hl_bg: egui::Color32,
 ) -> Arc<Galley> {
-    let mut job = LayoutJob::single_section(
-        text.to_string(),
-        TextFormat {
-            font_id: font.clone(),
-            color,
-            ..Default::default()
-        },
-    );
+    let mut job = build_job(text, font, color, runs, highlights, hl_bg);
     job.wrap = TextWrapping {
         max_width: wrap_width,
         break_anywhere: true,
@@ -133,6 +201,7 @@ fn bar_color_for(
     which: Which,
     in_move: bool,
     moves: MoveDisplay,
+    edit: bool,
 ) -> Option<egui::Color32> {
     if in_move {
         if matches!(moves, MoveDisplay::Dimmed)
@@ -146,6 +215,7 @@ fn bar_color_for(
         (RowKind::Equal, _) => None,
         (RowKind::Delete, Which::Left) => Some(BAR_DEL),
         (RowKind::Insert, Which::Right) => Some(BAR_INS),
+        (RowKind::Change, _) if edit => Some(BAR_EDIT),
         (RowKind::Change, Which::Left) => Some(BAR_DEL),
         (RowKind::Change, Which::Right) => Some(BAR_INS),
         _ => None,
@@ -244,24 +314,43 @@ fn diff_viewer_body(
             let left_in_move = in_move(params.move_spans, MoveRole::From, left_lineno);
             let right_in_move = in_move(params.move_spans, MoveRole::To, right_lineno);
 
-            let left_color = if matches!(params.moves, MoveDisplay::Dimmed)
+            let left_dim = matches!(params.moves, MoveDisplay::Dimmed)
                 && row.kind == RowKind::Delete
-                && left_in_move
-            {
-                TEXT_DIM_MOVED
-            } else {
-                TEXT
-            };
+                && left_in_move;
+            let left_color = if left_dim { TEXT_DIM_MOVED } else { TEXT };
             let right_color = TEXT;
 
-            let left = row
-                .left
-                .as_ref()
-                .map(|s| layout_one(ui, &s.text, &font, left_color, wrap_left));
-            let right = row
-                .right
-                .as_ref()
-                .map(|s| layout_one(ui, &s.text, &font, right_color, wrap_right));
+            let is_change = row.kind == RowKind::Change;
+            let (hl_left, hl_right) = if !is_change {
+                (egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT)
+            } else if row.edit {
+                (HL_EDIT, HL_EDIT)
+            } else {
+                (HL_DEL, HL_INS)
+            };
+
+            let left = row.left.as_ref().map(|s| {
+                let runs: &[Run] = if left_dim {
+                    &[]
+                } else {
+                    runs_for(params.left_colors, s.lineno)
+                };
+                let spans: &[Range<usize>] = if is_change { &s.changed } else { &[] };
+                layout_one(ui, &s.text, &font, left_color, wrap_left, runs, spans, hl_left)
+            });
+            let right = row.right.as_ref().map(|s| {
+                let spans: &[Range<usize>] = if is_change { &s.changed } else { &[] };
+                layout_one(
+                    ui,
+                    &s.text,
+                    &font,
+                    right_color,
+                    wrap_right,
+                    runs_for(params.right_colors, s.lineno),
+                    spans,
+                    hl_right,
+                )
+            });
 
             let lh = left.as_ref().map(|g| g.size().y).unwrap_or(0.0);
             let rh = right.as_ref().map(|g| g.size().y).unwrap_or(0.0);
@@ -293,6 +382,7 @@ fn diff_viewer_body(
                 block_start: first,
                 kind: block.kind.clone(),
                 row_kind: row.kind.clone(),
+                edit: row.edit,
             });
             first = false;
         }
@@ -351,6 +441,7 @@ fn diff_viewer_body(
                     &lr.row_kind,
                     lr.left.is_some(),
                     moves_mode,
+                    lr.edit,
                 );
                 draw_side_paint(
                     ui,
@@ -363,6 +454,7 @@ fn diff_viewer_body(
                     &lr.row_kind,
                     lr.right.is_some(),
                     moves_mode,
+                    lr.edit,
                 );
 
                 // Wrap markers: a small arrow at each continuation row,
@@ -492,8 +584,9 @@ fn draw_side_paint(
     kind: &RowKind,
     has_side: bool,
     moves: MoveDisplay,
+    edit: bool,
 ) {
-    if let Some(color) = bar_color_for(kind, which, in_move, moves) {
+    if let Some(color) = bar_color_for(kind, which, in_move, moves, edit) {
         if has_side {
             let bar_rect = egui::Rect::from_min_size(
                 egui::pos2(inner.left() + GUTTER_W, y_top + BAR_PAD),
@@ -514,5 +607,147 @@ fn draw_side_paint(
             egui::FontId::monospace(FONT_SIZE - 2.0),
             TEXT_DIM,
         );
+    }
+}
+
+fn runs_for<'a>(table: Option<&'a SyntaxTable>, lineno: Option<u32>) -> &'a [Run] {
+    match (table, lineno) {
+        (Some(t), Some(n)) => t.line(n),
+        _ => &[],
+    }
+}
+
+/// A stretch of one line with one color. Byte offsets into the line text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub start: usize,
+    pub end: usize,
+    pub color: egui::Color32,
+    pub italic: bool,
+}
+
+/// Cut a line of `len` bytes into segments that cover it with no gaps.
+/// Cuts fall on every run edge and every edge of a highlighted range.
+/// Color and italic come from the run under the segment; uncovered bytes
+/// are TEXT and upright. The highlighted ranges only add cuts here; the
+/// caller decides what a highlighted segment looks like.
+pub fn segments_for_line(len: usize, runs: &[Run], highlights: &[Range<usize>]) -> Vec<Segment> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let mut cuts: Vec<usize> = vec![0, len];
+    for r in runs {
+        cuts.push(r.start.min(len));
+        cuts.push(r.end.min(len));
+    }
+    for h in highlights {
+        cuts.push(h.start.min(len));
+        cuts.push(h.end.min(len));
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.windows(2)
+        .map(|w| {
+            let (start, end) = (w[0], w[1]);
+            let run = runs.iter().find(|r| r.start <= start && start < r.end);
+            Segment {
+                start,
+                end,
+                color: run.map(|r| r.color).unwrap_or(TEXT),
+                italic: run.map(|r| r.italic).unwrap_or(false),
+            }
+        })
+        .collect()
+}
+
+/// True when the whole segment lies inside one highlighted range. Cuts
+/// fall on every highlight edge, so a segment is either inside or outside.
+pub fn is_highlighted(seg: &Segment, highlights: &[Range<usize>]) -> bool {
+    highlights
+        .iter()
+        .any(|h| h.start <= seg.start && seg.end <= h.end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(start: usize, end: usize, color: egui::Color32, italic: bool) -> Run {
+        Run {
+            start,
+            end,
+            color,
+            italic,
+        }
+    }
+
+    fn assert_covers(segs: &[Segment], len: usize) {
+        assert_eq!(segs.first().map(|s| s.start), Some(0));
+        assert_eq!(segs.last().map(|s| s.end), Some(len));
+        for w in segs.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "gap or overlap");
+        }
+        assert!(segs.iter().all(|s| s.start < s.end));
+    }
+
+    #[test]
+    fn covers_the_whole_line_with_no_gaps() {
+        let red = egui::Color32::RED;
+        let blue = egui::Color32::BLUE;
+        let runs = [run(0, 3, red, false), run(5, 8, blue, true)];
+        let segs = segments_for_line(10, &runs, &[]);
+        assert_covers(&segs, 10);
+        assert_eq!(segs.len(), 4);
+        assert_eq!(segs[1].color, TEXT);
+        assert!(!segs[1].italic);
+        assert_eq!(segs[2].color, blue);
+        assert!(segs[2].italic);
+    }
+
+    #[test]
+    fn splits_at_run_edges() {
+        let red = egui::Color32::RED;
+        let green = egui::Color32::GREEN;
+        let runs = [run(0, 4, red, false), run(4, 9, green, false)];
+        let segs = segments_for_line(9, &runs, &[]);
+        assert_covers(&segs, 9);
+        assert_eq!(segs.len(), 2);
+        assert_eq!((segs[0].start, segs[0].end), (0, 4));
+        assert_eq!((segs[1].start, segs[1].end), (4, 9));
+    }
+
+    #[test]
+    fn splits_at_highlight_edges() {
+        let red = egui::Color32::RED;
+        let runs = [run(0, 10, red, false)];
+        let segs = segments_for_line(10, &runs, &[2..6]);
+        assert_covers(&segs, 10);
+        assert_eq!(segs.len(), 3);
+        assert_eq!((segs[1].start, segs[1].end), (2, 6));
+        assert_eq!(segs[1].color, red);
+    }
+
+    #[test]
+    fn splits_at_the_union_of_run_and_span_edges() {
+        let red = egui::Color32::RED;
+        let green = egui::Color32::GREEN;
+        let runs = [run(0, 4, red, false), run(4, 9, green, false)];
+        let spans = [2..6];
+        let segs = segments_for_line(9, &runs, &spans);
+        assert_covers(&segs, 9);
+        let edges: Vec<(usize, usize)> = segs.iter().map(|s| (s.start, s.end)).collect();
+        assert_eq!(edges, vec![(0, 2), (2, 4), (4, 6), (6, 9)]);
+        let flags: Vec<bool> = segs.iter().map(|s| is_highlighted(s, &spans)).collect();
+        assert_eq!(flags, vec![false, true, true, false]);
+        assert_eq!(segs[1].color, red);
+        assert_eq!(segs[2].color, green);
+    }
+
+    #[test]
+    fn empty_line_and_no_runs() {
+        assert!(segments_for_line(0, &[], &[]).is_empty());
+        let segs = segments_for_line(5, &[], &[]);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].color, TEXT);
     }
 }

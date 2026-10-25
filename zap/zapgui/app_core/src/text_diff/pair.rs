@@ -1,7 +1,7 @@
 use similar::{ChangeTag, TextDiff, DiffOp};
 
 use super::rows::{DiffRow, RowKind, Side};
-use super::similarity::{similarity, SIMILARITY_THRESHOLD};
+use super::similarity::{inline_spans, similarity, EDIT_THRESHOLD, SIMILARITY_THRESHOLD};
 
 /// Above this many old-times-new lines, the alignment DP is skipped and
 /// lines are paired by index with the same threshold test. A 320x320
@@ -118,55 +118,43 @@ fn pair_one_op(
         let text = change.value().trim_end_matches('\n').to_string();
         match change.tag() {
             ChangeTag::Equal => {
-                old_lines.push(Side {
-                    lineno: change.old_index().map(|i| i as u32 + 1),
-                    text: text.clone(),
-                });
-                new_lines.push(Side {
-                    lineno: change.new_index().map(|i| i as u32 + 1),
+                old_lines.push(Side::new(
+                    change.old_index().map(|i| i as u32 + 1),
+                    text.clone(),
+                ));
+                new_lines.push(Side::new(
+                    change.new_index().map(|i| i as u32 + 1),
                     text,
-                });
+                ));
             }
             ChangeTag::Delete => {
                 saw_change = true;
-                old_lines.push(Side {
-                    lineno: change.old_index().map(|i| i as u32 + 1),
+                old_lines.push(Side::new(
+                    change.old_index().map(|i| i as u32 + 1),
                     text,
-                });
+                ));
             }
             ChangeTag::Insert => {
                 saw_change = true;
-                new_lines.push(Side {
-                    lineno: change.new_index().map(|i| i as u32 + 1),
+                new_lines.push(Side::new(
+                    change.new_index().map(|i| i as u32 + 1),
                     text,
-                });
+                ));
             }
         }
     }
 
     if !saw_change {
         for (l, r) in old_lines.into_iter().zip(new_lines) {
-            rows.push(DiffRow {
-                left: Some(l),
-                right: Some(r),
-                kind: RowKind::Equal,
-            });
+            rows.push(DiffRow::new(Some(l), Some(r), RowKind::Equal));
         }
     } else if old_lines.is_empty() {
         for r in new_lines {
-            rows.push(DiffRow {
-                left: None,
-                right: Some(r),
-                kind: RowKind::Insert,
-            });
+            rows.push(DiffRow::new(None, Some(r), RowKind::Insert));
         }
     } else if new_lines.is_empty() {
         for l in old_lines {
-            rows.push(DiffRow {
-                left: Some(l),
-                right: None,
-                kind: RowKind::Delete,
-            });
+            rows.push(DiffRow::new(Some(l), None, RowKind::Delete));
         }
     } else {
         let pairs = align(&old_lines, &new_lines);
@@ -272,6 +260,22 @@ fn align_by_index(old: &[Side], new: &[Side]) -> Vec<(Option<usize>, Option<usiz
     out
 }
 
+/// Build the row for two lines that share a row. Same text gives an Equal
+/// row. Otherwise a Change row: `edit` is set when the lines are similar
+/// enough, and the changed spots are filled in on both sides.
+fn change_row(mut l: Side, mut r: Side) -> DiffRow {
+    if same_text(&l.text, &r.text) {
+        return DiffRow::new(Some(l), Some(r), RowKind::Equal);
+    }
+    let edit = similarity(&l.text, &r.text) >= EDIT_THRESHOLD;
+    let (lc, rc) = inline_spans(&l.text, &r.text);
+    l.changed = lc;
+    r.changed = rc;
+    let mut row = DiffRow::new(Some(l), Some(r), RowKind::Change);
+    row.edit = edit;
+    row
+}
+
 fn emit_aligned(
     pairs: Vec<(Option<usize>, Option<usize>)>,
     old_lines: Vec<Side>,
@@ -282,18 +286,7 @@ fn emit_aligned(
     while i < pairs.len() {
         match pairs[i] {
             (Some(oi), Some(ni)) => {
-                let l = old_lines[oi].clone();
-                let r = new_lines[ni].clone();
-                let kind = if same_text(&l.text, &r.text) {
-                    RowKind::Equal
-                } else {
-                    RowKind::Change
-                };
-                rows.push(DiffRow {
-                    left: Some(l),
-                    right: Some(r),
-                    kind,
-                });
+                rows.push(change_row(old_lines[oi].clone(), new_lines[ni].clone()));
                 i += 1;
             }
             _ => {
@@ -308,32 +301,24 @@ fn emit_aligned(
                     i += 1;
                 }
                 if dels.len() == 1 && inses.len() == 1 {
-                    let l = old_lines[dels[0]].clone();
-                    let r = new_lines[inses[0]].clone();
-                    let kind = if same_text(&l.text, &r.text) {
-                        RowKind::Equal
-                    } else {
-                        RowKind::Change
-                    };
-                    rows.push(DiffRow {
-                        left: Some(l),
-                        right: Some(r),
-                        kind,
-                    });
+                    rows.push(change_row(
+                        old_lines[dels[0]].clone(),
+                        new_lines[inses[0]].clone(),
+                    ));
                 } else {
                     for oi in dels {
-                        rows.push(DiffRow {
-                            left: Some(old_lines[oi].clone()),
-                            right: None,
-                            kind: RowKind::Delete,
-                        });
+                        rows.push(DiffRow::new(
+                            Some(old_lines[oi].clone()),
+                            None,
+                            RowKind::Delete,
+                        ));
                     }
                     for ni in inses {
-                        rows.push(DiffRow {
-                            left: None,
-                            right: Some(new_lines[ni].clone()),
-                            kind: RowKind::Insert,
-                        });
+                        rows.push(DiffRow::new(
+                            None,
+                            Some(new_lines[ni].clone()),
+                            RowKind::Insert,
+                        ));
                     }
                 }
             }
@@ -441,6 +426,29 @@ mod tests {
     fn identical_text_gives_equal() {
         let rows = pair_lines_full("same line\n", "same line\n");
         assert_eq!(kinds(&rows), vec![RowKind::Equal]);
+    }
+
+    #[test]
+    fn one_edited_word_gives_an_edit_row_with_spots() {
+        let rows = pair_lines("call(foo, 1);\n", "call(bar, 1);\n");
+        assert_eq!(kinds(&rows), vec![RowKind::Change]);
+        assert!(rows[0].edit);
+        let (Some(l), Some(r)) = (rows[0].left.as_ref(), rows[0].right.as_ref()) else {
+            panic!("change row without both sides");
+        };
+        assert_eq!(l.changed.len(), 1);
+        assert_eq!(&l.text[l.changed[0].clone()], "foo");
+        assert_eq!(&r.text[r.changed[0].clone()], "bar");
+    }
+
+    #[test]
+    fn half_similar_pair_is_a_change_but_not_an_edit() {
+        let rows = pair_lines(
+            "aaaaa bbbbb ccccc ddddd\n",
+            "aaaaa bbbbb xxxxx yyyyy\n",
+        );
+        assert_eq!(kinds(&rows), vec![RowKind::Change]);
+        assert!(!rows[0].edit);
     }
 
     #[test]

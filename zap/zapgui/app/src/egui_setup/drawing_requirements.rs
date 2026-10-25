@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use app_core::chain::{popup, report, writer, Chain, ChainOutcome, StepStatus, Verb};
 use app_core::terminal_router::surface_review::SurfaceReview;
 use every_page_ever::ReusableComponents::close_button::ui as close_button;
+use every_page_ever::ReusableComponents::diff_viewer::syntax;
 use every_page_ever::ReusableComponents::diff_viewer::ui as diff_viewer;
 use every_page_ever::ReusableComponents::glass_button::ui::{
     self as glass_button, BlockState, Icon as GlassIcon,
@@ -146,6 +147,20 @@ fn verb_accent(v: Verb) -> egui::Color32 {
         Verb::Move => egui::Color32::from_rgb(90, 200, 220),
         Verb::Cargo => egui::Color32::from_rgb(230, 160, 40),
         Verb::Run => egui::Color32::from_rgb(200, 90, 220),
+    }
+}
+
+/// Two-letter label drawn inside a step block, in the step's accent color.
+fn verb_glyph(v: Verb) -> &'static str {
+    match v {
+        Verb::Create => "cr",
+        Verb::Replace | Verb::Overwrite | Verb::Append => "ed",
+        Verb::Remove => "dl",
+        Verb::Move => "mv",
+        Verb::Mkdir => "mk",
+        Verb::RemoveDir => "rd",
+        Verb::Cargo => "cg",
+        Verb::Run => "rn",
     }
 }
 
@@ -322,6 +337,16 @@ pub struct NecessaryStructForEgui {
     scroll_to_change_pending: bool,
     surface_shown_at: Instant,
     did_init_style: bool,
+    /// Loaded lazily the first time a step needs syntax colors.
+    engine: Option<syntax::SyntaxEngine>,
+    /// Syntax tables per chain step, built when the step is first shown.
+    step_tables: Vec<Option<syntax::PairTables>>,
+    /// Syntax tables per surface review file.
+    surface_tables: Vec<Option<syntax::PairTables>>,
+    /// Full-file rows per chain step, built on first toggle.
+    step_full: Vec<Option<Vec<app_core::text_diff::DiffRowProcessedForUi>>>,
+    /// Full-file rows per surface review file, built on first toggle.
+    surface_full: Vec<Option<Vec<app_core::text_diff::DiffRowProcessedForUi>>>,
 }
 
 impl Default for NecessaryStructForEgui {
@@ -345,6 +370,11 @@ impl Default for NecessaryStructForEgui {
             scroll_to_change_pending: false,
             surface_shown_at: Instant::now(),
             did_init_style: false,
+            engine: None,
+            step_tables: Vec::new(),
+            surface_tables: Vec::new(),
+            step_full: Vec::new(),
+            surface_full: Vec::new(),
         }
     }
 }
@@ -396,6 +426,8 @@ impl eframe::App for NecessaryStructForEgui {
             self.surface_step = 0;
             self.surface_shown_at = Instant::now();
             self.full_file = false;
+            self.surface_tables.clear();
+            self.surface_full.clear();
             if was_shown && now_none {
                 // The review was withdrawn by its own handler (cancel,
                 // timeout) without the UI having cleared it. Hide.
@@ -430,6 +462,8 @@ impl eframe::App for NecessaryStructForEgui {
             self.error_line = None;
             self.shown_step = 0;
             self.full_file = false;
+            self.step_tables.clear();
+            self.step_full.clear();
             self.marked = self
                 .shown
                 .as_ref()
@@ -653,21 +687,19 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             }
         }
 
-        let owned_blocks;
-        let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = if self.full_file {
+        if self.full_file {
             if let Some(c) = chain.as_ref() {
-                if let Some(step) = c.steps.get(self.shown_step) {
-                    let before = step.before.as_deref().unwrap_or("");
-                    owned_blocks = app_core::text_diff::process(
-                        &app_core::text_diff::pair_lines_full(before, &step.after),
-                    );
-                    owned_blocks.as_slice()
-                } else {
-                    &[]
-                }
-            } else {
-                &[]
+                self.ensure_step_full(c, self.shown_step);
             }
+        }
+        if let Some(c) = chain.as_ref() {
+            self.ensure_step_tables(c, self.shown_step);
+        }
+        let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = if self.full_file {
+            self.step_full
+                .get(self.shown_step)
+                .and_then(|b| b.as_deref())
+                .unwrap_or(&[])
         } else {
             chain
                 .as_ref()
@@ -697,6 +729,10 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         } else {
             diff_viewer::MoveDisplay::Dimmed
         };
+        let tables = self
+            .step_tables
+            .get(self.shown_step)
+            .and_then(|t| t.as_ref());
         diff_viewer::diff_viewer_ui_no_copy(
             ui,
             layout.viewer,
@@ -707,6 +743,8 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 scroll_to_change_once: scroll_once,
                 right_accent,
                 moves: moves_mode,
+                left_colors: tables.map(|t| &t.left),
+                right_colors: tables.map(|t| &t.right),
             },
         );
 
@@ -758,6 +796,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     i,
                     state,
                     accent,
+                    step_ref.map(|s| verb_glyph(s.step.verb)).unwrap_or(""),
                     &tip,
                 ) {
                     clicked_step = Some(i);
@@ -983,6 +1022,120 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 }
 
 impl NecessaryStructForEgui {
+    /// Build both tables for a text pair. The theme is read from the
+    /// settings file each time, so a new choice applies to the next step
+    /// shown. A failure is printed and gives empty tables.
+    fn build_tables(
+        &mut self,
+        path: &std::path::Path,
+        before: &str,
+        after: &str,
+    ) -> syntax::PairTables {
+        let theme = syntax::configured_theme();
+        if theme == zap_wire_theme_off() {
+            return syntax::PairTables::empty();
+        }
+        let engine = self.engine.get_or_insert_with(syntax::SyntaxEngine::new);
+        match syntax::tables_for_pair(engine, path, before, after, &theme) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("zap: {e}");
+                syntax::PairTables::empty()
+            }
+        }
+    }
+
+    fn ensure_step_tables(&mut self, chain: &Chain, step: usize) {
+        if self.step_tables.len() != chain.steps.len() {
+            self.step_tables = chain.steps.iter().map(|_| None).collect();
+        }
+        let built = self
+            .step_tables
+            .get(step)
+            .map(|t| t.is_some())
+            .unwrap_or(true);
+        if built {
+            return;
+        }
+        let Some(s) = chain.steps.get(step) else {
+            return;
+        };
+        let before = s.before.as_deref().unwrap_or("");
+        let tables = self.build_tables(&s.path, before, &s.after);
+        if let Some(slot) = self.step_tables.get_mut(step) {
+            *slot = Some(tables);
+        }
+    }
+
+    fn ensure_step_full(&mut self, chain: &Chain, step: usize) {
+        if self.step_full.len() != chain.steps.len() {
+            self.step_full = chain.steps.iter().map(|_| None).collect();
+        }
+        let built = self
+            .step_full
+            .get(step)
+            .map(|t| t.is_some())
+            .unwrap_or(true);
+        if built {
+            return;
+        }
+        let Some(s) = chain.steps.get(step) else {
+            return;
+        };
+        let before = s.before.as_deref().unwrap_or("");
+        let blocks = app_core::text_diff::process(&app_core::text_diff::pair_lines_full(
+            before, &s.after,
+        ));
+        if let Some(slot) = self.step_full.get_mut(step) {
+            *slot = Some(blocks);
+        }
+    }
+
+    fn ensure_surface_full(&mut self, review: &SurfaceReview, step: usize) {
+        if self.surface_full.len() != review.files.len() {
+            self.surface_full = review.files.iter().map(|_| None).collect();
+        }
+        let built = self
+            .surface_full
+            .get(step)
+            .map(|t| t.is_some())
+            .unwrap_or(true);
+        if built {
+            return;
+        }
+        let Some(f) = review.files.get(step) else {
+            return;
+        };
+        let blocks = app_core::text_diff::process(&app_core::text_diff::pair_lines_full(
+            &f.old_text,
+            &f.new_text,
+        ));
+        if let Some(slot) = self.surface_full.get_mut(step) {
+            *slot = Some(blocks);
+        }
+    }
+
+    fn ensure_surface_tables(&mut self, review: &SurfaceReview, step: usize) {
+        if self.surface_tables.len() != review.files.len() {
+            self.surface_tables = review.files.iter().map(|_| None).collect();
+        }
+        let built = self
+            .surface_tables
+            .get(step)
+            .map(|t| t.is_some())
+            .unwrap_or(true);
+        if built {
+            return;
+        }
+        let Some(f) = review.files.get(step) else {
+            return;
+        };
+        let tables = self.build_tables(&f.path, &f.old_text, &f.new_text);
+        if let Some(slot) = self.surface_tables.get_mut(step) {
+            *slot = Some(tables);
+        }
+    }
+
     fn draw_surface_review(&mut self, ui: &mut egui::Ui, screen: egui::Rect) {
         let Some(review) = self.shown_surface.clone() else {
             return;
@@ -1042,16 +1195,15 @@ impl NecessaryStructForEgui {
             self.surface_shown_at = Instant::now();
         }
 
-        let owned_blocks;
+        if self.full_file {
+            self.ensure_surface_full(&review, self.surface_step);
+        }
+        self.ensure_surface_tables(&review, self.surface_step);
         let blocks: &[app_core::text_diff::DiffRowProcessedForUi] = if self.full_file {
-            if let Some(f) = review.files.get(self.surface_step) {
-                owned_blocks = app_core::text_diff::process(
-                    &app_core::text_diff::pair_lines_full(&f.old_text, &f.new_text),
-                );
-                owned_blocks.as_slice()
-            } else {
-                &[]
-            }
+            self.surface_full
+                .get(self.surface_step)
+                .and_then(|b| b.as_deref())
+                .unwrap_or(&[])
         } else {
             review
                 .files
@@ -1069,6 +1221,10 @@ impl NecessaryStructForEgui {
             _ => None,
         };
 
+        let tables = self
+            .surface_tables
+            .get(self.surface_step)
+            .and_then(|t| t.as_ref());
         diff_viewer::diff_viewer_ui_no_copy(
             ui,
             layout.viewer,
@@ -1083,6 +1239,8 @@ impl NecessaryStructForEgui {
                 scroll_to_change_once: scroll_once,
                 right_accent,
                 moves: diff_viewer::MoveDisplay::Classic,
+                left_colors: tables.map(|t| &t.left),
+                right_colors: tables.map(|t| &t.right),
             },
         );
 
@@ -1114,6 +1272,7 @@ impl NecessaryStructForEgui {
                     1000 + i,
                     state,
                     None,
+                    "",
                     &tip,
                 ) {
                     self.surface_step = i;
@@ -1349,6 +1508,49 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
             .collect();
         if app_core::trust::refresh_after_chain_confirm(&mut record, &written) {
             let _ = app_core::trust::save(&record);
+        }
+    }
+}
+
+fn zap_wire_theme_off() -> &'static str {
+    "off"
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_VERBS: [Verb; 10] = [
+        Verb::Create,
+        Verb::Replace,
+        Verb::Overwrite,
+        Verb::Append,
+        Verb::Remove,
+        Verb::RemoveDir,
+        Verb::Cargo,
+        Verb::Run,
+        Verb::Move,
+        Verb::Mkdir,
+    ];
+
+    #[test]
+    fn every_verb_has_a_two_letter_glyph() {
+        for v in ALL_VERBS {
+            let g = verb_glyph(v);
+            let chars: Vec<char> = g.chars().collect();
+            assert_eq!(chars.len(), 2, "glyph {g:?}");
+            assert_ne!(chars[0], chars[1], "glyph {g:?}");
+            assert!(chars.iter().all(|c| c.is_ascii_lowercase()), "glyph {g:?}");
+        }
+    }
+
+    #[test]
+    fn verbs_with_different_accents_have_different_glyphs() {
+        for a in ALL_VERBS {
+            for b in ALL_VERBS {
+                if verb_accent(a) != verb_accent(b) {
+                    assert_ne!(verb_glyph(a), verb_glyph(b));
+                }
+            }
         }
     }
 }

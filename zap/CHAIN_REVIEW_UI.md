@@ -59,7 +59,10 @@ that step with an error line.
 ## Block column
 
 One block per step on the right, border tinted by verb. Marked amber,
-denied red, selected brighter. Click jumps to that step.
+denied red, selected brighter. Click jumps to that step. Each block
+shows the step's two-letter verb glyph in the accent colour inside it:
+cr create, ed replace / overwrite / append, dl delete, mv move, mk
+mkdir, rd rmdir, cg cargo, rn run. Surface reviews draw no glyph.
 
 ## State
 

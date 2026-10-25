@@ -120,6 +120,51 @@ replaced by a longer one is one row.
 Above ALIGNMENT_CELL_LIMIT (100,000 old-times-new) the DP is skipped and
 lines are paired by index with the same threshold test.
 
+Two thresholds decide how a paired Change row is drawn. At or above
+EDIT_THRESHOLD (0.6) the row is an edit and both bars are blue. Between
+SIMILARITY_THRESHOLD and EDIT_THRESHOLD it is a paired replacement, red on
+the left and green on the right. Change rows carry `edit: bool` for the
+bars and `changed: Vec<Range<usize>>` on each side for the spots.
+
+The spots come from `inline_spans`. Each line is cut into tokens - runs
+of letters, digits and underscore, runs of whitespace, single other
+characters - and the two token lists are diffed with Myers. Every
+delete/replace gives a range on the old side, insert/replace on the new
+side. Replace ranges are shaved to their longest common prefix and
+suffix at character level, so `compute_total` to `compute_totals` marks
+only the `s`. Ranges merge when they touch. `inline_spans` returns
+nothing when either line is over 2,000 characters, or when the marked
+characters cover more than 70% of the non-space characters of either
+line, so a mostly rewritten edit shows bars and no spots.
+
+## Syntax coloring
+
+`every_page_ever/src/ReusableComponents/diff_viewer/syntax.rs`. The
+viewer draws sparse rows, so a line can't be coloured from its own text
+without losing state: a line in the middle of a multi-line string would
+look like code. Each side's whole text is highlighted top to bottom once
+into a table indexed by line number; a row looks up its runs by the line
+number it already carries.
+
+syntect, with two-face's `extra_newlines` syntax set (Rust and TOML;
+syntect's bundled set has no TOML) and two-face's themes. `rs` is Rust,
+`toml` and `Cargo.lock` are TOML, anything else is an empty table and
+draws as plain text. Texts over 400 KB, or with a single line over 5,000
+bytes, also get an empty table. A failed build prints
+`zap: <method> <file>: <message>` and draws plain.
+
+Themes: `off`, `two-dark` (default), `dracula`, `nord`, `monokai`,
+`solarized-dark`, `gruvbox-dark`, `one-half-dark`, `zenburn`. The
+setting key is `theme` in the settings file. Set it in zap-settings; a
+theme chosen there applies to the next step shown, with no restart.
+
+In the viewer, pass 0 builds each row's LayoutJob from the pure function
+`segments_for_line(len, runs, highlights) -> Vec<Segment>`. Each segment
+is `{ start, end, color, italic }`; the segment carries no
+"highlighted" flag, and the caller tests whether a segment lies inside a
+range. Uncovered bytes come back as TEXT upright. Copy and selection are
+unchanged because the segments feed the same galley the labels place.
+
 ## Move detection
 
 zapgui/app_core/src/text_diff/moves.rs. Runs once over every step of a
@@ -196,7 +241,8 @@ move_display.rs.
 zapgui/app_core/src/last_change.rs, run_trust.rs, clipboard.rs.
 
 zapgui/every_page_ever/src/ReusableComponents/ - close_button,
-glass_button (with pill_ui), diff_viewer.
+glass_button (with pill_ui), diff_viewer (ui.rs the renderer, syntax.rs
+the colour tables).
 
 zapcli/app_core/src/command_router/ - dispatch + core_commands/<name>.rs
 per verb. core_commands/chain.rs forwards chains. cargo and run live
@@ -210,6 +256,9 @@ zapgui/app/src/egui_setup/drawing_requirements.rs - review window,
 surface review, menu.
 
 zap_wire/src/chain.rs - shared parser.
+zap_wire/src/config.rs - config folder, line-list files, key=value
+settings. Settings writes go through a temp file and a rename so unknown
+lines survive.
 
 ## Adding a command
 

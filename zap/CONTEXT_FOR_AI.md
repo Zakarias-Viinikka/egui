@@ -28,8 +28,14 @@ slot), listener.rs, route_requests.rs (dispatch, whitelist auto-apply,
 handle_chain_run), retry.rs, file_trust.rs, stream_run.rs,
 surface_review.rs.
 
-zapgui/app_core/src/text_diff/ - rows.rs, pair.rs (with pair_runs),
-post_process.rs, similarity.rs, moves.rs, move_display.rs.
+zapgui/app_core/src/text_diff/ - rows.rs (types + constructors), pair.rs
+(line pairing + pair_runs), post_process.rs (rows -> blocks),
+similarity.rs (similarity, inline_spans, EDIT_THRESHOLD, dice, lcs),
+moves.rs, move_display.rs.
+
+zapgui/every_page_ever/src/ReusableComponents/diff_viewer/syntax.rs -
+syntax tables for Rust and TOML. Two-face syntax/theme sets; one table
+per side of a step, built once and cached.
 
 zapgui/app_core/src/last_change.rs, run_trust.rs, clipboard.rs.
 zapgui/app/src/egui_main.rs - startup, single-instance handoff.
@@ -60,7 +66,8 @@ payload.
 ## 6. zap_wire and the run flow
 
 zap_wire/src/lib.rs (frames), argv.rs (splitter), cargo_gate.rs
-(allow-list), chain.rs (parser).
+(allow-list), chain.rs (parser), config.rs (config folder, line lists,
+key=value settings).
 
 zapgui/app_core/src/surface.rs, trust.rs, runner.rs - the execution
 surface, its stored record, the process runner.
@@ -86,9 +93,14 @@ Don't add a second socket reader in the run-step path - the ChainRun
 handler starts one watcher; two readers steal each other's frames.
 
 DiffRow, RowKind and Side are shared by the diff engine, viewer and
-clipboard formatters. They may be changed; a new field needs a value at
-every `DiffRow {` / `Side {` construction site and a decision about what
-the viewer, debug_format and the clipboard builders do with it.
+clipboard formatters. DiffRow has `edit: bool` (true on a Change row at
+or above EDIT_THRESHOLD; the viewer draws blue bars). Side has
+`changed: Vec<Range<usize>>` (byte ranges from inline_spans that differ
+from the paired line). Both are set only on Change rows. Use
+`DiffRow::new` / `Side::new`; the constructors default the new fields
+and every construction site already goes through them. A new field still
+needs a decision about what the viewer, debug_format and the clipboard
+builders do with it.
 
 ## 9. similar::TextDiffable isn't public
 

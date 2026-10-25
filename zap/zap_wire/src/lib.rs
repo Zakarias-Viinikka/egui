@@ -13,6 +13,7 @@
 
 pub mod cargo_gate;
 pub mod chain;
+pub mod config;
 pub mod linefold;
 
 use std::io::{self, Read, Write};

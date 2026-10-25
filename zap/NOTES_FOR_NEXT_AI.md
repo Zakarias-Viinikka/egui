@@ -50,6 +50,18 @@ compiles. Don't remove them.
 - Move detection across the whole chain. Snippet view is Dimmed (source
   rows dim grey, no strip; same-step destinations paired Change rows).
   Full-file and surface reviews are Classic.
+- Edit-vs-replace split into two thresholds: SIMILARITY_THRESHOLD 0.5
+  pairs, EDIT_THRESHOLD 0.6 draws blue bars. Change rows carry
+  `edit` and per-side `changed` ranges from `inline_spans`, and the
+  viewer highlights only those bytes. No spots when either line is over
+  2,000 chars or the marks cover >70% of the non-space characters.
+- Syntax coloring for Rust and TOML in
+  `diff_viewer/syntax.rs` (syntect + two-face). Tables are built once
+  per side, cached in NecessaryStructForEgui, theme re-read each time.
+  `off` and unknown extensions give empty tables that draw plain.
+- `segments_for_line(len, runs, highlights)` in `diff_viewer/ui.rs` is
+  the pure helper pass 0 uses to build each row's LayoutJob. Highlight
+  ranges only add cut points; the segments carry no "highlighted" flag.
 - Review window: Verify / Mark / Allow / Deny, 150 ms click guard in
   both windows, tooltips everywhere, boundary chip on the caption row.
   Verb-tinted blocks. Distinct banners per verb.
@@ -94,6 +106,24 @@ input-line word wrap (continuation indent + overrun).
 - LayoutJob and TextWrapping live at egui::text::.
 - similar::TextDiffable is not public. Inline the pairing body in
   pair_lines and pair_lines_full.
+- The theme key in the settings file is `theme` (config.rs get_key and
+  syntax.rs configured_theme both read it). The plan wrote
+  `syntax_theme`. If zap-settings writes `syntax_theme`, one of the two
+  is wrong; the theme combo will otherwise do nothing. One-line fix at
+  whichever side is wrong.
+- If XDG_CONFIG_HOME is set, config lives under $XDG_CONFIG_HOME/zap
+  instead of ~/.config/zap. The old settings file is not migrated; a
+  fresh theme pick writes a new one in the XDG folder.
+- `zap_wire_theme_off()` at the bottom of drawing_requirements.rs is a
+  hardcoded `"off"` because zapgui/app doesn't depend on zap_wire. Re-
+  export from syntax.rs if that ever grows.
+- verb_glyph shares `ed` for replace, overwrite and append (as the plan
+  intends). Step 12's "pairwise distinct" glyph test must be loosened
+  for those three; the plan's test wording is wrong on this point.
+- Syntax table builds that fail (missing syntax, syntect error) print
+  `zap: <method> <file>: <message>` and then draw plain. There is no
+  logging helper in app_core; the eprintln in syntax.rs's
+  configured_theme is the only such path.
 
 ## Where the pending decisions live
 
