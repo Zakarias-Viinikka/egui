@@ -14,6 +14,7 @@ use every_page_ever::ReusableComponents::glass_button::ui::{
 };
 
 const CLICK_GUARD: Duration = Duration::from_millis(150);
+const SPECIAL_CLICK_GUARD: Duration = Duration::from_millis(600);
 const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const CAPTION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
 const CAPTION_MARKED_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
@@ -38,6 +39,7 @@ fn banner_title(kind: BannerKind) -> &'static str {
         BannerKind::Execute => "EXECUTE REQUEST",
         BannerKind::Delete => "DELETE REQUEST",
         BannerKind::Rename => "RENAME REQUEST",
+        BannerKind::Exec => "EXEC REQUEST",
     }
 }
 
@@ -59,6 +61,11 @@ fn banner_colors(kind: BannerKind) -> (egui::Color32, egui::Color32, egui::Color
             egui::Color32::from_rgb(70, 190, 190),
             egui::Color32::from_rgb(180, 240, 240),
         ),
+        BannerKind::Exec => (
+            egui::Color32::from_rgb(60, 30, 12),
+            egui::Color32::from_rgb(240, 110, 40),
+            egui::Color32::from_rgb(255, 200, 140),
+        ),
     }
 }
 
@@ -68,6 +75,7 @@ fn banner_hint(kind: BannerKind) -> &'static str {
         BannerKind::Execute => "confirm = run it, deny = don't",
         BannerKind::Delete => "confirm = delete it, deny = don't",
         BannerKind::Rename => "confirm = rename it, deny = don't",
+        BannerKind::Exec => "confirm = make it executable, deny = don't",
     }
 }
 
@@ -136,6 +144,7 @@ fn verb_word(v: Verb) -> &'static str {
         Verb::Run => "run",
         Verb::Move => "rename",
         Verb::Mkdir => "mkdir",
+        Verb::Chmod => "chmod",
     }
 }
 
@@ -147,6 +156,7 @@ fn verb_accent(v: Verb) -> egui::Color32 {
         Verb::Move => egui::Color32::from_rgb(90, 200, 220),
         Verb::Cargo => egui::Color32::from_rgb(230, 160, 40),
         Verb::Run => egui::Color32::from_rgb(200, 90, 220),
+        Verb::Chmod => egui::Color32::from_rgb(240, 110, 40),
     }
 }
 
@@ -161,6 +171,7 @@ fn verb_glyph(v: Verb) -> &'static str {
         Verb::RemoveDir => "rd",
         Verb::Cargo => "cg",
         Verb::Run => "rn",
+        Verb::Chmod => "cx",
     }
 }
 
@@ -322,6 +333,7 @@ pub struct NecessaryStructForEgui {
     marked: Vec<bool>,
     visited: Vec<bool>,
     verified: Vec<bool>,
+    allowed: Vec<bool>,
     shown_surface: Option<Arc<SurfaceReview>>,
     surface_step: usize,
     menu_open: bool,
@@ -329,6 +341,9 @@ pub struct NecessaryStructForEgui {
     menu_folders: Vec<PathBuf>,
     menu_draft: String,
     menu_error: Option<String>,
+    menu_hidden: Vec<String>,
+    menu_hidden_draft: String,
+    menu_hidden_error: Option<String>,
     /// When true, the viewer shows every line of the step instead of the
     /// snippet around the change.
     full_file: bool,
@@ -359,6 +374,7 @@ impl Default for NecessaryStructForEgui {
             marked: Vec::new(),
             visited: Vec::new(),
             verified: Vec::new(),
+            allowed: Vec::new(),
             shown_surface: None,
             surface_step: 0,
             menu_open: false,
@@ -366,6 +382,9 @@ impl Default for NecessaryStructForEgui {
             menu_folders: Vec::new(),
             menu_draft: String::new(),
             menu_error: None,
+            menu_hidden: Vec::new(),
+            menu_hidden_draft: String::new(),
+            menu_hidden_error: None,
             full_file: false,
             scroll_to_change_pending: false,
             surface_shown_at: Instant::now(),
@@ -385,6 +404,9 @@ impl NecessaryStructForEgui {
         self.menu_folders = app_core::chain::whitelist::load();
         self.menu_draft.clear();
         self.menu_error = None;
+        self.menu_hidden = app_core::chain::whitelist::load_hidden();
+        self.menu_hidden_draft.clear();
+        self.menu_hidden_error = None;
     }
 }
 
@@ -479,6 +501,11 @@ impl eframe::App for NecessaryStructForEgui {
                 .as_ref()
                 .map(|c| vec![false; c.steps.len()])
                 .unwrap_or_default();
+            self.allowed = self
+                .shown
+                .as_ref()
+                .map(|c| vec![false; c.steps.len()])
+                .unwrap_or_default();
             if self.shown.is_some() {
                 self.menu_open = false;
                 ui.ctx()
@@ -537,9 +564,15 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 Verb::Move => Some(BannerKind::Rename),
                 Verb::Cargo => Some(BannerKind::CargoRun),
                 Verb::Run => Some(BannerKind::Execute),
+                Verb::Chmod => Some(BannerKind::Exec),
                 _ => None,
             });
         let has_banner = banner_kind.is_some();
+        let shown_is_special_verb = chain
+            .as_ref()
+            .and_then(|c| c.steps.get(self.shown_step))
+            .map(|s| s.step.verb.is_special())
+            .unwrap_or(false);
 
         let pill_label = if self.full_file {
             "changes only"
@@ -594,6 +627,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                         }
                     }
                     Verb::Mkdir => "mkdir".to_string(),
+                    Verb::Chmod => format!("chmod +x {}", step.path.display()),
                 };
                 let n = self.shown_step + 1;
                 let m = step_count;
@@ -629,6 +663,20 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             .max(CAPTION_MIN_H);
 
         let layout = PageLayout::new(screen, has_banner, show_blocks, measured_caption_h);
+
+        if shown_is_special_verb {
+            if let Some(kind) = banner_kind {
+                let (_, border, _) = banner_colors(kind);
+                let inner = screen.shrink(20.0);
+                ui.painter().rect(
+                    inner,
+                    12.0,
+                    egui::Color32::TRANSPARENT,
+                    egui::Stroke::new(6.0, border),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
 
         if let (Some(kind), Some(banner_rect)) = (banner_kind, layout.banner) {
             draw_banner(ui, banner_rect, kind);
@@ -824,17 +872,20 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         }
 
         let click_ok = self.shown_at.elapsed() >= CLICK_GUARD;
-        let shown_is_run = chain
+        let special_click_ok = self.shown_at.elapsed() >= SPECIAL_CLICK_GUARD;
+        let shown_verb = chain
             .as_ref()
             .and_then(|c| c.steps.get(self.shown_step))
-            .map(|s| matches!(s.step.verb, Verb::Cargo | Verb::Run))
-            .unwrap_or(false);
+            .map(|s| s.step.verb);
+        let shown_is_special = shown_verb.map(|v| v.is_special()).unwrap_or(false);
         let mut confirmed = false;
+        let mut allow_clicked = false;
         let mut mark_clicked = false;
         let mut deny_all_clicked = false;
         let mut verify_clicked = false;
         if chain.is_some() {
-            let total_w = 4.0 * layout.button_size + 3.0 * layout.gap;
+            let approve_w: f32 = 168.0;
+            let total_w = 3.0 * layout.button_size + 2.0 * layout.gap + approve_w;
             let start_x =
                 layout.viewer.center().x - total_w / 2.0 + layout.button_size / 2.0;
             let step_x = layout.button_size + layout.gap;
@@ -856,29 +907,66 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             ) {
                 mark_clicked = true;
             }
-            let approve_icon = if shown_is_run {
-                GlassIcon::AllowRun
-            } else {
-                GlassIcon::Confirm
-            };
-            let approve_tip = if shown_is_run {
-                "Write the steps, then run the command in this step."
-            } else {
-                "Write every step that is not marked."
-            };
-            if glass_button::glass_button_ui(
+            let approve_center = egui::pos2(
+                start_x + 2.0 * step_x + approve_w / 2.0 - layout.button_size / 2.0,
+                layout.button_y,
+            );
+            let deny_center = egui::pos2(
+                start_x + 2.0 * step_x + approve_w + layout.gap,
+                layout.button_y,
+            );
+            if shown_is_special {
+                let (small, big, accent, tip) = match shown_verb {
+                    Some(Verb::Cargo) => (
+                        "SPECIAL REQUEST",
+                        "ALLOW CARGO",
+                        egui::Color32::from_rgb(230, 160, 40),
+                        "Write the steps, then run the cargo command in this step.",
+                    ),
+                    Some(Verb::Run) => (
+                        "SPECIAL REQUEST",
+                        "ALLOW RUN",
+                        egui::Color32::from_rgb(200, 90, 220),
+                        "Write the steps, then run the command in this step.",
+                    ),
+                    Some(Verb::Chmod) => (
+                        "SPECIAL REQUEST",
+                        "ALLOW EXEC",
+                        egui::Color32::from_rgb(240, 110, 40),
+                        "Write the steps, then make the file in this step executable.",
+                    ),
+                    _ => (
+                        "SPECIAL REQUEST",
+                        "ALLOW",
+                        egui::Color32::GRAY,
+                        "Confirm this request.",
+                    ),
+                };
+                if glass_button::wide_allow_button_ui(
+                    ui,
+                    approve_center,
+                    "special_allow",
+                    small,
+                    big,
+                    accent,
+                    tip,
+                ) && special_click_ok
+                {
+                    allow_clicked = true;
+                }
+            } else if glass_button::glass_button_ui(
                 ui,
-                egui::pos2(start_x + 2.0 * step_x, layout.button_y),
+                approve_center,
                 2,
-                approve_icon,
-                approve_tip,
+                GlassIcon::Confirm,
+                "Write every step that is not marked.",
             ) && click_ok
             {
                 confirmed = true;
             }
             if glass_button::glass_button_ui(
                 ui,
-                egui::pos2(start_x + 3.0 * step_x, layout.button_y),
+                deny_center,
                 3,
                 GlassIcon::Deny,
                 "Write nothing. All steps stay available for retry.",
@@ -900,6 +988,17 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 *slot = !*slot;
                 self.shown_at = Instant::now();
             }
+        }
+
+        if allow_clicked {
+            if let Some(slot) = self.allowed.get_mut(self.shown_step) {
+                *slot = true;
+            }
+            self.shown_at = Instant::now();
+            if let Some(c) = chain.clone() {
+                try_confirm(self, ui, &c);
+            }
+            return;
         }
 
         if deny_all_clicked {
@@ -930,93 +1029,129 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         if confirmed {
             if let Some(c) = chain.clone() {
-                let wanted: Vec<bool> = self.marked.iter().map(|m| !*m).collect();
-                let unapproved_special = c.steps.iter().enumerate().position(|(i, s)| {
-                    let wanted = wanted.get(i).copied().unwrap_or(true);
-                    if !wanted {
-                        return false;
-                    }
-                    let is_special = matches!(
-                        s.step.verb,
-                        Verb::Remove | Verb::Move | Verb::RemoveDir
-                    );
-                    let is_run = matches!(s.step.verb, Verb::Cargo | Verb::Run);
-                    let verified = self.verified.get(i).copied().unwrap_or(false);
-                    if is_run {
-                        !verified
-                    } else if is_special {
-                        !self.visited.get(i).copied().unwrap_or(false)
-                    } else {
-                        false
-                    }
-                });
-                if let Some(i) = unapproved_special {
-                    self.shown_step = i;
-                    self.shown_at = Instant::now();
-                    let verb_word = match c.steps[i].step.verb {
-                        Verb::Cargo | Verb::Run => "run a command",
-                        _ => "delete or rename a file",
-                    };
-                    self.error_line = Some(format!(
-                        "step {} needs Verify before confirming; it can {verb_word}",
-                        i + 1
-                    ));
-                    return;
-                }
-                match writer::apply(&c, &wanted) {
-                    Ok(()) => {
-                        refresh_trust_after_chain_confirm(&c);
-                        let statuses: Vec<StepStatus> = wanted
-                            .iter()
-                            .map(|w| {
-                                if *w {
-                                    StepStatus::Applied
-                                } else {
-                                    StepStatus::Marked
-                                }
-                            })
-                            .collect();
-                        app_core::terminal_router::retry::save_from_chain(&c, &statuses);
-                        let rep = report::build(&c, &statuses, None);
-                        let applied = wanted.iter().filter(|w| **w).count();
-                        popup::show(&format!("Applied {} step(s)", applied));
-                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
-                        app_core::terminal_router::clear_pending(&c);
-                        c.finish(ChainOutcome::Applied(wanted.clone()));
-                        self.shown = None;
-                        self.error_line = None;
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    }
-                    Err(reason) => {
-                        let retry_statuses: Vec<StepStatus> = wanted
-                            .iter()
-                            .map(|w| {
-                                if *w {
-                                    StepStatus::Failed
-                                } else {
-                                    StepStatus::Denied
-                                }
-                            })
-                            .collect();
-                        app_core::terminal_router::retry::save_from_chain(&c, &retry_statuses);
-                        let statuses: Vec<StepStatus> = wanted
-                            .iter()
-                            .map(|w| {
-                                if *w {
-                                    StepStatus::Pending
-                                } else {
-                                    StepStatus::Denied
-                                }
-                            })
-                            .collect();
-                        let rep = report::build(&c, &statuses, Some(reason.as_str()));
-                        self.error_line = Some(rep.clone());
-                        popup::show("Edit failed");
-                        let _ = app_core::clipboard::copy_to_clipboard(&rep);
-                    }
-                }
+                try_confirm(self, ui, &c);
             }
+        }
+    }
+}
+
+/// Why Confirm is currently blocked.
+pub struct GateStop {
+    pub index: usize,
+    pub reason: &'static str,
+}
+
+/// The confirm gate, pure so it can be tested. `verbs` must be the same
+/// length as `wanted`, `visited`, `verified`, `allowed`; shorter slices
+/// are treated as wanted=false for gating purposes only if the caller
+/// means so — this function treats a missing entry as wanted (matching
+/// `writer::apply`).
+pub fn confirm_gate(
+    verbs: &[Verb],
+    wanted: &[bool],
+    visited: &[bool],
+    verified: &[bool],
+    allowed: &[bool],
+) -> Option<GateStop> {
+    for (i, verb) in verbs.iter().enumerate() {
+        if !wanted.get(i).copied().unwrap_or(true) {
+            continue;
+        }
+        if verb.is_special() {
+            let v = verified.get(i).copied().unwrap_or(false);
+            let a = allowed.get(i).copied().unwrap_or(false);
+            if !v {
+                return Some(GateStop {
+                    index: i,
+                    reason: "this step needs Verify before confirming",
+                });
+            }
+            if !a {
+                return Some(GateStop {
+                    index: i,
+                    reason: "this step needs the Allow button before confirming",
+                });
+            }
+        } else if matches!(verb, Verb::Remove | Verb::Move | Verb::RemoveDir) {
+            if !visited.get(i).copied().unwrap_or(false) {
+                return Some(GateStop {
+                    index: i,
+                    reason: "this step must be shown once before confirming",
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Run the confirm gate and, if it passes, write the chain. Shared by
+/// the green Confirm and the wide Allow button.
+fn try_confirm(this: &mut NecessaryStructForEgui, ui: &mut egui::Ui, c: &Arc<Chain>) {
+    let wanted: Vec<bool> = this.marked.iter().map(|m| !*m).collect();
+    let verbs: Vec<Verb> = c.steps.iter().map(|s| s.step.verb).collect();
+    if let Some(stop) = confirm_gate(
+        &verbs,
+        &wanted,
+        &this.visited,
+        &this.verified,
+        &this.allowed,
+    ) {
+        this.shown_step = stop.index;
+        this.shown_at = Instant::now();
+        this.error_line = Some(format!("step {}: {}", stop.index + 1, stop.reason));
+        return;
+    }
+    match writer::apply(c, &wanted) {
+        Ok(()) => {
+            refresh_trust_after_chain_confirm(c, &wanted);
+            let statuses: Vec<StepStatus> = wanted
+                .iter()
+                .map(|w| {
+                    if *w {
+                        StepStatus::Applied
+                    } else {
+                        StepStatus::Marked
+                    }
+                })
+                .collect();
+            app_core::terminal_router::retry::save_from_chain(c, &statuses);
+            let rep = report::build(c, &statuses, None);
+            let applied = wanted.iter().filter(|w| **w).count();
+            popup::show(&format!("Applied {} step(s)", applied));
+            let _ = app_core::clipboard::copy_to_clipboard(&rep);
+            app_core::terminal_router::clear_pending(c);
+            c.finish(ChainOutcome::Applied(wanted.clone()));
+            this.shown = None;
+            this.error_line = None;
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        Err(reason) => {
+            let retry_statuses: Vec<StepStatus> = wanted
+                .iter()
+                .map(|w| {
+                    if *w {
+                        StepStatus::Failed
+                    } else {
+                        StepStatus::Denied
+                    }
+                })
+                .collect();
+            app_core::terminal_router::retry::save_from_chain(c, &retry_statuses);
+            let statuses: Vec<StepStatus> = wanted
+                .iter()
+                .map(|w| {
+                    if *w {
+                        StepStatus::Pending
+                    } else {
+                        StepStatus::Denied
+                    }
+                })
+                .collect();
+            let rep = report::build(c, &statuses, Some(reason.as_str()));
+            this.error_line = Some(rep.clone());
+            popup::show("Edit failed");
+            let _ = app_core::clipboard::copy_to_clipboard(&rep);
         }
     }
 }
@@ -1354,46 +1489,97 @@ impl NecessaryStructForEgui {
         );
         let ui = &mut child;
 
-        ui.heading("Whitelisted folders");
-        ui.add_space(6.0);
-        ui.label("Files inside these folders are applied without confirmation.");
-        ui.add_space(14.0);
-
         let mut to_remove: Option<usize> = None;
         let mut to_add: Option<PathBuf> = None;
-        if self.menu_folders.is_empty() {
-            ui.label(egui::RichText::new("(none)").italics());
-        }
-        for (i, folder) in self.menu_folders.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(folder.display().to_string());
-                if ui.button("remove").clicked() {
-                    to_remove = Some(i);
+        let mut hidden_to_remove: Option<usize> = None;
+        let mut hidden_to_add: Option<String> = None;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading("Whitelisted folders");
+                ui.add_space(6.0);
+                ui.label("Files inside these folders are applied without confirmation.");
+                ui.add_space(14.0);
+
+                if self.menu_folders.is_empty() {
+                    ui.label(egui::RichText::new("(none)").italics());
+                }
+                for (i, folder) in self.menu_folders.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(folder.display().to_string());
+                        if ui.button("remove").clicked() {
+                            to_remove = Some(i);
+                        }
+                    });
+                }
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.label("add:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.menu_draft)
+                            .desired_width(500.0)
+                            .hint_text("/absolute/path/to/folder or file"),
+                    );
+                    let submitted =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("add").clicked() || submitted {
+                        let raw = self.menu_draft.trim().to_string();
+                        if !raw.is_empty() {
+                            to_add = Some(PathBuf::from(raw));
+                        }
+                    }
+                });
+
+                if let Some(err) = &self.menu_error {
+                    ui.add_space(10.0);
+                    ui.colored_label(ERROR_COLOR, err);
+                }
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(10.0);
+                ui.heading("Hidden files");
+                ui.add_space(6.0);
+                ui.label("Hidden paths are never shown to the AI.");
+                ui.add_space(14.0);
+
+                if self.menu_hidden.is_empty() {
+                    ui.label(egui::RichText::new("(none)").italics());
+                }
+                for (i, entry) in self.menu_hidden.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(entry.clone());
+                        if ui.button("remove").clicked() {
+                            hidden_to_remove = Some(i);
+                        }
+                    });
+                }
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.label("add:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.menu_hidden_draft)
+                            .desired_width(500.0)
+                            .hint_text("absolute path, ~/path or a bare name"),
+                    );
+                    let submitted =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("add").clicked() || submitted {
+                        let raw = self.menu_hidden_draft.trim().to_string();
+                        if !raw.is_empty() {
+                            hidden_to_add = Some(raw);
+                        }
+                    }
+                });
+
+                if let Some(err) = &self.menu_hidden_error {
+                    ui.add_space(10.0);
+                    ui.colored_label(ERROR_COLOR, err);
                 }
             });
-        }
-
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.label("add:");
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.menu_draft)
-                    .desired_width(500.0)
-                    .hint_text("/absolute/path/to/folder"),
-            );
-            let submitted = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("add").clicked() || submitted {
-                let raw = self.menu_draft.trim().to_string();
-                if !raw.is_empty() {
-                    to_add = Some(PathBuf::from(raw));
-                }
-            }
-        });
-
-        if let Some(err) = &self.menu_error {
-            ui.add_space(10.0);
-            ui.colored_label(ERROR_COLOR, err);
-        }
 
         if let Some(i) = to_remove {
             self.menu_folders.remove(i);
@@ -1422,6 +1608,34 @@ impl NecessaryStructForEgui {
                 Err(e) => self.menu_error = Some(e),
             }
         }
+
+        if let Some(i) = hidden_to_remove {
+            self.menu_hidden.remove(i);
+            match app_core::chain::whitelist::save_hidden(&self.menu_hidden) {
+                Ok(()) => self.menu_hidden_error = None,
+                Err(e) => self.menu_hidden_error = Some(e),
+            }
+        }
+
+        if let Some(raw) = hidden_to_add {
+            match app_core::chain::whitelist::validate_hidden_entry(&raw) {
+                Ok(entry) => {
+                    if self.menu_hidden.contains(&entry) {
+                        self.menu_hidden_error = Some("already in the list".to_string());
+                    } else {
+                        self.menu_hidden.push(entry);
+                        match app_core::chain::whitelist::save_hidden(&self.menu_hidden) {
+                            Ok(()) => {
+                                self.menu_hidden_error = None;
+                                self.menu_hidden_draft.clear();
+                            }
+                            Err(e) => self.menu_hidden_error = Some(e),
+                        }
+                    }
+                }
+                Err(e) => self.menu_hidden_error = Some(e),
+            }
+        }
     }
 }
 
@@ -1429,7 +1643,7 @@ pub struct CtxForActuallyDrawing<'a> {
     pub ui: &'a mut egui::Ui,
 }
 
-fn refresh_trust_after_chain_confirm(chain: &Chain) {
+fn refresh_trust_after_chain_confirm(chain: &Chain, wanted: &[bool]) {
     use std::collections::HashSet;
 
     let has_move_or_remove = chain
@@ -1437,7 +1651,10 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
         .iter()
         .any(|s| matches!(s.step.verb, Verb::Move | Verb::Remove));
 
-    for step in &chain.steps {
+    for (i, step) in chain.steps.iter().enumerate() {
+        if !wanted.get(i).copied().unwrap_or(true) {
+            continue;
+        }
         match step.step.verb {
             Verb::Move => {
                 if let Some(dest) = &step.dest {
@@ -1467,27 +1684,24 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
         }
     }
 
-    // Approvals for .sh / .toml files. The user just confirmed this write,
-    // so save the file's content hash so a later edit that lands at the
-    // same state won't re-prompt.
-    let approved: Vec<PathBuf> = chain
-        .steps
-        .iter()
-        .filter(|s| {
-            !matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir)
-        })
-        .map(|s| s.path.clone())
-        .filter(|p| app_core::terminal_router::file_trust::is_sensitive(p))
-        .collect();
-    let _ = app_core::terminal_router::file_trust::record_approved(&approved);
+    // Approvals for .sh / .toml files. The key is the content the chain
+    // writes, so record the final write per file, honoring `wanted`. A
+    // marked step was not written, so it records nothing.
+    let writes = chain.final_writes(wanted);
+    let _ = app_core::terminal_router::file_trust::record_approved(&writes);
 
     if has_move_or_remove {
         return;
     }
 
+    // Surface refresh: only files the chain actually writes, taken from
+    // final_writes so a chmod (which puts the file in snapshots without
+    // changing its text) cannot re-trust an out-of-band edit to a
+    // build.rs.
+    let writes = chain.final_writes(wanted);
     let mut roots: HashSet<PathBuf> = HashSet::new();
-    for snap in &chain.snapshots {
-        if let Some(root) = app_core::surface::project_root(&snap.path) {
+    for (path, _) in &writes {
+        if let Some(root) = app_core::surface::project_root(path) {
             roots.insert(root);
         }
     }
@@ -1496,15 +1710,12 @@ fn refresh_trust_after_chain_confirm(chain: &Chain) {
         let Some(mut record) = app_core::trust::load(&root) else {
             continue;
         };
-        let written: Vec<(PathBuf, String)> = chain
-            .snapshots
+        let written: Vec<(PathBuf, String)> = writes
             .iter()
-            .filter(|s| app_core::surface::project_root(&s.path).as_deref() == Some(root.as_path()))
-            .filter_map(|s| {
-                std::fs::read_to_string(&s.path)
-                    .ok()
-                    .map(|text| (s.path.clone(), text))
+            .filter(|(p, _)| {
+                app_core::surface::project_root(p).as_deref() == Some(root.as_path())
             })
+            .cloned()
             .collect();
         if app_core::trust::refresh_after_chain_confirm(&mut record, &written) {
             let _ = app_core::trust::save(&record);
@@ -1519,7 +1730,7 @@ fn zap_wire_theme_off() -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL_VERBS: [Verb; 10] = [
+    const ALL_VERBS: [Verb; 11] = [
         Verb::Create,
         Verb::Replace,
         Verb::Overwrite,
@@ -1530,6 +1741,7 @@ mod tests {
         Verb::Run,
         Verb::Move,
         Verb::Mkdir,
+        Verb::Chmod,
     ];
 
     #[test]
@@ -1552,5 +1764,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn banner_title_gives_exec_for_chmod() {
+        assert_eq!(banner_title(BannerKind::Exec), "EXEC REQUEST");
+    }
+
+    #[test]
+    fn gate_stops_at_un_allowed_wanted_special_step() {
+        let verbs = [Verb::Create, Verb::Cargo];
+        let wanted = [true, true];
+        let visited = [true, true];
+        let verified = [false, true];
+        let allowed = [false, false];
+        let stop = confirm_gate(&verbs, &wanted, &visited, &verified, &allowed);
+        assert_eq!(stop.unwrap().index, 1);
+    }
+
+    #[test]
+    fn gate_passes_once_special_step_is_verified_and_allowed() {
+        let verbs = [Verb::Cargo];
+        let wanted = [true];
+        let visited = [true];
+        let verified = [true];
+        let allowed = [true];
+        assert!(confirm_gate(&verbs, &wanted, &visited, &verified, &allowed).is_none());
+    }
+
+    #[test]
+    fn gate_stops_at_unverified_special_step() {
+        let verbs = [Verb::Run];
+        let wanted = [true];
+        let visited = [true];
+        let verified = [false];
+        let allowed = [true];
+        let stop = confirm_gate(&verbs, &wanted, &visited, &verified, &allowed);
+        assert_eq!(stop.unwrap().index, 0);
+    }
+
+    #[test]
+    fn gate_stops_at_unvisited_zaprm() {
+        let verbs = [Verb::Remove];
+        let wanted = [true];
+        let visited = [false];
+        let verified = [false];
+        let allowed = [false];
+        let stop = confirm_gate(&verbs, &wanted, &visited, &verified, &allowed);
+        assert_eq!(stop.unwrap().index, 0);
+    }
+
+    #[test]
+    fn gate_ignores_marked_steps() {
+        let verbs = [Verb::Chmod, Verb::Create];
+        let wanted = [false, true];
+        let visited = [false, true];
+        let verified = [false, false];
+        let allowed = [false, false];
+        assert!(confirm_gate(&verbs, &wanted, &visited, &verified, &allowed).is_none());
     }
 }

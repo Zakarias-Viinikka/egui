@@ -106,6 +106,10 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
             if args.is_empty() {
                 return Outcome::Print(vec![Line::error("run: missing file")]);
             }
+            let target = crate::general_util::path_parsing::resolve(&args[0], &session.cwd);
+            if let Some(msg) = zap_wire::hidden::HiddenSet::check(&target) {
+                return Outcome::Print(vec![Line::error(msg)]);
+            }
             match crate::general_util::socket::open_run(&session.cwd, &args) {
                 Ok(sess) => Outcome::Streaming(sess),
                 Err(e) => Outcome::Print(vec![Line::error(e)]),
@@ -120,6 +124,9 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
             let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             if let Err(e) = zap_wire::cargo_gate::check(&refs) {
                 return Outcome::Print(vec![Line::error(e)]);
+            }
+            if let Some(msg) = zap_wire::hidden::HiddenSet::check(&session.cwd) {
+                return Outcome::Print(vec![Line::error(msg)]);
             }
             match crate::general_util::socket::open_cargo(&session.cwd, &args) {
                 Ok(sess) => Outcome::Streaming(sess),
@@ -223,6 +230,7 @@ fn first_word_is_chain_verb(input: &str) -> bool {
             | "zapmv"
             | "mkdir"
             | "rmdir"
+            | "chmod"
     ) {
         return false;
     }

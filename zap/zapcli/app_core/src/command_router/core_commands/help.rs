@@ -14,6 +14,7 @@ pub fn run() -> Outcome {
         Line::normal("  zapmv <from> <to>   rename a file; always needs review"),
         Line::normal("  mkdir <path>...     create folder(s)"),
         Line::normal("  rmdir <path>...     remove empty folder(s)"),
+        Line::normal("  chmod +x <path>...  make file(s) executable; always needs review"),
         Line::normal("  cargo <args>        run cargo and stream output (allow-listed)"),
         Line::normal("  run <file> [args]   run one file, with trust check"),
         Line::normal("  zap <text>          send text to zapgui"),

@@ -38,6 +38,13 @@ pub fn run(
         return Ok(());
     };
 
+    if let Some(msg) = zap_wire::hidden::HiddenSet::check(&path) {
+        let _ = write_frame(stream, &Frame::stream_open("run"));
+        let _ = write_frame(stream, &Frame::stream_data(&format!("{msg}\n")));
+        let _ = write_frame(stream, &Frame::stream_done("hidden"));
+        return Ok(());
+    }
+
     let meta = match std::fs::metadata(&path) {
         Ok(m) if m.is_file() => m,
         _ => {

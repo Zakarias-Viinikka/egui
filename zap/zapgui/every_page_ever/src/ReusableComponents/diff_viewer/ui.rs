@@ -32,12 +32,12 @@ const GAP: f32 = 14.0;
 const GUTTER_W: f32 = 36.0;
 const BAR_W: f32 = 3.0;
 const BAR_PAD: f32 = 4.0;
-const ROW_MIN_H: f32 = 22.0;
+const ROW_MIN_H: f32 = 18.0;
 const FONT_SIZE: f32 = 14.0;
 const TEXT_PAD: f32 = 22.0;
 const SCROLLBAR_RESERVE: f32 = 14.0;
 const TAG_H: f32 = 16.0;
-const ROW_BOTTOM_PAD: f32 = 4.0;
+const ROW_BOTTOM_PAD: f32 = 1.0;
 
 /// How moves should be drawn. Classic is today's behaviour: bars and
 /// strips on both sides. Dimmed hides the strip and the bar on the

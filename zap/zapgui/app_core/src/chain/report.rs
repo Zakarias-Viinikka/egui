@@ -125,6 +125,13 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
                 format!("will run {} in {}", file, cwd)
             }
         }
+        Verb::Chmod => {
+            if would_have {
+                format!("would have made {} executable", path)
+            } else {
+                format!("made {} executable", path)
+            }
+        }
     }
 }
 
@@ -140,6 +147,7 @@ fn verb_of(applied: &AppliedStep) -> &'static str {
         Verb::RemoveDir => "rmdir",
         Verb::Cargo => "cargo",
         Verb::Run => "run",
+        Verb::Chmod => "chmod",
     }
 }
 

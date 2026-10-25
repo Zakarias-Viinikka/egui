@@ -11,7 +11,6 @@ const GREEN: egui::Color32 = egui::Color32::from_rgb(80, 180, 80);
 const RED: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const AMBER: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
 const STEEL: egui::Color32 = egui::Color32::from_rgb(150, 180, 200);
-const PURPLE: egui::Color32 = egui::Color32::from_rgb(200, 90, 220);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
@@ -19,7 +18,6 @@ pub enum Icon {
     Deny,
     Mark,
     Verify,
-    AllowRun,
 }
 
 pub fn glass_button_ui(
@@ -54,7 +52,6 @@ pub fn glass_button_ui(
         Icon::Deny => RED,
         Icon::Mark => AMBER,
         Icon::Verify => STEEL,
-        Icon::AllowRun => PURPLE,
     });
     match icon {
         Icon::Confirm => {
@@ -94,16 +91,6 @@ pub fn glass_button_ui(
             let d = egui::pos2(c.x + r * 0.5, c.y - r * 0.35);
             ui.painter().line_segment([a, b], stroke);
             ui.painter().line_segment([b, d], stroke);
-        }
-        Icon::AllowRun => {
-            let w = 7.0;
-            let h = 9.0;
-            let a = egui::pos2(c.x - w * 0.6, c.y - h);
-            let b = egui::pos2(c.x - w * 0.6, c.y + h);
-            let d = egui::pos2(c.x + w * 0.9, c.y);
-            ui.painter().line_segment([a, b], stroke);
-            ui.painter().line_segment([b, d], stroke);
-            ui.painter().line_segment([d, a], stroke);
         }
     }
 
@@ -218,6 +205,57 @@ pub fn glass_step_block_ui(
             accent.unwrap_or(STEEL),
         );
     }
+
+    response.on_hover_text(tip).clicked()
+}
+
+/// A wide glass button used in place of the green Confirm when the shown
+/// step is a special request (cargo, run, chmod). Two lines of text; the
+/// caller sets the accent border colour.
+pub fn wide_allow_button_ui(
+    ui: &mut egui::Ui,
+    center: egui::Pos2,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    small: &str,
+    big: &str,
+    accent: egui::Color32,
+    tip: &str,
+) -> bool {
+    let width = 168.0;
+    let height = 44.0;
+    let rect = egui::Rect::from_center_size(center, egui::vec2(width, height));
+    let id = egui::Id::new("glass_wide_allow").with(id_salt);
+    let response = ui.interact(rect, id, egui::Sense::click());
+
+    let (fill, border) = if response.hovered() {
+        (FILL_HOVER, accent)
+    } else {
+        (FILL, accent)
+    };
+    ui.painter().rect(
+        rect,
+        CORNER,
+        fill,
+        egui::Stroke::new(3.0, border),
+        egui::StrokeKind::Inside,
+    );
+
+    let small_font = egui::FontId::monospace(9.0);
+    let big_font = egui::FontId::monospace(15.0);
+    ui.painter().text(
+        egui::pos2(rect.center().x, rect.center().y - 10.0),
+        egui::Align2::CENTER_CENTER,
+        small,
+        small_font,
+        accent,
+    );
+    ui.painter().text(
+        egui::pos2(rect.center().x, rect.center().y + 8.0),
+        egui::Align2::CENTER_CENTER,
+        big,
+        big_font,
+        accent,
+    );
 
     response.on_hover_text(tip).clicked()
 }

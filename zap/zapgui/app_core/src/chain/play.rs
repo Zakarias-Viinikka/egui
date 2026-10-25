@@ -63,12 +63,7 @@ impl Chain {
     /// A run step joins the rm/mv rule because the run is a side effect
     /// that has to be confirmed.
     pub fn needs_review(&self) -> bool {
-        self.steps.iter().any(|s| {
-            matches!(
-                s.step.verb,
-                Verb::Remove | Verb::Move | Verb::RemoveDir | Verb::Cargo | Verb::Run
-            )
-        })
+        self.steps.iter().any(|s| s.step.verb.always_reviewed())
     }
 
     /// Send the outcome to the waiting handler, if one is there.
@@ -78,6 +73,31 @@ impl Chain {
                 let _ = tx.send(outcome);
             }
         }
+    }
+
+    /// The path and after text of the last content-writing step per file,
+    /// honoring `wanted`. A missing entry in `wanted` counts as true, so
+    /// an empty slice means every step. Steps that write no content
+    /// (zaprm, zapmv, mkdir, rmdir, cargo, run) never appear.
+    pub fn final_writes(&self, wanted: &[bool]) -> Vec<(PathBuf, String)> {
+        let mut out: Vec<(PathBuf, String)> = Vec::new();
+        for (i, step) in self.steps.iter().enumerate() {
+            let w = wanted.get(i).copied().unwrap_or(true);
+            if !w || step.no_op {
+                continue;
+            }
+            match step.step.verb {
+                Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
+                    if let Some(slot) = out.iter_mut().find(|(p, _)| *p == step.path) {
+                        slot.1 = step.after.clone();
+                    } else {
+                        out.push((step.path.clone(), step.after.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 }
 
@@ -206,6 +226,7 @@ fn verb_name(v: Verb) -> &'static str {
         Verb::RemoveDir => "rmdir",
         Verb::Cargo => "cargo",
         Verb::Run => "run",
+        Verb::Chmod => "chmod",
     }
 }
 
@@ -366,6 +387,29 @@ fn play_one(
                 no_op,
             });
         }
+        Verb::Chmod => {
+            load_once(&path, files, snapshots, order)?;
+            let content = files.get(&path).cloned().flatten();
+            let Some(content) = content else {
+                return Err(format!("{} does not exist", path.display()));
+            };
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.is_dir() {
+                    return Err(format!("{}: is a directory", path.display()));
+                }
+            }
+            let rows = process(&pair_lines_full(&content, &content));
+            applied.push(AppliedStep {
+                step,
+                path,
+                dest: None,
+                before: Some(content.clone()),
+                after: content,
+                rows,
+                move_spans: Vec::new(),
+                no_op: false,
+            });
+        }
         Verb::Cargo | Verb::Run => {
             let args = step.args.join(" ");
             let folder_raw = step.cwd.clone().unwrap_or_else(|| step.path.clone());
@@ -474,7 +518,13 @@ pub fn apply_step(
             }
             Ok((out, false))
         }
-        Verb::Remove | Verb::Move | Verb::Mkdir | Verb::RemoveDir | Verb::Cargo | Verb::Run => {
+        Verb::Remove
+        | Verb::Move
+        | Verb::Mkdir
+        | Verb::RemoveDir
+        | Verb::Chmod
+        | Verb::Cargo
+        | Verb::Run => {
             Err("apply_step: this verb is handled in play_forward".to_string())
         }
     }
@@ -907,6 +957,167 @@ mod tests {
         let s = text_step(Verb::Append, &file, "", "");
         let chain = play_forward(vec![s], &dir).expect("play");
         assert!(chain.steps[0].no_op);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_writes_keeps_the_last_step_per_path() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &file, "hello", "world"),
+            text_step(Verb::Replace, &file, "world", "again"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        let writes = chain.final_writes(&[]);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, file);
+        assert_eq!(writes[0].1, "again\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_writes_drops_no_op_steps() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &file, "hello", "hello"),
+            text_step(Verb::Replace, &file, "hello", "world"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        let writes = chain.final_writes(&[]);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1, "world\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_writes_drops_zaprm_zapmv_mkdir_rmdir() {
+        let dir = tmp();
+        let rm_file = dir.join("rm.txt");
+        let src = dir.join("src.txt");
+        let dst = dir.join("dst.txt");
+        let sub = dir.join("sub");
+        fs::write(&rm_file, "x\n").expect("write");
+        fs::write(&src, "y\n").expect("write");
+        let steps = vec![
+            rm_step(&rm_file),
+            mv_step(&src, &dst),
+            mkdir_step(&sub),
+            rmdir_step(&sub),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        let writes = chain.final_writes(&[]);
+        assert!(writes.is_empty(), "got: {writes:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_writes_falls_back_to_previous_wanted_step() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &file, "hello", "world"),
+            text_step(Verb::Replace, &file, "world", "again"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        let writes = chain.final_writes(&[true, false]);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1, "world\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn final_writes_empty_slice_means_every_step() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &file, "hello", "world"),
+            text_step(Verb::Replace, &file, "world", "again"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        let writes = chain.final_writes(&[]);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].1, "again\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn chmod_step(path: &Path) -> Step {
+        Step {
+            verb: Verb::Chmod,
+            path: path.display().to_string(),
+            dest: None,
+            old_text: String::new(),
+            new_text: String::new(),
+            count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn chmod_on_existing_file_keeps_before_equal_after() {
+        let dir = tmp();
+        let file = dir.join("a.sh");
+        fs::write(&file, "hello\n").expect("write");
+        let chain = play_forward(vec![chmod_step(&file)], &dir).expect("play");
+        assert_eq!(chain.steps.len(), 1);
+        assert_eq!(chain.steps[0].before.as_deref(), Some("hello\n"));
+        assert_eq!(chain.steps[0].after, "hello\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chmod_on_missing_file_fails() {
+        let dir = tmp();
+        let file = dir.join("a.sh");
+        let err = match play_forward(vec![chmod_step(&file)], &dir) {
+            Ok(_) => panic!("should fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("does not exist"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chmod_on_directory_fails() {
+        let dir = tmp();
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).expect("mkdir");
+        let err = match play_forward(vec![chmod_step(&sub)], &dir) {
+            Ok(_) => panic!("should fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("is a directory"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chmod_after_create_in_same_chain_succeeds() {
+        let dir = tmp();
+        let file = dir.join("a.sh");
+        let steps = vec![
+            text_step(Verb::Create, &file, "", "#!/bin/sh\necho hi\n"),
+            chmod_step(&file),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        assert_eq!(chain.steps.len(), 2);
+        assert_eq!(chain.steps[1].after, "#!/bin/sh\necho hi\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chmod_only_chain_needs_review() {
+        let dir = tmp();
+        let file = dir.join("a.sh");
+        fs::write(&file, "x\n").expect("write");
+        let chain = play_forward(vec![chmod_step(&file)], &dir).expect("play");
+        assert!(chain.needs_review());
         let _ = fs::remove_dir_all(&dir);
     }
 }

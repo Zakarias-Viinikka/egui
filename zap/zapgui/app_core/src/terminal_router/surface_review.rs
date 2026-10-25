@@ -14,6 +14,7 @@ pub enum BannerKind {
     Execute,
     Delete,
     Rename,
+    Exec,
 }
 
 pub struct SurfaceReviewFile {

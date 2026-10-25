@@ -7,6 +7,11 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
         Some(s) => resolve(s, &session.cwd),
     };
 
+    let hidden = zap_wire::hidden::HiddenSet::load();
+    if let Some(msg) = hidden.refusal(&target) {
+        return Outcome::Print(vec![Line::error(msg)]);
+    }
+
     let entries = match std::fs::read_dir(&target) {
         Ok(e) => e,
         Err(e) => {
@@ -21,6 +26,10 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
     let mut lines: Vec<Line> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+        let full = target.join(&name);
+        if hidden.is_hidden(&full) {
+            continue;
+        }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         if is_dir {
             lines.push(Line::folder(format!("{name}/")));

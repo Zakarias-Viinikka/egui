@@ -77,6 +77,32 @@ compiles. Don't remove them.
 - Input line is an egui TextEdit: Ctrl+Z, selection, click-to-place.
   Ctrl+C clears input; Ctrl+Shift+C is unreliable (see README).
 - retry [<step>...] rebuilds the last review's unapplied steps.
+- Step 6: `file_trust` key is the content the chain writes, not the
+  on-disk hash. `is_approved(path, write_text)` applies the drift rule
+  first (disk no longer hashes to stored -> entry deleted, false), then
+  matches the stored hash against the hash of the write. `Chain::
+  final_writes(wanted)` returns path + after text of the last
+  content-writing step per file; both sides of the approval use it
+  (`handle_chain`, `handle_overwrite`, `refresh_trust_after_chain_
+  confirm`). Every store function has an `_in` variant taking a folder,
+  so tests use a temp dir.
+- Step 7: `chmod +x <path>...` verb. `Verb::is_special` (cargo, run,
+  chmod) and `Verb::always_reviewed` (those plus zaprm, zapmv, rmdir).
+  The 168-point wide ALLOW CARGO/RUN/EXEC button replaces the green
+  Confirm on special steps; `confirm_gate` is a pure function taking
+  wanted/visited/verified/allowed. Special steps draw a thick frame in
+  the banner colour. chmod gets the `EXEC REQUEST` banner, orange
+  accent, `cx` glyph. `exec_mode_for` maps 644->755, 640->750,
+  600->700, 400->500, 000->100; writer pushes `Undo::RestoreMode`.
+  `refresh_trust_after_chain_confirm` builds its surface-refresh list
+  from `final_writes(wanted)`, not snapshots, so a chmod cannot re-
+  trust an out-of-band edit to a `build.rs`.
+- Step 8: single-file whitelisting (a whitelist line pointing at a
+  regular file matches only that file; a folder or non-existent path
+  matches by components). Hidden paths in ~/.config/zap/hidden.txt,
+  matcher in zap_wire/src/hidden.rs. Every read, run and chain refuses
+  a hidden path with "deliberately hidden by the user: <path>". The
+  menu has a Hidden files section under whitelist.
 
 ## What's not built
 

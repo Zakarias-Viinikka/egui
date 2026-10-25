@@ -19,6 +19,7 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
     let mut copy = String::new();
     let mut copied: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
 
     for (i, raw) in paths.iter().enumerate() {
         let resolved = resolve(raw, &session.cwd);
@@ -26,6 +27,13 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
             copy.push('\n');
         }
         copy.push_str(&format!("=== {} ===\n", resolved.display()));
+
+        if let Some(msg) = zap_wire::hidden::HiddenSet::check(&resolved) {
+            copy.push_str(&msg);
+            copy.push('\n');
+            refused.push(msg);
+            continue;
+        }
 
         match std::fs::read_to_string(&resolved) {
             Ok(content) => {
@@ -50,19 +58,27 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
         }
     }
 
-    let summary = if failed.is_empty() {
+    let summary = if failed.is_empty() && refused.is_empty() {
         format!("copied {} to clipboard", copied.join(", "))
     } else if copied.is_empty() {
-        format!("failed: {} (nothing copied)", failed.join(", "))
+        format!(
+            "nothing copied (refused: {}, failed: {})",
+            refused.len(),
+            failed.len()
+        )
     } else {
         format!(
-            "copied {} to clipboard (failed: {})",
+            "copied {} to clipboard (refused: {}, failed: {})",
             copied.join(", "),
-            failed.join(", ")
+            refused.len(),
+            failed.len()
         )
     };
 
     let mut lines: Vec<Line> = Vec::new();
+    for msg in &refused {
+        lines.push(Line::error(msg.clone()));
+    }
     for raw in &failed {
         let resolved = resolve(raw, &session.cwd);
         lines.push(Line::error(format!(

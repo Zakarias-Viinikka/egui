@@ -106,6 +106,20 @@ pub fn most_recent() -> Option<PathBuf> {
     records.last().map(|(p, _)| p.clone())
 }
 
+/// The most recent record whose path passes `filter`. Used by `last` with
+/// no argument to skip hidden records.
+pub fn most_recent_with<F>(mut filter: F) -> Option<PathBuf>
+where
+    F: FnMut(&Path) -> bool,
+{
+    let records = RECORDS.lock().ok()?;
+    records
+        .iter()
+        .rev()
+        .find(|(p, _)| filter(p))
+        .map(|(p, _)| p.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,10 @@ pub fn run(args: &[&str], session: &mut Session) -> Outcome {
         Some(s) => resolve(s, &session.cwd),
     };
 
+    if let Some(msg) = zap_wire::hidden::HiddenSet::check(&target) {
+        return Outcome::Print(vec![Line::error(msg)]);
+    }
+
     match std::fs::canonicalize(&target) {
         Ok(p) if p.is_dir() => {
             session.cwd = p;

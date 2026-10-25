@@ -18,6 +18,10 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
     let multi = files.len() > 1;
     for (i, raw) in files.iter().enumerate() {
         let path = resolve(raw, &session.cwd);
+        if let Some(msg) = zap_wire::hidden::HiddenSet::check(&path) {
+            out.push(Line::error(msg));
+            continue;
+        }
         if multi {
             if i > 0 {
                 out.push(Line::peek(""));

@@ -11,6 +11,7 @@ enum Undo {
     RemoveDir { path: PathBuf },
     CreateDir { path: PathBuf },
     RenameBack { from: PathBuf, to: PathBuf },
+    RestoreMode { path: PathBuf, mode: u32 },
 }
 
 pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
@@ -82,6 +83,7 @@ fn verb_name(v: Verb) -> &'static str {
         Verb::RemoveDir => "rmdir",
         Verb::Cargo => "cargo",
         Verb::Run => "run",
+        Verb::Chmod => "chmod",
     }
 }
 
@@ -158,8 +160,42 @@ fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), Stri
         Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
             write_text(&applied.path, &applied.after, &applied.before, undos)
         }
+        Verb::Chmod => {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&applied.path)
+                .map_err(|e| format!("metadata {}: {}", applied.path.display(), e))?;
+            if meta.is_dir() {
+                return Err(format!("{}: is a directory", applied.path.display()));
+            }
+            let old_mode = meta.permissions().mode() & 0o777;
+            let new_mode = exec_mode_for(old_mode);
+            std::fs::set_permissions(
+                &applied.path,
+                std::fs::Permissions::from_mode(new_mode),
+            )
+            .map_err(|e| format!("chmod {}: {}", applied.path.display(), e))?;
+            undos.push(Undo::RestoreMode {
+                path: applied.path.clone(),
+                mode: old_mode,
+            });
+            Ok(())
+        }
         Verb::Cargo | Verb::Run => Ok(()),
     }
+}
+
+/// Give the owner the execute bit. Group and other get it only where
+/// they already have the read bit, so a read-only file stays read-only
+/// for everyone else.
+fn exec_mode_for(mode: u32) -> u32 {
+    let mut out = mode | 0o100;
+    if mode & 0o040 != 0 {
+        out |= 0o010;
+    }
+    if mode & 0o004 != 0 {
+        out |= 0o001;
+    }
+    out
 }
 
 fn write_text(
@@ -217,6 +253,13 @@ fn undo_all(undos: &mut Vec<Undo>) {
             Undo::RenameBack { from, to } => {
                 let _ = std::fs::rename(&from, &to);
             }
+            Undo::RestoreMode { path, mode } => {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &path,
+                    std::fs::Permissions::from_mode(mode),
+                );
+            }
         }
     }
 }
@@ -269,7 +312,7 @@ fn record_last_change(applied: &AppliedStep) {
                 None,
             );
         }
-        Verb::Mkdir | Verb::RemoveDir | Verb::Cargo | Verb::Run => {}
+        Verb::Mkdir | Verb::RemoveDir | Verb::Cargo | Verb::Run | Verb::Chmod => {}
     }
 }
 
@@ -509,6 +552,66 @@ mod tests {
         let chain = play_forward(steps, &dir).expect("play");
         apply(&chain, &[true, true]).expect("apply");
         assert_eq!(fs::read_to_string(&file).expect("read"), "world\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn chmod_step(path: &Path) -> Step {
+        Step {
+            verb: Verb::Chmod,
+            path: path.display().to_string(),
+            dest: None,
+            old_text: String::new(),
+            new_text: String::new(),
+            count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    #[test]
+    fn exec_mode_maps_the_documented_examples() {
+        assert_eq!(exec_mode_for(0o644), 0o755);
+        assert_eq!(exec_mode_for(0o640), 0o750);
+        assert_eq!(exec_mode_for(0o600), 0o700);
+        assert_eq!(exec_mode_for(0o400), 0o500);
+        assert_eq!(exec_mode_for(0o000), 0o100);
+    }
+
+    #[test]
+    fn chmod_sets_executable_bit_on_a_real_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp();
+        let file = dir.join("a.sh");
+        fs::write(&file, "#!/bin/sh\n").expect("write");
+        fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let chain = play_forward(vec![chmod_step(&file)], &dir).expect("play");
+        apply(&chain, &[true]).expect("apply");
+        let meta = fs::metadata(&file).expect("meta");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chmod_undoes_when_a_later_step_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp();
+        let file = dir.join("a.sh");
+        let sub = dir.join("sub");
+        fs::write(&file, "#!/bin/sh\n").expect("write");
+        fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        fs::create_dir_all(&sub).expect("mkdir");
+        // rmdir a folder that gains a file between play and apply.
+        let chain = play_forward(
+            vec![chmod_step(&file), rmdir_step(&sub)],
+            &dir,
+        )
+        .expect("play");
+        fs::write(sub.join("x.txt"), "x\n").expect("write");
+        let err = apply(&chain, &[true, true]).expect_err("should fail");
+        assert!(err.contains("not empty"), "got: {err}");
+        let meta = fs::metadata(&file).expect("meta");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o644);
         let _ = fs::remove_dir_all(&dir);
     }
 }

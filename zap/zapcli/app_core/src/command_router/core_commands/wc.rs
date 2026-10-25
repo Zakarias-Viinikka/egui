@@ -43,6 +43,9 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
     let mut total = (0usize, 0usize, 0usize);
     for raw in &files {
         let path = resolve(raw, &session.cwd);
+        if let Some(msg) = zap_wire::hidden::HiddenSet::check(&path) {
+            return Outcome::Print(vec![Line::error(msg)]);
+        }
         match wc_one(&path) {
             Ok((l, w, c)) => {
                 total.0 += l;

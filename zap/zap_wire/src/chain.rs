@@ -9,6 +9,7 @@
 
 use crate::argv;
 use crate::cargo_gate;
+use crate::hidden::HiddenSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verb {
@@ -22,6 +23,7 @@ pub enum Verb {
     RemoveDir,
     Cargo,
     Run,
+    Chmod,
 }
 
 impl Verb {
@@ -37,11 +39,32 @@ impl Verb {
             Verb::RemoveDir => "rmdir",
             Verb::Cargo => "cargo",
             Verb::Run => "run",
+            Verb::Chmod => "chmod",
         }
     }
 
     pub fn is_run(self) -> bool {
         matches!(self, Verb::Cargo | Verb::Run)
+    }
+
+    /// A step whose verb does more than write text: it runs a command,
+    /// launches a file, or changes a mode. The review window gates these
+    /// on Verify and Allow before Confirm will work.
+    pub fn is_special(self) -> bool {
+        matches!(self, Verb::Cargo | Verb::Run | Verb::Chmod)
+    }
+
+    /// A step that always goes to review, even inside a whitelisted folder.
+    pub fn always_reviewed(self) -> bool {
+        matches!(
+            self,
+            Verb::Remove
+                | Verb::Move
+                | Verb::RemoveDir
+                | Verb::Chmod
+                | Verb::Cargo
+                | Verb::Run
+        )
     }
 }
 
@@ -81,7 +104,32 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Inputs the chain parser needs that are not part of the chain text.
+/// Currently the hidden set. Step 10 adds the extension allowlist here.
+pub struct ParseConfig {
+    pub hidden: HiddenSet,
+}
+
+impl ParseConfig {
+    /// No hidden paths. Tests use this so they never read the user's files.
+    pub fn empty() -> Self {
+        Self { hidden: HiddenSet::empty() }
+    }
+
+    /// The real config: load hidden.txt from the config folder.
+    pub fn load() -> Self {
+        Self { hidden: HiddenSet::load() }
+    }
+}
+
+/// Parse with the real config. Every caller goes through this, so nothing
+/// can skip the hidden-path rule.
 pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
+    let config = ParseConfig::load();
+    parse_with(input, &config)
+}
+
+pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseError> {
     let lines: Vec<&str> = input.lines().collect();
     let mut steps: Vec<Step> = Vec::new();
     let mut i = 0;
@@ -118,6 +166,9 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
                     ),
                 });
             }
+            if let Some(msg) = config.hidden.refusal(std::path::Path::new(folder)) {
+                return Err(ParseError { line: header_no, message: msg });
+            }
             pending_cwd = Some((folder.to_string(), header_no));
             i += 1;
             continue;
@@ -134,14 +185,14 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
         }
 
         match verb {
-            Verb::Remove | Verb::Move | Verb::Mkdir | Verb::RemoveDir => {
+            Verb::Remove | Verb::Move | Verb::Mkdir | Verb::RemoveDir | Verb::Chmod => {
                 if let Some((_, cd_line)) = &pending_cwd {
                     return Err(ParseError {
                         line: *cd_line,
                         message: "cd must be followed by cargo or run".to_string(),
                     });
                 }
-                let new_steps = parse_single_line(verb, rest, header_no)?;
+                let new_steps = parse_single_line(verb, rest, header_no, config)?;
                 steps.extend(new_steps);
             }
             Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
@@ -191,7 +242,7 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
                     (String::new(), new_text, after_new)
                 };
 
-                let (path, count, no_newline) = parse_path_and_flags(rest, header_no, verb)?;
+                let (path, count, no_newline) = parse_path_and_flags(rest, header_no, verb, config)?;
 
                 let new_text = if verb == Verb::Create && !no_newline {
                     let mut t = new_text;
@@ -248,6 +299,9 @@ pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
                                 args[0]
                             ),
                         });
+                    }
+                    if let Some(msg) = config.hidden.refusal(std::path::Path::new(&args[0])) {
+                        return Err(ParseError { line: header_no, message: msg });
                     }
                 }
                 steps.push(Step {
@@ -314,6 +368,7 @@ fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> 
         }
         "mkdir" => Verb::Mkdir,
         "rmdir" => Verb::RemoveDir,
+        "chmod" => Verb::Chmod,
         "cargo" => Verb::Cargo,
         "run" => Verb::Run,
         _ => {
@@ -332,7 +387,12 @@ fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> 
     Ok((verb, rest))
 }
 
-fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, ParseError> {
+fn parse_single_line(
+    verb: Verb,
+    rest: &str,
+    line: usize,
+    config: &ParseConfig,
+) -> Result<Vec<Step>, ParseError> {
     let args = argv::split(rest.trim()).map_err(|e| ParseError {
         line,
         message: format!("{}: {}", verb.name(), e),
@@ -354,7 +414,7 @@ fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, P
                         message: format!("rm: unsupported option {a}"),
                     });
                 }
-                require_absolute(a, line, verb)?;
+                require_absolute(a, line, verb, config)?;
                 steps.push(Step {
                     verb: Verb::Remove,
                     path: a.clone(),
@@ -382,8 +442,8 @@ fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, P
                     message: "mv: flags are not supported".to_string(),
                 });
             }
-            require_absolute(&args[0], line, verb)?;
-            require_absolute(&args[1], line, verb)?;
+            require_absolute(&args[0], line, verb, config)?;
+            require_absolute(&args[1], line, verb, config)?;
             Ok(vec![Step {
                 verb: Verb::Move,
                 path: args[0].clone(),
@@ -408,7 +468,7 @@ fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, P
                         message: format!("mkdir: unsupported option {a}"),
                     });
                 }
-                require_absolute(a, line, verb)?;
+                require_absolute(a, line, verb, config)?;
                 steps.push(Step {
                     verb: Verb::Mkdir,
                     path: a.clone(),
@@ -438,7 +498,7 @@ fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, P
                         message: format!("rmdir: unsupported option {a}"),
                     });
                 }
-                require_absolute(a, line, verb)?;
+                require_absolute(a, line, verb, config)?;
                 steps.push(Step {
                     verb: Verb::RemoveDir,
                     path: a.clone(),
@@ -459,11 +519,46 @@ fn parse_single_line(verb: Verb, rest: &str, line: usize) -> Result<Vec<Step>, P
             }
             Ok(steps)
         }
+        Verb::Chmod => {
+            if args[0] != "+x" {
+                return Err(ParseError {
+                    line,
+                    message: format!("chmod: only +x is supported (got {})", args[0]),
+                });
+            }
+            if args.len() < 2 {
+                return Err(ParseError {
+                    line,
+                    message: "chmod: missing path".to_string(),
+                });
+            }
+            let mut steps = Vec::new();
+            for a in &args[1..] {
+                require_absolute(a, line, Verb::Chmod, config)?;
+                steps.push(Step {
+                    verb: Verb::Chmod,
+                    path: a.clone(),
+                    dest: None,
+                    old_text: String::new(),
+                    new_text: String::new(),
+                    count: None,
+                    no_newline: false,
+                    args: Vec::new(),
+                    cwd: None,
+                });
+            }
+            Ok(steps)
+        }
         _ => unreachable!(),
     }
 }
 
-fn require_absolute(path: &str, line: usize, verb: Verb) -> Result<(), ParseError> {
+fn require_absolute(
+    path: &str,
+    line: usize,
+    verb: Verb,
+    config: &ParseConfig,
+) -> Result<(), ParseError> {
     if !is_absolute_or_home(path) {
         return Err(ParseError {
             line,
@@ -473,6 +568,9 @@ fn require_absolute(path: &str, line: usize, verb: Verb) -> Result<(), ParseErro
                 path
             ),
         });
+    }
+    if let Some(msg) = config.hidden.refusal(std::path::Path::new(path)) {
+        return Err(ParseError { line, message: msg });
     }
     Ok(())
 }
@@ -485,6 +583,7 @@ fn parse_path_and_flags(
     rest: &str,
     line: usize,
     verb: Verb,
+    config: &ParseConfig,
 ) -> Result<(String, Option<usize>, bool), ParseError> {
     let mut rest = rest.trim().to_string();
     if rest.is_empty() {
@@ -535,6 +634,9 @@ fn parse_path_and_flags(
                 rest
             ),
         });
+    }
+    if let Some(msg) = config.hidden.refusal(std::path::Path::new(&rest)) {
+        return Err(ParseError { line, message: msg });
     }
 
     Ok((rest, count, no_newline))
@@ -600,6 +702,23 @@ fn unescape_marker_line(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shadow the crate's `parse` so tests never read the user's files.
+    fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
+        parse_with(input, &ParseConfig::empty())
+    }
+
+    fn hidden_config(entries: &[&str]) -> ParseConfig {
+        ParseConfig {
+            hidden: HiddenSet::from_lines(
+                &entries.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            ),
+        }
+    }
+
+    fn parse_hidden(input: &str, entries: &[&str]) -> Result<Vec<Step>, ParseError> {
+        parse_with(input, &hidden_config(entries))
+    }
 
     #[test]
     fn parses_a_create() {
@@ -828,5 +947,93 @@ mod tests {
     fn cd_must_be_absolute() {
         let err = parse("cd tmp\ncargo test\n").expect_err("should fail");
         assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn hidden_rejects_create_replace_overwrite_append() {
+        let cases = [
+            "create /srv/secret/a.rs\n@new\nx\n@end\n",
+            "replace /srv/secret/a.rs\n@old\nx\n@new\ny\n@end\n",
+            "overwrite /srv/secret/a.rs\n@new\nx\n@end\n",
+            "append /srv/secret/a.rs\n@new\nx\n@end\n",
+        ];
+        for c in cases {
+            let err = parse_hidden(c, &["/srv/secret"]).expect_err("should fail");
+            assert!(
+                err.message.starts_with("deliberately hidden by the user: "),
+                "got: {}",
+                err.message
+            );
+            assert_eq!(err.line, 1);
+        }
+    }
+
+    #[test]
+    fn hidden_rejects_zaprm_zapmv_mkdir_rmdir_chmod() {
+        let cases = [
+            "zaprm /srv/secret/a.rs\n",
+            "zapmv /srv/secret/a.rs /tmp/b.rs\n",
+            "zapmv /tmp/a.rs /srv/secret/b.rs\n",
+            "mkdir /srv/secret/sub\n",
+            "rmdir /srv/secret\n",
+            "chmod +x /srv/secret/a.sh\n",
+        ];
+        for c in cases {
+            let err = parse_hidden(c, &["/srv/secret"]).expect_err("should fail");
+            assert!(
+                err.message.starts_with("deliberately hidden by the user: "),
+                "got: {} for {}",
+                err.message,
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_rejects_zaprm_with_hidden_path_second() {
+        let err = parse_hidden("zaprm /tmp/a.rs /srv/secret/b.rs\n", &["/srv/secret"])
+            .expect_err("should fail");
+        assert!(
+            err.message.starts_with("deliberately hidden by the user: "),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn hidden_rejects_cd_into_hidden_folder() {
+        let err = parse_hidden("cd /srv/secret\ncargo test\n", &["/srv/secret"])
+            .expect_err("should fail");
+        assert!(
+            err.message.starts_with("deliberately hidden by the user: "),
+            "got: {}",
+            err.message
+        );
+        assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn hidden_rejects_run_on_hidden_file() {
+        let err = parse_hidden("cd /tmp\nrun /srv/secret/x.sh\n", &["/srv/secret"])
+            .expect_err("should fail");
+        assert!(
+            err.message.starts_with("deliberately hidden by the user: "),
+            "got: {}",
+            err.message
+        );
+        assert_eq!(err.line, 2);
+    }
+
+    #[test]
+    fn empty_config_keeps_every_form_parsing() {
+        let cases = [
+            "create /srv/secret/a.rs\n@new\nx\n@end\n",
+            "zaprm /srv/secret/a.rs\n",
+            "mkdir /srv/secret/sub\n",
+            "cd /srv/secret\ncargo test\n",
+        ];
+        for c in cases {
+            parse_with(c, &ParseConfig::empty()).expect("should parse");
+        }
     }
 }

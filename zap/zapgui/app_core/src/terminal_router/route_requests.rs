@@ -451,28 +451,21 @@ fn handle_chain(rest: &str) -> String {
     let has_remove_or_move = chain
         .steps
         .iter()
-        .any(|s| matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir));
+        .any(|s| matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir | Verb::Chmod));
     let folders = crate::chain::whitelist::load();
     // .sh and .toml files always need review the first time, even inside a
-    // whitelisted folder. Once approved at a given content, the approval
-    // sticks until the file changes.
-    let sensitive_paths: Vec<std::path::PathBuf> = chain
-        .steps
-        .iter()
-        .filter(|s| {
-            !matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir)
-        })
-        .map(|s| s.path.clone())
-        .filter(|p| crate::terminal_router::file_trust::is_sensitive(p))
-        .collect();
-    let sensitive_ok = crate::terminal_router::file_trust::all_approved(&sensitive_paths);
+    // whitelisted folder. The approval key is the content the chain would
+    // leave in the file: if that exact write was approved before, skip the
+    // review. A changed write always goes to review.
+    let writes = chain.final_writes(&[]);
+    let sensitive_ok = crate::terminal_router::file_trust::all_approved(&writes);
     let all_whitelisted = !has_remove_or_move
         && sensitive_ok
         && !folders.is_empty()
         && chain
             .snapshots
             .iter()
-            .all(|s| crate::chain::whitelist::is_inside(&s.path, &folders));
+            .all(|s| crate::chain::whitelist::is_whitelisted(&s.path, &folders));
     if all_whitelisted {
         let wanted = vec![true; chain.steps.len()];
         return match crate::chain::writer::apply(&chain, &wanted) {
@@ -558,13 +551,16 @@ fn handle_overwrite(rest: &str) -> String {
     };
 
     // The bare overwrite form is a one-step chain, so it uses the same
-    // whitelist path a chain does.
+    // whitelist and .sh/.toml approval path a chain does.
+    let writes = chain.final_writes(&[]);
+    let sensitive_ok = crate::terminal_router::file_trust::all_approved(&writes);
     let folders = crate::chain::whitelist::load();
-    let all_whitelisted = !folders.is_empty()
+    let all_whitelisted = sensitive_ok
+        && !folders.is_empty()
         && chain
             .snapshots
             .iter()
-            .all(|s| crate::chain::whitelist::is_inside(&s.path, &folders));
+            .all(|s| crate::chain::whitelist::is_whitelisted(&s.path, &folders));
     if all_whitelisted {
         let wanted = vec![true; chain.steps.len()];
         return match crate::chain::writer::apply(&chain, &wanted) {
@@ -625,6 +621,34 @@ fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
     let Some(rec) = crate::terminal_router::retry::current() else {
         return "zapgui: nothing to retry".to_string();
     };
+    // Steps carried over from the record were parsed before any hidden
+    // entry that might exist now. Refuse one that has become hidden.
+    let hidden = zap_wire::hidden::HiddenSet::load();
+    for (i, step) in rec.steps.iter().enumerate() {
+        for p in std::iter::once(&step.path).chain(step.dest.as_ref()) {
+            if p.is_empty() {
+                continue;
+            }
+            if let Some(msg) = hidden.refusal(std::path::Path::new(p)) {
+                return format!(
+                    "zapgui: step {} can't be retried: {}",
+                    i + 1,
+                    msg
+                );
+            }
+        }
+        if step.verb.is_run() {
+            if let Some(arg) = step.args.first() {
+                if let Some(msg) = hidden.refusal(std::path::Path::new(arg)) {
+                    return format!(
+                        "zapgui: step {} can't be retried: {}",
+                        i + 1,
+                        msg
+                    );
+                }
+            }
+        }
+    }
     let replacements = match body {
         Some(b) if !b.trim().is_empty() => match crate::chain::parse(b) {
             Ok(steps) => Some(steps),
@@ -664,6 +688,9 @@ fn handle_last(path_opt: Option<&str>) -> String {
     let (record, path) = match path_opt {
         Some(p) => {
             let path = std::path::PathBuf::from(p);
+            if let Some(msg) = zap_wire::hidden::HiddenSet::check(&path) {
+                return msg;
+            }
             match last_change::lookup(&path) {
                 Some(r) => (r, path),
                 None => {
@@ -673,7 +700,8 @@ fn handle_last(path_opt: Option<&str>) -> String {
             }
         }
         None => {
-            let Some(path) = last_change::most_recent() else {
+            let hidden = zap_wire::hidden::HiddenSet::load();
+            let Some(path) = last_change::most_recent_with(|p| !hidden.is_hidden(p)) else {
                 return "no recorded change; only changes zap wrote since zapgui started are kept"
                     .to_string();
             };

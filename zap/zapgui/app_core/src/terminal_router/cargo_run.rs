@@ -34,6 +34,13 @@ pub fn run(
 
     let title = format!("cargo {}", args.join(" "));
 
+    if let Some(msg) = zap_wire::hidden::HiddenSet::check(&cwd) {
+        let _ = write_frame(stream, &Frame::stream_open(&title));
+        let _ = write_frame(stream, &Frame::stream_data(&format!("{msg}\n")));
+        let _ = write_frame(stream, &Frame::stream_done("hidden"));
+        return Ok(());
+    }
+
     let Some(root) = surface::project_root(&cwd) else {
         let _ = write_frame(stream, &Frame::stream_open(&title));
         let _ = write_frame(

@@ -12,10 +12,13 @@ Then CHAIN_REVIEW_UI.md, FILE_TRUST.md, RETRY.md as needed.
 
 ## 2. Shared parser
 
-zap_wire/src/chain.rs holds parse, ParseError, Step, Verb. Both zapcli
-and zapgui call it; zapcli first so bad paths never reach the socket,
-zapgui again to enforce the same rules.
+zap_wire/src/chain.rs holds parse, parse_with, ParseConfig, ParseError,
+Step, Verb. `parse` loads the real config (hidden set, later the
+extension allowlist); `parse_with` takes one. Both zapcli and zapgui
+call the shared parser; zapcli first so bad paths never reach the
+socket, zapgui again to enforce the same rules.
 zapgui/app_core/src/chain/{parser,step}.rs are re-exports.
+zap_wire/src/hidden.rs holds the HiddenSet matcher.
 
 ## 3. zapgui
 
@@ -86,6 +89,11 @@ the exact source.
 Don't add heuristic line-colouring to zapcli's UI. Use LineStyle.
 
 Don't add shortcut keys without reading the Ctrl+C section in README.
+
+Don't skip the hidden check. Any verb whose path argument can be the
+one the user cares about must call `config.hidden.refusal(path)` (or
+`zap_wire::hidden::HiddenSet::check` on the zapcli and zapgui sides).
+Hidden always wins over the whitelist.
 
 Don't assume zapcli can reach a shell.
 
