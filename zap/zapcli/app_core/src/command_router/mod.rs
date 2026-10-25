@@ -231,6 +231,8 @@ fn first_word_is_chain_verb(input: &str) -> bool {
             | "mkdir"
             | "rmdir"
             | "chmod"
+            | "rename"
+            | "astgrep"
     ) {
         return false;
     }

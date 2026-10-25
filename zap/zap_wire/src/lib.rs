@@ -14,6 +14,7 @@
 pub mod cargo_gate;
 pub mod chain;
 pub mod config;
+pub mod extensions;
 pub mod hidden;
 pub mod linefold;
 

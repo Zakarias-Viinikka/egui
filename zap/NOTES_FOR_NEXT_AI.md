@@ -103,6 +103,39 @@ compiles. Don't remove them.
   matcher in zap_wire/src/hidden.rs. Every read, run and chain refuses
   a hidden path with "deliberately hidden by the user: <path>". The
   menu has a Hidden files section under whitelist.
+- Step 10: extension allowlist in ~/.config/zap/extensions.txt,
+  matcher in zap_wire/src/extensions.rs. Only create, replace,
+  overwrite and append check. zapgui's handle_overwrite (reached by a
+  client that bypasses zapcli) calls the same check. A broken file
+  fails closed. The menu has an Allowed extensions section under
+  Hidden files, using whitelist::{load_extensions, save_extensions,
+  validate_extension_entry}. `retry N ...` with replacement bodies now
+  resends the whole unapplied payload with step N substituted, so a
+  fix to one step and a full retry can be pasted in one go.
+- Step 11: hints on failed steps (with_hint, failure_hint,
+  replace_hint, describe_closest, whitespace_match, suggest_name,
+  missing_file_hint in play.rs; closest_line, edit_distance, tokenize
+  in similarity.rs). Parse errors collect: ParseFailure wraps a
+  Vec<ParseError>, sorted by line, deduped; Display joins with "; " up
+  to 20 then " (+ N more)". parse and parse_with return
+  Result<Vec<Step>, ParseFailure>; ParseFailure.first() for tests.
+  Verb::from_word holds the word-to-verb match. header_looking,
+  skip_past_end and next_header are the recovery helpers.
+  report::truncate is pub so play.rs uses one truncation helper.
+- Step 12: rename <path> <new-name> verb, dest set at parse time to
+  the sibling path. play_one shares Move's arm and calls
+  play::path_change_rows so the diff shows the path change without
+  inventing content rows. BannerKind::Rename, cyan accent, glyph nm.
+  Edit-title pen: pen_ui in glass_button/ui.rs, small button left of
+  the full-file pill, shown when Verb::has_editable_target is true
+  (create, mkdir, zapmv, rename). Enter commits through
+  replan_with_target and replace_pending_if; the old chain's waiter
+  gets ChainOutcome::Superseded. The new chain carries an overrides
+  list; report::build adds one clause per applied override.
+  refresh_trust_after_chain_confirm treats Rename like Move.
+  Verb::ALL and a table-driven test pin name round-trip, is_special,
+  always_reviewed and has_editable_target. Move's caption
+  duplicate-source bug is fixed.
 
 ## What's not built
 

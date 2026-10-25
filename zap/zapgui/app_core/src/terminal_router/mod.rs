@@ -141,3 +141,20 @@ pub fn clear_pending(chain: &Arc<Chain>) {
         *guard = None;
     }
 }
+
+/// Swap the pending chain, but only when the slot still holds `old`.
+/// Returns true on swap, false when a newer chain displaced it. Used by
+/// the review window's edit-title pen so a swap never wakes the waiter
+/// with "replaced".
+pub fn replace_pending_if(old: &Arc<Chain>, new: Arc<Chain>) -> bool {
+    let mut g = cell().lock().unwrap();
+    let same = g.as_ref().map(|c| Arc::ptr_eq(c, old)).unwrap_or(false);
+    if !same {
+        return false;
+    }
+    *g = Some(new);
+    if let Some(ctx) = CTX.get() {
+        ctx.request_repaint();
+    }
+    true
+}

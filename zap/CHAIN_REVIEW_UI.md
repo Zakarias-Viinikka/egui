@@ -52,9 +52,31 @@ button and the step blocks have tooltips; delay 0.15 s.
 
 ## Mis-click guard
 
-Confirm refuses to write a run or cargo step whose verified flag is
-unset, or a zaprm / zapmv / rmdir step the user hasn't visited. Jumps to
-that step with an error line.
+`confirm_gate` in drawing_requirements.rs refuses to write a cargo,
+run, chmod or rename step whose verified or allowed flag is unset, or
+a zaprm / zapmv / rmdir step the user hasn't visited. Jumps to that
+step with an error line.
+
+## Edit-title pen
+
+A small 22 px pen button sits just left of the full-file pill when
+the shown step's verb has_editable_target (create, mkdir, zapmv,
+rename). Clicking it opens a single-line TextEdit over the first
+caption line, filled with `target_draft` from play.rs (the resolved
+full path, or the bare new name for a rename). While the field is
+open, confirm, mark, verify and deny ignore clicks and the error line
+reads "Enter applies the new name, Esc cancels".
+
+Enter commits through `replan_with_target`, which clones the applied
+steps, sets the edited one's target, remaps later steps whose path,
+dest, run-file or (for a mkdir) cwd sits under the old target, and
+plays the chain forward. The new chain replaces the old one in the
+pending slot via `replace_pending_if`; the old chain's waiter receives
+`ChainOutcome::Superseded`. Visited and verified are cleared for the
+edited step and every remapped step. Escape, a second click on the
+pen, loss of focus without Enter, a step change, a new chain or
+hiding the window cancels. `PILL_RESERVE` grew by the pen's width plus
+a gap.
 
 ## Block column
 
@@ -62,11 +84,16 @@ One block per step on the right, border tinted by verb. Marked amber,
 denied red, selected brighter. Click jumps to that step. Each block
 shows the step's two-letter verb glyph in the accent colour inside it:
 cr create, ed replace / overwrite / append, dl delete, mv move, mk
-mkdir, rd rmdir, cg cargo, rn run, cx chmod. Surface reviews draw no
-glyph.
+mkdir, rd rmdir, cg cargo, rn run, cx chmod, nm rename. Surface
+reviews draw no glyph.
 
 ## State
 
 Per-frame in NecessaryStructForEgui: shown, shown_step, marked,
-visited, verified, full_file, scroll_to_change_pending. All reset on new
-chain. Pending chain itself in terminal_router::PENDING_CHAIN.
+visited, verified, allowed, full_file, scroll_to_change_pending,
+revealed_all, title_edit. All reset on new chain. `review_indices` on
+the Chain is the shown subset; `revealed_all` forces every step after
+a hidden step failed at confirm. `title_edit` is (step_index, draft)
+while the pen field is open. Pending chain itself in
+terminal_router::PENDING_CHAIN; swapped by `replace_pending_if` only
+when the slot still holds the old Arc.

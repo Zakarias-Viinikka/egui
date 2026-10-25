@@ -237,6 +237,73 @@ pub fn weighted_lcs(ta: &[&str], wa: &[usize], tb: &[&str], _wb: &[usize]) -> us
     dp[k][j]
 }
 
+/// Edit distance between two names, counted in characters. The token
+/// similarity above scores a mistyped file name near zero, so file name
+/// suggestions use this instead.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur: Vec<usize> = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            let best = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+            cur.push(best);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// File lines longer than this are never scored by `closest_line`.
+pub const HINT_MAX_LINE_CHARS: usize = 500;
+
+/// The file line that best matches the heaviest line of an old text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClosestLine {
+    /// Index of the anchor line inside the old text.
+    pub old_index: usize,
+    /// Index of the best file line.
+    pub file_index: usize,
+    pub score: f32,
+}
+
+/// Anchor on the old-text line with the most token weight (characters in
+/// its tokens; the first line wins ties), score every file line against it
+/// with `similarity`, and return the best (earliest on ties). None when
+/// the old text has no tokens at all, or the file has no scorable line.
+/// File lines over HINT_MAX_LINE_CHARS characters are skipped. The caller
+/// compares the score with SIMILARITY_THRESHOLD.
+pub fn closest_line(old_lines: &[&str], file_lines: &[&str]) -> Option<ClosestLine> {
+    let mut anchor: Option<(usize, usize)> = None;
+    for (i, l) in old_lines.iter().enumerate() {
+        let w: usize = tokenize(l).iter().map(|t| t.chars().count()).sum();
+        if w > 0 && anchor.map_or(true, |(best, _)| w > best) {
+            anchor = Some((w, i));
+        }
+    }
+    let (_, old_index) = anchor?;
+    let a = old_lines[old_index];
+    let mut best: Option<(usize, f32)> = None;
+    for (i, l) in file_lines.iter().enumerate() {
+        if l.chars().count() > HINT_MAX_LINE_CHARS {
+            continue;
+        }
+        let s = similarity(a, l);
+        if best.map_or(true, |(_, bs)| s > bs) {
+            best = Some((i, s));
+        }
+    }
+    best.map(|(file_index, score)| ClosestLine { old_index, file_index, score })
+}
+
 /// Dice score over the multisets of tokens. Used by move detection as a
 /// cheap pre-check before running the LCS.
 pub fn dice_over_tokens(a: &str, b: &str) -> f32 {
@@ -387,5 +454,48 @@ mod tests {
     #[test]
     fn dice_is_zero_for_disjoint_tokens() {
         assert_eq!(dice_over_tokens("aaa bbb", "ccc ddd"), 0.0);
+    }
+
+    #[test]
+    fn edit_distance_basics() {
+        assert_eq!(edit_distance("same", "same"), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("utlis.rs", "utils.rs"), 2);
+        assert_eq!(edit_distance("\u{e5}b", "ab"), 1);
+    }
+
+    #[test]
+    fn closest_line_ties_go_to_the_earliest() {
+        let c = closest_line(&["let x = 1;"], &["let x = 1;", "let x = 1;"]).expect("hit");
+        assert_eq!(c.file_index, 0);
+        assert_eq!(c.old_index, 0);
+        assert_eq!(c.score, 1.0);
+    }
+
+    #[test]
+    fn closest_line_on_an_empty_file_is_none() {
+        assert!(closest_line(&["let x = 1;"], &[]).is_none());
+    }
+
+    #[test]
+    fn closest_line_with_a_token_less_anchor_is_none() {
+        assert!(closest_line(&["}"], &["}", "fn a() {"]).is_none());
+        assert!(closest_line(&[], &["fn a() {"]).is_none());
+    }
+
+    #[test]
+    fn closest_line_anchors_on_the_heaviest_old_line() {
+        let c = closest_line(&["a", "bbbbbb cccc"], &["a", "bbbbbb cccc"]).expect("hit");
+        assert_eq!(c.old_index, 1);
+        assert_eq!(c.file_index, 1);
+    }
+
+    #[test]
+    fn closest_line_skips_very_long_file_lines() {
+        let long = "bbbbbb cccc ".repeat(100);
+        let c = closest_line(&["bbbbbb cccc"], &[long.as_str(), "bbbbbb cccc"]).expect("hit");
+        assert_eq!(c.file_index, 1);
     }
 }

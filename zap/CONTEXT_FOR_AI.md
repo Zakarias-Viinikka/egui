@@ -13,8 +13,8 @@ Then CHAIN_REVIEW_UI.md, FILE_TRUST.md, RETRY.md as needed.
 ## 2. Shared parser
 
 zap_wire/src/chain.rs holds parse, parse_with, ParseConfig, ParseError,
-Step, Verb. `parse` loads the real config (hidden set, later the
-extension allowlist); `parse_with` takes one. Both zapcli and zapgui
+Step, Verb. `parse` loads the real config (hidden set and extension
+allowlist); `parse_with` takes one. Both zapcli and zapgui
 call the shared parser; zapcli first so bad paths never reach the
 socket, zapgui again to enforce the same rules.
 zapgui/app_core/src/chain/{parser,step}.rs are re-exports.
@@ -99,6 +99,15 @@ Don't assume zapcli can reach a shell.
 
 Don't add a second socket reader in the run-step path - the ChainRun
 handler starts one watcher; two readers steal each other's frames.
+
+The edit-title pen swaps the live chain without waking the waiter.
+`replan_with_target` builds the new Chain; `replace_pending_if` in
+terminal_router/mod.rs swaps it into the pending slot only when the
+slot still holds the old Arc; the old chain's waiter gets
+`ChainOutcome::Superseded(SupersededChain(new))` and the wait loop in
+handle_chain_run reassigns `mine` to the new Arc and keeps waiting. Do
+not use stash_pending_arc for a pen swap: it would make the waiter
+answer "this chain was replaced" and quit.
 
 DiffRow, RowKind and Side are shared by the diff engine, viewer and
 clipboard formatters. DiffRow has `edit: bool` (true on a Change row at

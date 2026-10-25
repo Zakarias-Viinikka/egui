@@ -6,9 +6,14 @@
 //! A chain may end with one run step: a `cd <folder>` line, then a
 //! `cargo <args>` or `run <file> [args]` line. The cd is a directive, not
 //! a step: it sets the working folder for the run step after it.
+//!
+//! The parser collects every problem it can find instead of stopping at
+//! the first. After an error it resumes at a point that cannot produce
+//! derived errors (see `read_block`, `skip_past_end`, `next_header`).
 
 use crate::argv;
 use crate::cargo_gate;
+use crate::extensions::ExtensionAllowlist;
 use crate::hidden::HiddenSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,9 +29,27 @@ pub enum Verb {
     Cargo,
     Run,
     Chmod,
+    Rename,
+    AstGrep,
 }
 
 impl Verb {
+    pub const ALL: [Verb; 13] = [
+        Verb::Create,
+        Verb::Replace,
+        Verb::Overwrite,
+        Verb::Append,
+        Verb::Remove,
+        Verb::Move,
+        Verb::Mkdir,
+        Verb::RemoveDir,
+        Verb::Cargo,
+        Verb::Run,
+        Verb::Chmod,
+        Verb::Rename,
+        Verb::AstGrep,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Verb::Create => "create",
@@ -40,7 +63,30 @@ impl Verb {
             Verb::Cargo => "cargo",
             Verb::Run => "run",
             Verb::Chmod => "chmod",
+            Verb::Rename => "rename",
+            Verb::AstGrep => "astgrep",
         }
+    }
+
+    /// The verb a header word names, if any. `rm` and `mv` are not here:
+    /// they are refused with a "use zaprm / zapmv" message.
+    pub fn from_word(word: &str) -> Option<Verb> {
+        Some(match word {
+            "create" => Verb::Create,
+            "replace" => Verb::Replace,
+            "overwrite" => Verb::Overwrite,
+            "append" => Verb::Append,
+            "zaprm" => Verb::Remove,
+            "zapmv" => Verb::Move,
+            "mkdir" => Verb::Mkdir,
+            "rmdir" => Verb::RemoveDir,
+            "chmod" => Verb::Chmod,
+            "rename" => Verb::Rename,
+            "astgrep" => Verb::AstGrep,
+            "cargo" => Verb::Cargo,
+            "run" => Verb::Run,
+            _ => return None,
+        })
     }
 
     pub fn is_run(self) -> bool {
@@ -51,7 +97,10 @@ impl Verb {
     /// launches a file, or changes a mode. The review window gates these
     /// on Verify and Allow before Confirm will work.
     pub fn is_special(self) -> bool {
-        matches!(self, Verb::Cargo | Verb::Run | Verb::Chmod)
+        matches!(
+            self,
+            Verb::Cargo | Verb::Run | Verb::Chmod | Verb::Rename | Verb::AstGrep
+        )
     }
 
     /// A step that always goes to review, even inside a whitelisted folder.
@@ -64,6 +113,15 @@ impl Verb {
                 | Verb::Chmod
                 | Verb::Cargo
                 | Verb::Run
+                | Verb::Rename
+                | Verb::AstGrep
+        )
+    }
+
+    pub fn has_editable_target(self) -> bool {
+        matches!(
+            self,
+            Verb::Create | Verb::Mkdir | Verb::Move | Verb::Rename
         )
     }
 }
@@ -90,7 +148,38 @@ pub struct Step {
     pub cwd: Option<String>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+impl Step {
+    /// Assign a new target for the edit_title pen. The caller validates
+    /// the text before calling; this only sets what it can.
+    pub fn set_target(&mut self, target: &str) -> Result<(), String> {
+        match self.verb {
+            Verb::Create | Verb::Mkdir => {
+                self.path = target.to_string();
+                Ok(())
+            }
+            Verb::Move => {
+                self.dest = Some(target.to_string());
+                Ok(())
+            }
+            Verb::Rename => {
+                let parent = std::path::Path::new(&self.path)
+                    .parent()
+                    .ok_or_else(|| "rename: no parent folder".to_string())?;
+                let dest = parent.join(target);
+                self.dest = Some(dest.to_string_lossy().into_owned());
+                Ok(())
+            }
+            _ => Err(format!(
+                "{} steps have no editable target",
+                self.verb.name()
+            )),
+        }
+    }
+}
+
+/// One problem found in a chain. Displays as one clause:
+/// `<message> at line <n>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub line: usize,
     pub message: String,
@@ -98,43 +187,136 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
+        write!(f, "{} at line {}", self.message, self.line)
     }
 }
 
 impl std::error::Error for ParseError {}
 
-/// Inputs the chain parser needs that are not part of the chain text.
-/// Currently the hidden set. Step 10 adds the extension allowlist here.
+/// At most this many clauses are printed; the rest are counted.
+const MAX_CLAUSES: usize = 20;
+
+/// Every problem found in one chain: non-empty, sorted by line (stable),
+/// exact duplicates dropped. Displays as one sentence, clauses joined by
+/// "; ", with " (+ N more)" after the twentieth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseFailure {
+    errors: Vec<ParseError>,
+}
+
+impl ParseFailure {
+    /// None when the list is empty, so a ParseFailure is never empty.
+    pub fn from_errors(mut errors: Vec<ParseError>) -> Option<ParseFailure> {
+        errors.sort_by_key(|e| e.line);
+        let mut out: Vec<ParseError> = Vec::new();
+        for e in errors {
+            if !out.contains(&e) {
+                out.push(e);
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(ParseFailure { errors: out })
+        }
+    }
+
+    /// The error on the earliest line.
+    pub fn first(&self) -> &ParseError {
+        &self.errors[0]
+    }
+
+    pub fn errors(&self) -> &[ParseError] {
+        &self.errors
+    }
+}
+
+impl std::fmt::Display for ParseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shown: Vec<String> = self
+            .errors
+            .iter()
+            .take(MAX_CLAUSES)
+            .map(|e| e.to_string())
+            .collect();
+        write!(f, "{}", shown.join("; "))?;
+        if self.errors.len() > MAX_CLAUSES {
+            write!(f, " (+ {} more)", self.errors.len() - MAX_CLAUSES)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ParseFailure {}
+
+/// Inputs the chain parser needs that are not part of the chain text:
+/// the hidden set and the extension allowlist.
 pub struct ParseConfig {
     pub hidden: HiddenSet,
+    pub extensions: ExtensionAllowlist,
 }
 
 impl ParseConfig {
-    /// No hidden paths. Tests use this so they never read the user's files.
+    /// No hidden paths, no allowlist. Tests use this so they never read
+    /// the user's files.
     pub fn empty() -> Self {
-        Self { hidden: HiddenSet::empty() }
+        Self {
+            hidden: HiddenSet::empty(),
+            extensions: ExtensionAllowlist::empty(),
+        }
     }
 
-    /// The real config: load hidden.txt from the config folder.
+    /// The real config: read hidden.txt and extensions.txt from the
+    /// config folder.
     pub fn load() -> Self {
-        Self { hidden: HiddenSet::load() }
+        Self {
+            hidden: HiddenSet::load(),
+            extensions: ExtensionAllowlist::load(),
+        }
     }
 }
 
 /// Parse with the real config. Every caller goes through this, so nothing
 /// can skip the hidden-path rule.
-pub fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
+pub fn parse(input: &str) -> Result<Vec<Step>, ParseFailure> {
     let config = ParseConfig::load();
     parse_with(input, &config)
 }
 
-pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseError> {
+fn stray_cd(line: usize) -> ParseError {
+    ParseError {
+        line,
+        message: "cd must be followed by cargo or run".to_string(),
+    }
+}
+
+/// After a run step, the first later header or cd is reported once.
+fn note_after_run(
+    errors: &mut Vec<ParseError>,
+    saw_run: bool,
+    complained: &mut bool,
+    line: usize,
+) {
+    if saw_run && !*complained {
+        *complained = true;
+        errors.push(ParseError {
+            line,
+            message: "a run step must be the last step".to_string(),
+        });
+    }
+}
+
+pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseFailure> {
     let lines: Vec<&str> = input.lines().collect();
     let mut steps: Vec<Step> = Vec::new();
+    let mut errors: Vec<ParseError> = Vec::new();
     let mut i = 0;
-    let mut pending_cwd: Option<(String, usize)> = None;
+    // (folder, cd line, already reported). A cd that failed its own checks
+    // is still a cd, so the run step under it does not complain again.
+    let mut pending_cwd: Option<(String, usize, bool)> = None;
     let mut saw_run = false;
+    let mut run_complained = false;
+    let mut astgrep_seen = 0usize;
 
     while i < lines.len() {
         if lines[i].trim_end().is_empty() {
@@ -146,103 +328,112 @@ pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseE
 
         // cd is a directive for a following run step, not a step itself.
         if let Some(folder) = try_cd(line) {
-            if saw_run {
-                return Err(ParseError {
-                    line: header_no,
-                    message: "a run step must be the last step".to_string(),
-                });
+            note_after_run(&mut errors, saw_run, &mut run_complained, header_no);
+            if matches!(&pending_cwd, Some((_, _, false))) {
+                errors.push(stray_cd(header_no));
             }
-            if pending_cwd.is_some() {
-                return Err(ParseError {
-                    line: header_no,
-                    message: "cd must be followed by cargo or run".to_string(),
-                });
-            }
+            let mut reported = false;
             if !is_absolute_or_home(folder) {
-                return Err(ParseError {
+                errors.push(ParseError {
                     line: header_no,
                     message: format!(
                         "cd: folder must be absolute or start with ~/ (got {folder})"
                     ),
                 });
+                reported = true;
+            } else if let Some(msg) = config.hidden.refusal(std::path::Path::new(folder)) {
+                errors.push(ParseError { line: header_no, message: msg });
+                reported = true;
             }
-            if let Some(msg) = config.hidden.refusal(std::path::Path::new(folder)) {
-                return Err(ParseError { line: header_no, message: msg });
-            }
-            pending_cwd = Some((folder.to_string(), header_no));
+            pending_cwd = Some((folder.to_string(), header_no, reported));
             i += 1;
             continue;
         }
 
-        let (verb, rest) = parse_header(line, header_no)?;
+        let (verb, rest) = match parse_header(line, header_no) {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(e);
+                i += 1;
+                // The header is unusable. If a body follows, skip it whole
+                // so its marker lines are not reported as unknown commands.
+                if i < lines.len() && is_marker_line(lines[i]) {
+                    i = skip_past_end(&lines, i);
+                }
+                continue;
+            }
+        };
         i += 1;
 
-        if saw_run {
-            return Err(ParseError {
-                line: header_no,
-                message: "a run step must be the last step".to_string(),
-            });
-        }
+        let after_run = saw_run;
+        note_after_run(&mut errors, saw_run, &mut run_complained, header_no);
 
         match verb {
-            Verb::Remove | Verb::Move | Verb::Mkdir | Verb::RemoveDir | Verb::Chmod => {
-                if let Some((_, cd_line)) = &pending_cwd {
-                    return Err(ParseError {
-                        line: *cd_line,
-                        message: "cd must be followed by cargo or run".to_string(),
-                    });
+            Verb::Remove
+            | Verb::Move
+            | Verb::Mkdir
+            | Verb::RemoveDir
+            | Verb::Chmod
+            | Verb::Rename
+            | Verb::AstGrep => {
+                if let Some((_, cd_line, reported)) = pending_cwd.take() {
+                    if !reported {
+                        errors.push(stray_cd(cd_line));
+                    }
                 }
-                let new_steps = parse_single_line(verb, rest, header_no, config)?;
-                steps.extend(new_steps);
+                match parse_single_line(verb, rest, header_no, config) {
+                    Ok(new_steps) => {
+                        if verb == Verb::AstGrep {
+                            astgrep_seen += 1;
+                            if astgrep_seen > 1 {
+                                errors.push(ParseError {
+                                    line: header_no,
+                                    message: "astgrep: only one astgrep step per chain"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                        if !after_run {
+                            steps.extend(new_steps);
+                        }
+                    }
+                    Err(e) => errors.push(e),
+                }
             }
             Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
-                if let Some((_, cd_line)) = &pending_cwd {
-                    return Err(ParseError {
-                        line: *cd_line,
-                        message: "cd must be followed by cargo or run".to_string(),
-                    });
-                }
-                if i >= lines.len() {
-                    return Err(ParseError {
-                        line: header_no,
-                        message: format!("{}: expected @new", verb.name()),
-                    });
-                }
-                if !is_marker_line(lines[i]) {
-                    return Err(ParseError {
-                        line: i + 1,
-                        message: format!("{}: expected @new", verb.name()),
-                    });
-                }
-                let first_name = marker_name(lines[i]).to_string();
-                if verb == Verb::Replace {
-                    if first_name != "old" {
-                        return Err(ParseError {
-                            line: i + 1,
-                            message: format!("replace: expected @old, got @{}", first_name),
-                        });
+                if let Some((_, cd_line, reported)) = pending_cwd.take() {
+                    if !reported {
+                        errors.push(stray_cd(cd_line));
                     }
-                } else if first_name != "new" {
-                    return Err(ParseError {
-                        line: i + 1,
-                        message: format!(
-                            "{}: expected @new, got @{}",
-                            verb.name(),
-                            first_name
-                        ),
-                    });
                 }
+                let (old_text, new_text, next_i) =
+                    match read_block(&lines, i, verb, header_no) {
+                        Ok(v) => v,
+                        Err((e, resume)) => {
+                            errors.push(e);
+                            i = resume;
+                            continue;
+                        }
+                    };
+                // The block is consumed. Problems with the header line
+                // itself resume right after it.
+                i = next_i;
 
-                let (old_text, new_text, next_i) = if verb == Verb::Replace {
-                    let (old_text, after_old) = read_body(&lines, i + 1, "new")?;
-                    let (new_text, after_new) = read_body(&lines, after_old, "end")?;
-                    (old_text, new_text, after_new)
-                } else {
-                    let (new_text, after_new) = read_body(&lines, i + 1, "end")?;
-                    (String::new(), new_text, after_new)
-                };
+                let (path, count, no_newline) =
+                    match parse_path_and_flags(rest, header_no, verb, config) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            errors.push(e);
+                            continue;
+                        }
+                    };
 
-                let (path, count, no_newline) = parse_path_and_flags(rest, header_no, verb, config)?;
+                if let Some(msg) =
+                    config.extensions.check(verb.name(), std::path::Path::new(&path))
+                {
+                    errors.push(ParseError { line: header_no, message: msg });
+                    continue;
+                }
 
                 let new_text = if verb == Verb::Create && !no_newline {
                     let mut t = new_text;
@@ -254,80 +445,101 @@ pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseE
                     new_text
                 };
 
-                steps.push(Step {
-                    verb,
-                    path,
-                    dest: None,
-                    old_text,
-                    new_text,
-                    count,
-                    no_newline,
-                    args: Vec::new(),
-                    cwd: None,
-                });
-                i = next_i;
+                if !after_run {
+                    steps.push(Step {
+                        verb,
+                        path,
+                        dest: None,
+                        old_text,
+                        new_text,
+                        count,
+                        no_newline,
+                        args: Vec::new(),
+                        cwd: None,
+                    });
+                }
             }
             Verb::Cargo | Verb::Run => {
-                let (folder, _cd_line) = pending_cwd.take().ok_or_else(|| ParseError {
-                    line: header_no,
-                    message: format!(
-                        "{}: needs a preceding 'cd <folder>' line",
-                        verb.name()
-                    ),
-                })?;
-                let args = argv::split(rest.trim()).map_err(|e| ParseError {
-                    line: header_no,
-                    message: format!("{}: {}", verb.name(), e),
-                })?;
-                if args.is_empty() {
-                    return Err(ParseError {
+                let Some((folder, _cd_line, _reported)) = pending_cwd.take() else {
+                    errors.push(ParseError {
+                        line: header_no,
+                        message: format!(
+                            "{}: needs a preceding 'cd <folder>' line",
+                            verb.name()
+                        ),
+                    });
+                    continue;
+                };
+                // From here this line is the run step, whatever its
+                // arguments look like.
+                saw_run = true;
+                let mut ok = true;
+                let args = match argv::split(rest.trim()) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        errors.push(ParseError {
+                            line: header_no,
+                            message: format!("{}: {}", verb.name(), e),
+                        });
+                        ok = false;
+                        Vec::new()
+                    }
+                };
+                if ok && args.is_empty() {
+                    errors.push(ParseError {
                         line: header_no,
                         message: format!("{}: missing arguments", verb.name()),
                     });
+                    ok = false;
                 }
-                if verb == Verb::Cargo {
-                    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                    if let Err(e) = cargo_gate::check(&refs) {
-                        return Err(ParseError { line: header_no, message: e });
-                    }
-                } else {
-                    if !is_absolute_or_home(&args[0]) {
-                        return Err(ParseError {
+                if ok {
+                    if verb == Verb::Cargo {
+                        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                        if let Err(e) = cargo_gate::check(&refs) {
+                            errors.push(ParseError { line: header_no, message: e });
+                            ok = false;
+                        }
+                    } else if !is_absolute_or_home(&args[0]) {
+                        errors.push(ParseError {
                             line: header_no,
                             message: format!(
                                 "run: file must be absolute or start with ~/ (got {})",
                                 args[0]
                             ),
                         });
-                    }
-                    if let Some(msg) = config.hidden.refusal(std::path::Path::new(&args[0])) {
-                        return Err(ParseError { line: header_no, message: msg });
+                        ok = false;
+                    } else if let Some(msg) =
+                        config.hidden.refusal(std::path::Path::new(&args[0]))
+                    {
+                        errors.push(ParseError { line: header_no, message: msg });
+                        ok = false;
                     }
                 }
-                steps.push(Step {
-                    verb,
-                    path: folder.clone(),
-                    dest: None,
-                    old_text: String::new(),
-                    new_text: String::new(),
-                    count: None,
-                    no_newline: false,
-                    args,
-                    cwd: Some(folder),
-                });
-                saw_run = true;
+                if ok && !after_run {
+                    steps.push(Step {
+                        verb,
+                        path: folder.clone(),
+                        dest: None,
+                        old_text: String::new(),
+                        new_text: String::new(),
+                        count: None,
+                        no_newline: false,
+                        args,
+                        cwd: Some(folder),
+                    });
+                }
             }
         }
     }
 
-    if let Some((_, cd_line)) = pending_cwd {
-        return Err(ParseError {
-            line: cd_line,
-            message: "cd must be followed by cargo or run".to_string(),
-        });
+    if let Some((_, cd_line, false)) = pending_cwd {
+        errors.push(stray_cd(cd_line));
     }
 
-    Ok(steps)
+    match ParseFailure::from_errors(errors) {
+        Some(failure) => Err(failure),
+        None => Ok(steps),
+    }
 }
 
 fn try_cd(line: &str) -> Option<&str> {
@@ -342,41 +554,48 @@ fn try_cd(line: &str) -> Option<&str> {
     }
 }
 
+/// A line that starts a new step: its first word is a verb, or cd, rm or mv.
+fn header_looking(line: &str) -> bool {
+    let word = line.split(char::is_whitespace).next().unwrap_or("");
+    Verb::from_word(word).is_some() || matches!(word, "cd" | "rm" | "mv")
+}
+
+/// Index just after the first `@end` line at or after `from`, or the end
+/// of input when there is none.
+fn skip_past_end(lines: &[&str], from: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, l)| l.trim_end() == "@end")
+        .map(|(j, _)| j + 1)
+        .unwrap_or(lines.len())
+}
+
+/// Index of the first header-looking line at or after `from`, or the end
+/// of input when there is none.
+fn next_header(lines: &[&str], from: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, l)| header_looking(l))
+        .map(|(j, _)| j)
+        .unwrap_or(lines.len())
+}
+
 fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> {
     let (word, rest) = match line.find(char::is_whitespace) {
         Some(idx) => (&line[..idx], &line[idx + 1..]),
         None => (line, ""),
     };
-    let verb = match word {
-        "create" => Verb::Create,
-        "replace" => Verb::Replace,
-        "overwrite" => Verb::Overwrite,
-        "append" => Verb::Append,
-        "zaprm" => Verb::Remove,
-        "zapmv" => Verb::Move,
-        "rm" => {
-            return Err(ParseError {
-                line: line_no,
-                message: "use zaprm".to_string(),
-            })
-        }
-        "mv" => {
-            return Err(ParseError {
-                line: line_no,
-                message: "use zapmv".to_string(),
-            })
-        }
-        "mkdir" => Verb::Mkdir,
-        "rmdir" => Verb::RemoveDir,
-        "chmod" => Verb::Chmod,
-        "cargo" => Verb::Cargo,
-        "run" => Verb::Run,
-        _ => {
-            return Err(ParseError {
-                line: line_no,
-                message: format!("unknown command: {:?}", word),
-            })
-        }
+    let Some(verb) = Verb::from_word(word) else {
+        let message = match word {
+            "rm" => "use zaprm".to_string(),
+            "mv" => "use zapmv".to_string(),
+            _ => format!("unknown command: {:?}", word),
+        };
+        return Err(ParseError { line: line_no, message });
     };
     if rest.trim().is_empty() {
         return Err(ParseError {
@@ -385,6 +604,74 @@ fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> 
         });
     }
     Ok((verb, rest))
+}
+
+/// Read the marker structure of a create, replace, overwrite or append
+/// that starts at line index `i` (the line after the header). Returns the
+/// old text, the new text and the index after the block. On failure
+/// returns the error and the index to resume at.
+fn read_block(
+    lines: &[&str],
+    i: usize,
+    verb: Verb,
+    header_no: usize,
+) -> Result<(String, String, usize), (ParseError, usize)> {
+    if i >= lines.len() {
+        return Err((
+            ParseError {
+                line: header_no,
+                message: format!("{}: expected @new", verb.name()),
+            },
+            lines.len(),
+        ));
+    }
+    if !is_marker_line(lines[i]) {
+        // A body was forgotten: the text where a marker was due is not
+        // part of any block. Resume at the next thing that looks like a step.
+        return Err((
+            ParseError {
+                line: i + 1,
+                message: format!("{}: expected @new", verb.name()),
+            },
+            next_header(lines, i),
+        ));
+    }
+    let first_name = marker_name(lines[i]).to_string();
+    if verb == Verb::Replace {
+        if first_name != "old" {
+            return Err((
+                ParseError {
+                    line: i + 1,
+                    message: format!("replace: expected @old, got @{}", first_name),
+                },
+                skip_past_end(lines, i),
+            ));
+        }
+    } else if first_name != "new" {
+        return Err((
+            ParseError {
+                line: i + 1,
+                message: format!("{}: expected @new, got @{}", verb.name(), first_name),
+            },
+            skip_past_end(lines, i),
+        ));
+    }
+
+    let body = |from: usize, expected: &str| {
+        read_body(lines, from, expected).map_err(|e| {
+            let resume = skip_past_end(lines, e.line.saturating_sub(1));
+            (e, resume)
+        })
+    };
+
+    if verb == Verb::Replace {
+        let (old_text, after_old) = body(i + 1, "new")?;
+        let (new_text, after_new) = body(after_old, "end")?;
+        Ok((old_text, new_text, after_new))
+    } else {
+        let (new_text, after_new) = body(i + 1, "end")?;
+        Ok((String::new(), new_text, after_new))
+    }
 }
 
 fn parse_single_line(
@@ -549,6 +836,122 @@ fn parse_single_line(
             }
             Ok(steps)
         }
+        Verb::Rename => {
+            if args.iter().any(|a| a.starts_with('-') && a.len() > 1) {
+                return Err(ParseError {
+                    line,
+                    message: "rename: flags are not supported".to_string(),
+                });
+            }
+            if args.len() != 2 {
+                return Err(ParseError {
+                    line,
+                    message: "rename: needs a path and a new name".to_string(),
+                });
+            }
+            let old = &args[0];
+            let new_name = &args[1];
+            if old == "~" || old.ends_with('/') {
+                return Err(ParseError {
+                    line,
+                    message: "rename: path must name a file".to_string(),
+                });
+            }
+            require_absolute(old, line, Verb::Rename, config)?;
+            if new_name.is_empty() {
+                return Err(ParseError {
+                    line,
+                    message: "rename: the new name is empty".to_string(),
+                });
+            }
+            if new_name.contains('/') {
+                return Err(ParseError {
+                    line,
+                    message: "rename: the new name must be a bare file name, use zapmv to change folders".to_string(),
+                });
+            }
+            if new_name == "." || new_name == ".." {
+                return Err(ParseError {
+                    line,
+                    message: "rename: the new name must be a bare file name".to_string(),
+                });
+            }
+            let old_name = std::path::Path::new(old)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .ok_or_else(|| ParseError {
+                    line,
+                    message: "rename: path must name a file".to_string(),
+                })?;
+            if new_name == &old_name {
+                return Err(ParseError {
+                    line,
+                    message: "rename: the new name is the same as the old one".to_string(),
+                });
+            }
+            let parent = std::path::Path::new(old).parent().ok_or_else(|| ParseError {
+                line,
+                message: "rename: path must name a file".to_string(),
+            })?;
+            let dest_path = parent.join(new_name);
+            if let Some(msg) = config.hidden.refusal(&dest_path) {
+                return Err(ParseError { line, message: msg });
+            }
+            Ok(vec![Step {
+                verb: Verb::Rename,
+                path: old.clone(),
+                dest: Some(dest_path.to_string_lossy().into_owned()),
+                old_text: String::new(),
+                new_text: String::new(),
+                count: None,
+                no_newline: false,
+                args: Vec::new(),
+                cwd: None,
+            }])
+        }
+        Verb::AstGrep => {
+            if args[0] != "rename" {
+                return Err(ParseError {
+                    line,
+                    message: format!("astgrep: only rename is supported (got {})", args[0]),
+                });
+            }
+            if args.len() != 4 {
+                return Err(ParseError {
+                    line,
+                    message: "astgrep: needs rename, a folder, an old name and a new name"
+                        .to_string(),
+                });
+            }
+            require_absolute(&args[1], line, verb, config)?;
+            let old = &args[2];
+            let new_name = &args[3];
+            for (which, name) in [("old", old), ("new", new_name)] {
+                if let Some(reason) = identifier_problem(name) {
+                    return Err(ParseError {
+                        line,
+                        message: format!("astgrep: the {which} name `{name}` {reason}"),
+                    });
+                }
+            }
+            if old == new_name {
+                return Err(ParseError {
+                    line,
+                    message: "astgrep: the new name is the same as the old one".to_string(),
+                });
+            }
+            Ok(vec![Step {
+                verb: Verb::AstGrep,
+                path: args[1].clone(),
+                dest: None,
+                old_text: old.clone(),
+                new_text: new_name.clone(),
+                count: None,
+                no_newline: false,
+                args: Vec::new(),
+                cwd: None,
+            }])
+        }
         _ => unreachable!(),
     }
 }
@@ -573,6 +976,39 @@ fn require_absolute(
         return Err(ParseError { line, message: msg });
     }
     Ok(())
+}
+
+/// Words an astgrep rename may not use as an old or new name: the strict,
+/// reserved and 2018+ keywords of Rust.
+pub const RUST_KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue",
+    "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen",
+    "if", "impl", "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override",
+    "priv", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+    "true", "try", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where",
+    "while", "yield",
+];
+
+/// Why a name is not an acceptable plain ASCII identifier, as a phrase
+/// that follows the name. None when it is acceptable.
+pub fn identifier_problem(name: &str) -> Option<&'static str> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Some("is empty");
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Some("must start with a letter or underscore");
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Some("may only use ASCII letters, digits and underscore");
+    }
+    if name == "_" {
+        return Some("can't be a lone underscore");
+    }
+    if RUST_KEYWORDS.contains(&name) {
+        return Some("is a Rust keyword");
+    }
+    None
 }
 
 fn is_absolute_or_home(p: &str) -> bool {
@@ -704,7 +1140,13 @@ mod tests {
     use super::*;
 
     /// Shadow the crate's `parse` so tests never read the user's files.
+    /// Returns the first error so single-error tests read as before.
     fn parse(input: &str) -> Result<Vec<Step>, ParseError> {
+        parse_with(input, &ParseConfig::empty()).map_err(|f| f.first().clone())
+    }
+
+    /// The whole failure, for tests about collected errors.
+    fn parse_all(input: &str) -> Result<Vec<Step>, ParseFailure> {
         parse_with(input, &ParseConfig::empty())
     }
 
@@ -713,11 +1155,23 @@ mod tests {
             hidden: HiddenSet::from_lines(
                 &entries.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             ),
+            extensions: ExtensionAllowlist::empty(),
+        }
+    }
+
+    fn allowlist_config(spec: &str) -> ParseConfig {
+        ParseConfig {
+            hidden: HiddenSet::empty(),
+            extensions: ExtensionAllowlist::from_text(spec),
         }
     }
 
     fn parse_hidden(input: &str, entries: &[&str]) -> Result<Vec<Step>, ParseError> {
-        parse_with(input, &hidden_config(entries))
+        parse_with(input, &hidden_config(entries)).map_err(|f| f.first().clone())
+    }
+
+    fn parse_cfg(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseError> {
+        parse_with(input, config).map_err(|f| f.first().clone())
     }
 
     #[test]
@@ -1034,6 +1488,386 @@ mod tests {
         ];
         for c in cases {
             parse_with(c, &ParseConfig::empty()).expect("should parse");
+        }
+    }
+
+    #[test]
+    fn allowlist_passes_allowed_extensions_in_chain() {
+        let config = allowlist_config("rs, md");
+        for c in [
+            "create /tmp/a.rs\n@new\nx\n@end\n",
+            "create ~/a.MD\n@new\nx\n@end\n",
+        ] {
+            parse_with(c, &config).expect("should parse");
+        }
+    }
+
+    #[test]
+    fn allowlist_refuses_write_verbs_on_other_extensions() {
+        let config = allowlist_config("rs, md");
+        for verb in ["create", "replace", "overwrite", "append"] {
+            let body = if verb == "replace" {
+                format!("{verb} /tmp/a.txt\n@old\nx\n@new\ny\n@end\n")
+            } else {
+                format!("{verb} /tmp/a.txt\n@new\nx\n@end\n")
+            };
+            let err = parse_cfg(&body, &config).expect_err("should refuse");
+            assert!(
+                err.message.contains(".txt"),
+                "verb {verb}, got: {}",
+                err.message
+            );
+            assert_eq!(err.line, 1);
+        }
+        for path in ["/tmp/Makefile", "/tmp/.gitignore", "/tmp/a."] {
+            let body = format!("create {path}\n@new\nx\n@end\n");
+            let err = parse_cfg(&body, &config).expect_err("should refuse");
+            assert!(
+                err.message.contains("no extension"),
+                "{path}: got {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn allowlist_does_not_affect_non_writing_verbs() {
+        let config = allowlist_config("rs");
+        for c in [
+            "zaprm /tmp/Makefile\n",
+            "zapmv /tmp/Makefile /tmp/b\n",
+            "mkdir /tmp/Makefile\n",
+            "rmdir /tmp/Makefile\n",
+            "chmod +x /tmp/Makefile\n",
+            "cd /tmp\nrun /tmp/x.sh\n",
+            "cd /tmp\ncargo check\n",
+        ] {
+            parse_with(c, &config).expect("should parse");
+        }
+    }
+
+    #[test]
+    fn broken_allowlist_refuses_and_names_the_file() {
+        let config = allowlist_config(".rs;.md");
+        let err = parse_cfg("create /tmp/a.rs\n@new\nx\n@end\n", &config)
+            .expect_err("should refuse");
+        assert!(err.message.contains("fix the file"), "got: {}", err.message);
+    }
+
+    // ---- collect-all parse errors (step 11) ----
+
+    #[test]
+    fn error_clause_ends_with_its_line() {
+        let f = parse_all("rm /tmp/a.rs\n").expect_err("should fail");
+        assert_eq!(f.to_string(), "use zaprm at line 1");
+    }
+
+    #[test]
+    fn three_independent_mistakes_make_one_sentence() {
+        let input = "rm /tmp/a.rs\ncreate src/a.rs\n@new\nx\n@end\ncd tmp\ncargo test\n";
+        let f = parse_all(input).expect_err("should fail");
+        let s = f.to_string();
+        assert_eq!(
+            s,
+            "use zaprm at line 1; create: path must be absolute or start with ~/ (got src/a.rs) at line 2; cd: folder must be absolute or start with ~/ (got tmp) at line 6"
+        );
+        assert!(!s.contains('\n'));
+        assert!(!s.contains("line 1:"));
+    }
+
+    #[test]
+    fn missing_end_then_good_block_gives_one_error() {
+        let input = "create /tmp/a.rs\n@new\nfoo\ncreate /tmp/b.rs\n@new\nbar\n@end\n";
+        let f = parse_all(input).expect_err("should fail");
+        assert_eq!(f.errors().len(), 1, "got: {f}");
+        assert_eq!(f.first().line, 5);
+        assert!(!f.to_string().contains("unknown command"));
+    }
+
+    #[test]
+    fn misspelled_verb_with_body_gives_one_error() {
+        let f = parse_all("craete /tmp/a.rs\n@new\nx\n@end\n").expect_err("should fail");
+        assert_eq!(f.errors().len(), 1, "got: {f}");
+        assert!(f.first().message.contains("unknown command"));
+    }
+
+    #[test]
+    fn forgotten_body_skips_code_lines() {
+        let input = "create /tmp/a.rs\nfn main() {}\nlet x = 1;\nzaprm src/b.rs\n";
+        let f = parse_all(input).expect_err("should fail");
+        assert_eq!(f.errors().len(), 2, "got: {f}");
+        assert_eq!(f.errors()[0].line, 2);
+        assert!(f.errors()[0].message.contains("expected @new"));
+        assert_eq!(f.errors()[1].line, 4);
+        assert!(f.errors()[1].message.contains("absolute"));
+    }
+
+    #[test]
+    fn bad_cd_with_good_cargo_gives_one_error() {
+        let f = parse_all("cd tmp\ncargo test\n").expect_err("should fail");
+        assert_eq!(f.errors().len(), 1, "got: {f}");
+        assert!(f.first().message.contains("absolute"));
+    }
+
+    #[test]
+    fn stray_cd_before_create_is_reported_once() {
+        let good = "cd /tmp\ncreate /tmp/a.rs\n@new\nx\n@end\n";
+        let f = parse_all(good).expect_err("should fail");
+        assert_eq!(f.errors().len(), 1, "got: {f}");
+        assert_eq!(f.first().line, 1);
+        assert!(f.first().message.contains("cd must be followed"));
+
+        let bad = "cd /tmp\ncreate src/a.rs\n@new\nx\n@end\n";
+        let f = parse_all(bad).expect_err("should fail");
+        assert_eq!(f.errors().len(), 2, "got: {f}");
+        assert_eq!(f.errors()[0].line, 1);
+        assert_eq!(f.errors()[1].line, 2);
+        assert!(f.errors()[1].message.contains("absolute"));
+    }
+
+    #[test]
+    fn steps_after_run_give_one_complaint() {
+        let input = "cd /tmp\ncargo test\nzaprm /tmp/a\nzaprm /tmp/b\nmkdir /tmp/c\nrmdir /tmp/d\n";
+        let f = parse_all(input).expect_err("should fail");
+        assert_eq!(f.errors().len(), 1, "got: {f}");
+        assert_eq!(f.first().line, 3);
+        assert!(f.first().message.contains("last step"));
+    }
+
+    #[test]
+    fn errors_after_run_still_show() {
+        let input = "cd /tmp\ncargo test\nzaprm /tmp/a\nzaprm rel\n";
+        let f = parse_all(input).expect_err("should fail");
+        assert_eq!(f.errors().len(), 2, "got: {f}");
+        assert!(f.errors()[0].message.contains("last step"));
+        assert!(f.errors()[1].message.contains("absolute"));
+    }
+
+    #[test]
+    fn twenty_five_bad_lines_are_capped_at_twenty() {
+        let input: String = (1..=25).map(|n| format!("rm /tmp/a{n}\n")).collect();
+        let f = parse_all(&input).expect_err("should fail");
+        assert_eq!(f.errors().len(), 25);
+        let s = f.to_string();
+        assert_eq!(s.matches(" at line ").count(), 20, "got: {s}");
+        assert!(s.ends_with(" (+ 5 more)"), "got: {s}");
+    }
+
+    #[test]
+    fn identical_errors_are_deduplicated() {
+        let one = ParseError { line: 3, message: "x".to_string() };
+        let f = ParseFailure::from_errors(vec![one.clone(), one]).expect("non-empty");
+        assert_eq!(f.errors().len(), 1);
+        assert!(ParseFailure::from_errors(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn from_word_knows_every_verb_and_not_rm_mv() {
+        for w in [
+            "create", "replace", "overwrite", "append", "zaprm", "zapmv", "mkdir",
+            "rmdir", "chmod", "cargo", "run", "rename", "astgrep",
+        ] {
+            let v = Verb::from_word(w).expect(w);
+            assert_eq!(v.name(), w);
+        }
+        assert!(Verb::from_word("rm").is_none());
+        assert!(Verb::from_word("mv").is_none());
+        assert!(Verb::from_word("cd").is_none());
+    }
+
+    #[test]
+    fn parses_a_rename() {
+        let steps = parse("rename /tmp/a.rs b.rs\n").expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].verb, Verb::Rename);
+        assert_eq!(steps[0].path, "/tmp/a.rs");
+        assert_eq!(steps[0].dest.as_deref(), Some("/tmp/b.rs"));
+    }
+
+    #[test]
+    fn parses_rename_at_root() {
+        let steps = parse("rename /a.rs b.rs\n").expect("parse");
+        assert_eq!(steps[0].dest.as_deref(), Some("/b.rs"));
+    }
+
+    #[test]
+    fn rename_refuses_a_slash_in_new_name() {
+        let err = parse("rename /tmp/a.rs sub/b.rs\n").expect_err("should fail");
+        assert!(err.message.contains("bare file name"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_refuses_dotdot_as_new_name() {
+        let err = parse("rename /tmp/a.rs ..\n").expect_err("should fail");
+        assert!(err.message.contains("bare file name"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_refuses_same_name() {
+        let err = parse("rename /tmp/a.rs a.rs\n").expect_err("should fail");
+        assert!(err.message.contains("same as the old one"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_refuses_one_or_three_args() {
+        let err = parse("rename /tmp/a.rs\n").expect_err("should fail");
+        assert!(err.message.contains("needs a path and a new name"), "got: {}", err.message);
+        let err = parse("rename /tmp/a.rs b.rs c.rs\n").expect_err("should fail");
+        assert!(err.message.contains("needs a path and a new name"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_refuses_flags() {
+        let err = parse("rename --force /tmp/a.rs b.rs\n").expect_err("should fail");
+        assert!(err.message.contains("flags are not supported"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_refuses_a_relative_path() {
+        let err = parse("rename a.rs b.rs\n").expect_err("should fail");
+        assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_refuses_trailing_slash() {
+        let err = parse("rename /tmp/a/ b.rs\n").expect_err("should fail");
+        assert!(err.message.contains("path must name a file"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn rename_accepts_an_extensionless_name_when_allowlist_is_set() {
+        let config = allowlist_config("rs");
+        let steps = parse_with("rename /tmp/Makefile Makefile2\n", &config).expect("parse");
+        assert_eq!(steps[0].verb, Verb::Rename);
+    }
+
+    #[test]
+    fn parses_an_astgrep_rename() {
+        let steps = parse("astgrep rename /tmp/proj OldName NewName\n").expect("parse");
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].verb, Verb::AstGrep);
+        assert_eq!(steps[0].path, "/tmp/proj");
+        assert_eq!(steps[0].old_text, "OldName");
+        assert_eq!(steps[0].new_text, "NewName");
+        assert!(steps[0].dest.is_none());
+    }
+
+    #[test]
+    fn astgrep_takes_a_home_folder() {
+        let steps = parse("astgrep rename ~/proj a b\n").expect("parse");
+        assert_eq!(steps[0].path, "~/proj");
+    }
+
+    #[test]
+    fn astgrep_only_knows_rename() {
+        let err = parse("astgrep scan /tmp/p a b\n").expect_err("should fail");
+        assert!(err.message.contains("only rename"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn astgrep_needs_a_folder_and_two_names() {
+        let err = parse("astgrep rename /tmp/p a\n").expect_err("should fail");
+        assert!(err.message.contains("needs rename"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn astgrep_refuses_bad_names_on_either_side() {
+        for bad in ["1abc", "a-b", "_", "a.b", "match", "self", "Self", "fn", "\u{e9}t\u{e9}"] {
+            let old_bad = format!("astgrep rename /tmp/p {bad} fine_name\n");
+            let err = parse(&old_bad).expect_err("should fail");
+            assert!(err.message.contains("the old name"), "{bad}: got {}", err.message);
+            let new_bad = format!("astgrep rename /tmp/p fine_name {bad}\n");
+            let err = parse(&new_bad).expect_err("should fail");
+            assert!(err.message.contains("the new name"), "{bad}: got {}", err.message);
+        }
+    }
+
+    #[test]
+    fn astgrep_accepts_underscore_names() {
+        parse("astgrep rename /tmp/p _a b_ \n").expect("parse");
+        parse("astgrep rename /tmp/p __x Y9\n").expect("parse");
+    }
+
+    #[test]
+    fn astgrep_refuses_the_same_name() {
+        let err = parse("astgrep rename /tmp/p foo foo\n").expect_err("should fail");
+        assert!(err.message.contains("same as the old one"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn astgrep_refuses_a_relative_folder() {
+        let err = parse("astgrep rename proj a b\n").expect_err("should fail");
+        assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn astgrep_refuses_a_hidden_folder() {
+        let err = parse_hidden("astgrep rename /srv/secret/p a b\n", &["/srv/secret"])
+            .expect_err("should fail");
+        assert!(
+            err.message.starts_with("deliberately hidden by the user: "),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn two_astgrep_steps_in_one_chain_are_refused() {
+        let f = parse_all("astgrep rename /tmp/p a b\nastgrep rename /tmp/q c d\n")
+            .expect_err("should fail");
+        assert_eq!(f.errors().len(), 1, "got: {f}");
+        assert_eq!(f.first().line, 2);
+        assert!(f.first().message.contains("only one astgrep"));
+    }
+
+    #[test]
+    fn astgrep_may_be_followed_by_cd_and_cargo() {
+        let steps =
+            parse("astgrep rename /tmp/p a b\ncd /tmp/p\ncargo check\n").expect("parse");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].verb, Verb::AstGrep);
+        assert_eq!(steps[1].verb, Verb::Cargo);
+    }
+
+    #[test]
+    fn astgrep_ignores_the_extension_allowlist() {
+        let config = allowlist_config("md");
+        parse_with("astgrep rename /tmp/p a b\n", &config).expect("parse");
+    }
+
+    #[test]
+    fn keywords_are_all_refused_as_identifiers() {
+        for k in RUST_KEYWORDS {
+            assert!(identifier_problem(k).is_some(), "{k}");
+        }
+        assert!(identifier_problem("foo").is_none());
+        assert!(identifier_problem("r#foo").is_some());
+    }
+
+    #[test]
+    fn verb_all_round_trips_name_and_flags() {
+        for v in Verb::ALL {
+            assert_eq!(Verb::from_word(v.name()), Some(v), "name round-trip {:?}", v);
+        }
+        let expect_special = |v: Verb| {
+            matches!(
+                v,
+                Verb::Cargo | Verb::Run | Verb::Chmod | Verb::Rename | Verb::AstGrep
+            )
+        };
+        let expect_always = |v: Verb| {
+            matches!(
+                v,
+                Verb::Remove | Verb::Move | Verb::RemoveDir | Verb::Chmod | Verb::Cargo | Verb::Run | Verb::Rename | Verb::AstGrep
+            )
+        };
+        let expect_editable = |v: Verb| {
+            matches!(v, Verb::Create | Verb::Mkdir | Verb::Move | Verb::Rename)
+        };
+        for v in Verb::ALL {
+            assert_eq!(v.is_special(), expect_special(v), "is_special {:?}", v);
+            assert_eq!(v.always_reviewed(), expect_always(v), "always_reviewed {:?}", v);
+            assert_eq!(v.has_editable_target(), expect_editable(v), "has_editable_target {:?}", v);
         }
     }
 }

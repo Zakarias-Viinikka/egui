@@ -29,7 +29,8 @@ const SURFACE_BANNER_BG: egui::Color32 = egui::Color32::from_rgb(60, 42, 12);
 const SURFACE_BANNER_BORDER: egui::Color32 = egui::Color32::from_rgb(230, 160, 40);
 const SURFACE_BANNER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 200, 110);
 const CAPTION_MIN_H: f32 = 28.0;
-const PILL_RESERVE: f32 = 110.0;
+const PILL_RESERVE: f32 = 146.0;
+const PEN_TIP: &str = "edit this step's target";
 
 use app_core::terminal_router::surface_review::BannerKind;
 
@@ -142,9 +143,11 @@ fn verb_word(v: Verb) -> &'static str {
         Verb::RemoveDir => "rmdir",
         Verb::Cargo => "cargo",
         Verb::Run => "run",
-        Verb::Move => "rename",
+        Verb::Move => "zapmv",
         Verb::Mkdir => "mkdir",
         Verb::Chmod => "chmod",
+        Verb::Rename => "rename",
+        Verb::AstGrep => "astgrep",
     }
 }
 
@@ -153,7 +156,7 @@ fn verb_accent(v: Verb) -> egui::Color32 {
         Verb::Create | Verb::Mkdir => egui::Color32::from_rgb(100, 200, 120),
         Verb::Replace | Verb::Overwrite | Verb::Append => egui::Color32::from_rgb(100, 160, 220),
         Verb::Remove | Verb::RemoveDir => egui::Color32::from_rgb(210, 80, 80),
-        Verb::Move => egui::Color32::from_rgb(90, 200, 220),
+        Verb::Move | Verb::Rename | Verb::AstGrep => egui::Color32::from_rgb(90, 200, 220),
         Verb::Cargo => egui::Color32::from_rgb(230, 160, 40),
         Verb::Run => egui::Color32::from_rgb(200, 90, 220),
         Verb::Chmod => egui::Color32::from_rgb(240, 110, 40),
@@ -172,6 +175,8 @@ fn verb_glyph(v: Verb) -> &'static str {
         Verb::Cargo => "cg",
         Verb::Run => "rn",
         Verb::Chmod => "cx",
+        Verb::Rename => "nm",
+        Verb::AstGrep => "ag",
     }
 }
 
@@ -344,6 +349,9 @@ pub struct NecessaryStructForEgui {
     menu_hidden: Vec<String>,
     menu_hidden_draft: String,
     menu_hidden_error: Option<String>,
+    menu_extensions: Vec<String>,
+    menu_extensions_draft: String,
+    menu_extensions_error: Option<String>,
     /// When true, the viewer shows every line of the step instead of the
     /// snippet around the change.
     full_file: bool,
@@ -362,6 +370,12 @@ pub struct NecessaryStructForEgui {
     step_full: Vec<Option<Vec<app_core::text_diff::DiffRowProcessedForUi>>>,
     /// Full-file rows per surface review file, built on first toggle.
     surface_full: Vec<Option<Vec<app_core::text_diff::DiffRowProcessedForUi>>>,
+    /// True when a hidden step failed at confirm and every step must be
+    /// shown so the user can see it. Reset on new chain.
+    revealed_all: bool,
+    /// Open edit-title field: (step index, draft). None means the pen is
+    /// not in use.
+    title_edit: Option<(usize, String)>,
 }
 
 impl Default for NecessaryStructForEgui {
@@ -385,6 +399,9 @@ impl Default for NecessaryStructForEgui {
             menu_hidden: Vec::new(),
             menu_hidden_draft: String::new(),
             menu_hidden_error: None,
+            menu_extensions: Vec::new(),
+            menu_extensions_draft: String::new(),
+            menu_extensions_error: None,
             full_file: false,
             scroll_to_change_pending: false,
             surface_shown_at: Instant::now(),
@@ -394,6 +411,8 @@ impl Default for NecessaryStructForEgui {
             surface_tables: Vec::new(),
             step_full: Vec::new(),
             surface_full: Vec::new(),
+            revealed_all: false,
+            title_edit: None,
         }
     }
 }
@@ -407,6 +426,9 @@ impl NecessaryStructForEgui {
         self.menu_hidden = app_core::chain::whitelist::load_hidden();
         self.menu_hidden_draft.clear();
         self.menu_hidden_error = None;
+        self.menu_extensions = app_core::chain::whitelist::load_extensions();
+        self.menu_extensions_draft.clear();
+        self.menu_extensions_error = None;
     }
 }
 
@@ -506,6 +528,13 @@ impl eframe::App for NecessaryStructForEgui {
                 .as_ref()
                 .map(|c| vec![false; c.steps.len()])
                 .unwrap_or_default();
+            self.revealed_all = false;
+            self.title_edit = None;
+            if let Some(c) = self.shown.as_ref() {
+                // Jump to the first visible step, not step 0. A partial
+                // review can hide step 0 entirely.
+                self.shown_step = visible_steps(c, false).first().copied().unwrap_or(0);
+            }
             if self.shown.is_some() {
                 self.menu_open = false;
                 ui.ctx()
@@ -553,7 +582,12 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         let chain = self.shown.clone();
         let step_count = chain.as_ref().map(|c| c.steps.len()).unwrap_or(0);
-        let show_blocks = step_count > 1;
+        let visible = chain
+            .as_ref()
+            .map(|c| visible_steps(c, self.revealed_all))
+            .unwrap_or_default();
+        let visible_count = visible.len();
+        let show_blocks = visible_count > 1;
 
         let banner_kind = chain
             .as_ref()
@@ -561,7 +595,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             .and_then(|s| match s.step.verb {
                 Verb::Remove => Some(BannerKind::Delete),
                 Verb::RemoveDir => Some(BannerKind::Delete),
-                Verb::Move => Some(BannerKind::Rename),
+                Verb::Move | Verb::Rename | Verb::AstGrep => Some(BannerKind::Rename),
                 Verb::Cargo => Some(BannerKind::CargoRun),
                 Verb::Run => Some(BannerKind::Execute),
                 Verb::Chmod => Some(BannerKind::Exec),
@@ -583,7 +617,8 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         let cap_area_w = cap_right - cap_left;
         let pill_w = pill_width(ui, pill_label);
         let pill_left = cap_right - 50.0 - pill_w / 2.0;
-        let chip_right = pill_left - 8.0;
+        let pen_center_x = pill_left - 6.0 - 11.0;
+        let chip_right = pen_center_x - 11.0 - 8.0;
         let chip_max_w = cap_area_w * 0.45;
         let chip = chain.as_ref().map(|c| {
             let text = boundary_chip_text(&c.boundary);
@@ -614,13 +649,13 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     Verb::RemoveDir => "rmdir".to_string(),
                     Verb::Cargo => "cargo".to_string(),
                     Verb::Run => "run".to_string(),
-                    Verb::Move => {
+                    Verb::Move | Verb::Rename => {
                         let dest = step
                             .dest
                             .as_ref()
                             .map(|d| d.display().to_string())
                             .unwrap_or_default();
-                        let base = format!("rename {} \u{2192} {dest}", step.path.display());
+                        let base = format!("\u{2192} {dest}");
                         match app_core::run_trust::trust_note(&step.path) {
                             Some(note) => format!("{base} \u{00b7} {note}"),
                             None => base,
@@ -628,6 +663,10 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     }
                     Verb::Mkdir => "mkdir".to_string(),
                     Verb::Chmod => format!("chmod +x {}", step.path.display()),
+                    Verb::AstGrep => format!(
+                        "rename identifier {} -> {} in",
+                        step.step.old_text, step.step.new_text
+                    ),
                 };
                 let n = self.shown_step + 1;
                 let m = step_count;
@@ -638,8 +677,34 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 } else {
                     ""
                 };
+                let override_note = if c
+                    .overrides
+                    .iter()
+                    .any(|o| o.step == self.shown_step)
+                {
+                    " \u{00b7} target edited"
+                } else {
+                    ""
+                };
+                let hidden_note = if visible_count < step_count {
+                    format!(
+                        " \u{00b7} {} more step(s) in whitelisted folders are written with this one",
+                        step_count - visible_count
+                    )
+                } else {
+                    String::new()
+                };
+                let astgrep_tail = if step.step.verb == Verb::AstGrep {
+                    let occurrences: usize = step.files.iter().map(|f| f.occurrences).sum();
+                    format!(
+                        " \u{00b7} {occurrences} occurrences in {} files",
+                        step.files.len()
+                    )
+                } else {
+                    String::new()
+                };
                 let text = format!(
-                    "step {n} of {m} \u{00b7} {verb} {}{suffix}",
+                    "step {n} of {m} \u{00b7} {verb} {}{astgrep_tail}{suffix}{override_note}{hidden_note}",
                     step.path.display()
                 );
                 let color = if marked {
@@ -735,6 +800,88 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             }
         }
 
+        // Edit-title pen. Only shown when the current step has an editable
+        // target. Placed just left of the full-file pill.
+        // A chain that holds an astgrep step has no pen: replanning it
+        // would run the binary again on files the reviewer has not seen.
+        let pen_shown = chain
+            .as_ref()
+            .map(|c| {
+                !c.steps.iter().any(|s| s.step.verb == Verb::AstGrep)
+                    && c.steps
+                        .get(self.shown_step)
+                        .map(|s| s.step.verb.has_editable_target())
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if pen_shown {
+            if glass_button::pen_ui(
+                ui,
+                egui::pos2(pen_center_x, layout.caption.center().y),
+                "edit_title_pen",
+                PEN_TIP,
+            ) {
+                match &self.title_edit {
+                    Some((idx, _)) if *idx == self.shown_step => {
+                        self.title_edit = None;
+                        self.error_line = None;
+                    }
+                    _ => {
+                        if let Some(c) = chain.as_ref() {
+                            if let Some(s) = c.steps.get(self.shown_step) {
+                                self.title_edit =
+                                    Some((self.shown_step, app_core::chain::play::target_draft(s)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Open edit-title field. Drawn over the caption; the layout below
+        // is unchanged because the caption was measured without it.
+        if let Some((idx, _)) = self.title_edit.clone() {
+            if idx != self.shown_step {
+                self.title_edit = None;
+            } else if let Some((_, mut draft)) = self.title_edit.take() {
+                let te_rect = egui::Rect::from_min_max(
+                    egui::pos2(layout.caption.left(), layout.caption.top()),
+                    egui::pos2(
+                        pen_center_x - 11.0 - 6.0,
+                        layout.caption.top() + 22.0,
+                    ),
+                );
+                // Consume Enter before the TextEdit sees it, so we
+                // commit even though egui's single-line Edit eats the
+                // key internally.
+                let enter_pressed = ui.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                });
+                let resp = ui.put(
+                    te_rect,
+                    egui::TextEdit::singleline(&mut draft)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(te_rect.width()),
+                );
+                if !resp.has_focus() {
+                    resp.request_focus();
+                }
+                let esc = ui.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                });
+                if enter_pressed {
+                    commit_title_edit(self, ui, &chain, idx, &draft);
+                } else if esc {
+                    self.title_edit = None;
+                    self.error_line = None;
+                } else if resp.lost_focus() {
+                    self.title_edit = None;
+                } else {
+                    self.title_edit = Some((idx, draft));
+                }
+            }
+        }
+
         if self.full_file {
             if let Some(c) = chain.as_ref() {
                 self.ensure_step_full(c, self.shown_step);
@@ -798,12 +945,12 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         let mut clicked_step: Option<usize> = None;
         if show_blocks {
-            let total = step_count as f32 * layout.block_size
-                + (step_count.saturating_sub(1)) as f32 * layout.gap;
+            let total = visible_count as f32 * layout.block_size
+                + (visible_count.saturating_sub(1)) as f32 * layout.gap;
             let start_y = layout.viewer.center().y - total / 2.0 + layout.block_size / 2.0;
-            for i in 0..step_count {
-                let marked = self.marked.get(i).copied().unwrap_or(false);
-                let shown = i == self.shown_step;
+            for (slot, &real_i) in visible.iter().enumerate() {
+                let marked = self.marked.get(real_i).copied().unwrap_or(false);
+                let shown = real_i == self.shown_step;
                 let state = match (marked, shown) {
                     (true, true) => BlockState::MarkedSelected,
                     (true, false) => BlockState::Marked,
@@ -812,9 +959,9 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 };
                 let accent = chain
                     .as_ref()
-                    .and_then(|c| c.steps.get(i))
+                    .and_then(|c| c.steps.get(real_i))
                     .map(|s| verb_accent(s.step.verb));
-                let step_ref = chain.as_ref().and_then(|c| c.steps.get(i));
+                let step_ref = chain.as_ref().and_then(|c| c.steps.get(real_i));
                 let mut tip = if let Some(s) = step_ref {
                     let file_name = s
                         .path
@@ -823,31 +970,31 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                         .unwrap_or_else(|| s.path.display().to_string());
                     format!(
                         "Step {} of {}: {} {}",
-                        i + 1,
+                        real_i + 1,
                         step_count,
                         verb_word(s.step.verb),
                         file_name
                     )
                 } else {
-                    format!("Step {} of {}", i + 1, step_count)
+                    format!("Step {} of {}", real_i + 1, step_count)
                 };
                 if marked {
                     tip.push_str(", marked");
                 }
-                if self.verified.get(i).copied().unwrap_or(false) {
+                if self.verified.get(real_i).copied().unwrap_or(false) {
                     tip.push_str(", verified");
                 }
-                let y = start_y + i as f32 * (layout.block_size + layout.gap);
+                let y = start_y + slot as f32 * (layout.block_size + layout.gap);
                 if glass_button::glass_step_block_ui(
                     ui,
                     egui::pos2(layout.block_col_x, y),
-                    i,
+                    real_i,
                     state,
                     accent,
                     step_ref.map(|s| verb_glyph(s.step.verb)).unwrap_or(""),
                     &tip,
                 ) {
-                    clicked_step = Some(i);
+                    clicked_step = Some(real_i);
                 }
             }
         }
@@ -878,6 +1025,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             .and_then(|c| c.steps.get(self.shown_step))
             .map(|s| s.step.verb);
         let shown_is_special = shown_verb.map(|v| v.is_special()).unwrap_or(false);
+        let title_edit_open = self.title_edit.is_some();
         let mut confirmed = false;
         let mut allow_clicked = false;
         let mut mark_clicked = false;
@@ -935,6 +1083,12 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                         egui::Color32::from_rgb(240, 110, 40),
                         "Write the steps, then make the file in this step executable.",
                     ),
+                    Some(Verb::AstGrep) => (
+                        "SPECIAL REQUEST",
+                        "ALLOW RENAME",
+                        egui::Color32::from_rgb(90, 200, 220),
+                        "Write the steps, including the identifier rename in this step.",
+                    ),
                     _ => (
                         "SPECIAL REQUEST",
                         "ALLOW",
@@ -976,21 +1130,23 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             }
         }
 
-        if verify_clicked {
+        if title_edit_open {
+            self.error_line = Some("Enter applies the new name, Esc cancels".to_string());
+        } else if verify_clicked {
             if let Some(slot) = self.verified.get_mut(self.shown_step) {
                 *slot = !*slot;
                 self.shown_at = Instant::now();
             }
         }
 
-        if mark_clicked {
+        if !title_edit_open && mark_clicked {
             if let Some(slot) = self.marked.get_mut(self.shown_step) {
                 *slot = !*slot;
                 self.shown_at = Instant::now();
             }
         }
 
-        if allow_clicked {
+        if !title_edit_open && allow_clicked {
             if let Some(slot) = self.allowed.get_mut(self.shown_step) {
                 *slot = true;
             }
@@ -1001,7 +1157,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             return;
         }
 
-        if deny_all_clicked {
+        if !title_edit_open && deny_all_clicked {
             if let Some(c) = chain.clone() {
                 let statuses: Vec<StepStatus> = self
                     .marked
@@ -1027,10 +1183,53 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             }
         }
 
-        if confirmed {
+        if !title_edit_open && confirmed {
             if let Some(c) = chain.clone() {
                 try_confirm(self, ui, &c);
             }
+        }
+    }
+}
+
+/// Commit an edit-title change: re-plan the chain, swap it into the
+/// pending slot with replace_pending_if, and (if the swap happened) send
+/// Superseded to the waiter. On any error the field stays open with the
+/// error on the red line.
+fn commit_title_edit(
+    this: &mut NecessaryStructForEgui,
+    _ui: &mut egui::Ui,
+    chain: &Option<Arc<Chain>>,
+    step_index: usize,
+    text: &str,
+) {
+    let Some(old) = chain.clone() else {
+        return;
+    };
+    match app_core::chain::play::replan_with_target(&old, step_index, text) {
+        Ok(new_chain) => {
+            let new_arc = Arc::new(new_chain);
+            if app_core::terminal_router::replace_pending_if(&old, new_arc.clone()) {
+                old.finish(ChainOutcome::Superseded(
+                    app_core::chain::SupersededChain(new_arc.clone()),
+                ));
+                this.shown = Some(new_arc.clone());
+                this.step_tables.clear();
+                this.step_full.clear();
+                let n = new_arc.steps.len();
+                this.visited = vec![false; n];
+                this.verified = vec![false; n];
+                this.allowed = vec![false; n];
+                this.shown_at = Instant::now();
+                this.title_edit = None;
+                this.error_line = None;
+            } else {
+                // A newer chain displaced this one. Drop the edit quietly.
+                this.title_edit = None;
+            }
+        }
+        Err(e) => {
+            this.error_line = Some(e);
+            this.title_edit = Some((step_index, text.to_string()));
         }
     }
 }
@@ -1046,6 +1245,17 @@ pub struct GateStop {
 /// are treated as wanted=false for gating purposes only if the caller
 /// means so — this function treats a missing entry as wanted (matching
 /// `writer::apply`).
+/// The step numbers the review window shows. Empty `review_indices`
+/// means every step; `revealed_all` forces every step even when the
+/// chain asked to hide some.
+pub fn visible_steps(chain: &Chain, revealed_all: bool) -> Vec<usize> {
+    if revealed_all || chain.review_indices.is_empty() {
+        (0..chain.steps.len()).collect()
+    } else {
+        chain.review_indices.clone()
+    }
+}
+
 pub fn confirm_gate(
     verbs: &[Verb],
     wanted: &[bool],
@@ -1101,7 +1311,7 @@ fn try_confirm(this: &mut NecessaryStructForEgui, ui: &mut egui::Ui, c: &Arc<Cha
         this.error_line = Some(format!("step {}: {}", stop.index + 1, stop.reason));
         return;
     }
-    match writer::apply(c, &wanted) {
+    match writer::apply_detailed(c, &wanted) {
         Ok(()) => {
             refresh_trust_after_chain_confirm(c, &wanted);
             let statuses: Vec<StepStatus> = wanted
@@ -1126,7 +1336,7 @@ fn try_confirm(this: &mut NecessaryStructForEgui, ui: &mut egui::Ui, c: &Arc<Cha
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
-        Err(reason) => {
+        Err((failed_idx, reason)) => {
             let retry_statuses: Vec<StepStatus> = wanted
                 .iter()
                 .map(|w| {
@@ -1152,6 +1362,14 @@ fn try_confirm(this: &mut NecessaryStructForEgui, ui: &mut egui::Ui, c: &Arc<Cha
             this.error_line = Some(rep.clone());
             popup::show("Edit failed");
             let _ = app_core::clipboard::copy_to_clipboard(&rep);
+            // If the step that failed is not on screen, reveal every step
+            // and jump to it so the user can see what went stale.
+            let visible = visible_steps(c, this.revealed_all);
+            if !visible.contains(&failed_idx) {
+                this.revealed_all = true;
+                this.shown_step = failed_idx;
+                this.shown_at = Instant::now();
+            }
         }
     }
 }
@@ -1493,6 +1711,8 @@ impl NecessaryStructForEgui {
         let mut to_add: Option<PathBuf> = None;
         let mut hidden_to_remove: Option<usize> = None;
         let mut hidden_to_add: Option<String> = None;
+        let mut ext_to_remove: Option<usize> = None;
+        let mut ext_to_add: Option<String> = None;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -1579,6 +1799,49 @@ impl NecessaryStructForEgui {
                     ui.add_space(10.0);
                     ui.colored_label(ERROR_COLOR, err);
                 }
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(10.0);
+                ui.heading("Allowed extensions");
+                ui.add_space(6.0);
+                ui.label("When this list has entries, only these extensions may be written by create, replace, overwrite and append. Empty or missing allows every extension.");
+                ui.add_space(14.0);
+
+                if self.menu_extensions.is_empty() {
+                    ui.label(egui::RichText::new("(all extensions allowed)").italics());
+                }
+                for (i, entry) in self.menu_extensions.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(".{}", entry));
+                        if ui.button("remove").clicked() {
+                            ext_to_remove = Some(i);
+                        }
+                    });
+                }
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.label("add:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.menu_extensions_draft)
+                            .desired_width(500.0)
+                            .hint_text("rs, md, toml, sh"),
+                    );
+                    let submitted =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("add").clicked() || submitted {
+                        let raw = self.menu_extensions_draft.trim().to_string();
+                        if !raw.is_empty() {
+                            ext_to_add = Some(raw);
+                        }
+                    }
+                });
+
+                if let Some(err) = &self.menu_extensions_error {
+                    ui.add_space(10.0);
+                    ui.colored_label(ERROR_COLOR, err);
+                }
             });
 
         if let Some(i) = to_remove {
@@ -1636,6 +1899,34 @@ impl NecessaryStructForEgui {
                 Err(e) => self.menu_hidden_error = Some(e),
             }
         }
+
+        if let Some(i) = ext_to_remove {
+            self.menu_extensions.remove(i);
+            match app_core::chain::whitelist::save_extensions(&self.menu_extensions) {
+                Ok(()) => self.menu_extensions_error = None,
+                Err(e) => self.menu_extensions_error = Some(e),
+            }
+        }
+
+        if let Some(raw) = ext_to_add {
+            match app_core::chain::whitelist::validate_extension_entry(&raw) {
+                Ok(entry) => {
+                    if self.menu_extensions.iter().any(|e| e == &entry) {
+                        self.menu_extensions_error = Some("already in the list".to_string());
+                    } else {
+                        self.menu_extensions.push(entry);
+                        match app_core::chain::whitelist::save_extensions(&self.menu_extensions) {
+                            Ok(()) => {
+                                self.menu_extensions_error = None;
+                                self.menu_extensions_draft.clear();
+                            }
+                            Err(e) => self.menu_extensions_error = Some(e),
+                        }
+                    }
+                }
+                Err(e) => self.menu_extensions_error = Some(e),
+            }
+        }
     }
 }
 
@@ -1649,14 +1940,14 @@ fn refresh_trust_after_chain_confirm(chain: &Chain, wanted: &[bool]) {
     let has_move_or_remove = chain
         .steps
         .iter()
-        .any(|s| matches!(s.step.verb, Verb::Move | Verb::Remove));
+        .any(|s| matches!(s.step.verb, Verb::Move | Verb::Rename | Verb::Remove));
 
     for (i, step) in chain.steps.iter().enumerate() {
         if !wanted.get(i).copied().unwrap_or(true) {
             continue;
         }
         match step.step.verb {
-            Verb::Move => {
+            Verb::Move | Verb::Rename => {
                 if let Some(dest) = &step.dest {
                     app_core::run_trust::rename(&step.path, dest);
                     app_core::terminal_router::file_trust::remove_approval(&step.path);
@@ -1730,19 +2021,7 @@ fn zap_wire_theme_off() -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL_VERBS: [Verb; 11] = [
-        Verb::Create,
-        Verb::Replace,
-        Verb::Overwrite,
-        Verb::Append,
-        Verb::Remove,
-        Verb::RemoveDir,
-        Verb::Cargo,
-        Verb::Run,
-        Verb::Move,
-        Verb::Mkdir,
-        Verb::Chmod,
-    ];
+    const ALL_VERBS: [Verb; 13] = Verb::ALL;
 
     #[test]
     fn every_verb_has_a_two_letter_glyph() {
@@ -1822,5 +2101,43 @@ mod tests {
         let verified = [false, false];
         let allowed = [false, false];
         assert!(confirm_gate(&verbs, &wanted, &visited, &verified, &allowed).is_none());
+    }
+
+    #[test]
+    fn astgrep_is_gated_like_a_special_verb() {
+        let verbs = [Verb::AstGrep];
+        let wanted = [true];
+        let visited = [true];
+        let stop = confirm_gate(&verbs, &wanted, &visited, &[false], &[false]);
+        assert_eq!(stop.expect("stop").index, 0);
+        let stop = confirm_gate(&verbs, &wanted, &visited, &[true], &[false]);
+        assert_eq!(stop.expect("stop").index, 0);
+        assert!(confirm_gate(&verbs, &wanted, &visited, &[true], &[true]).is_none());
+    }
+
+    #[test]
+    fn astgrep_has_the_ag_glyph_and_the_rename_banner_colors() {
+        assert_eq!(verb_glyph(Verb::AstGrep), "ag");
+        assert_eq!(verb_accent(Verb::AstGrep), verb_accent(Verb::Rename));
+        assert_eq!(verb_word(Verb::AstGrep), "astgrep");
+    }
+
+    #[test]
+    fn visible_steps_empty_field_shows_all() {
+        // A chain whose review_indices is empty shows every step, unless
+        // revealed_all is set, which also shows every step. Both cases
+        // must round-trip.
+        let mut chain = crate::test_helpers::dummy_chain(3);
+        chain.review_indices.clear();
+        assert_eq!(visible_steps(&chain, false), vec![0, 1, 2]);
+        assert_eq!(visible_steps(&chain, true), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn visible_steps_set_field_shows_those() {
+        let mut chain = crate::test_helpers::dummy_chain(4);
+        chain.review_indices = vec![0, 2];
+        assert_eq!(visible_steps(&chain, false), vec![0, 2]);
+        assert_eq!(visible_steps(&chain, true), vec![0, 1, 2, 3]);
     }
 }

@@ -224,6 +224,8 @@ Tests: from_text handles comments, blank lines, leading dots, uppercase, commas 
 
 Done when: with rs and md in extensions.txt, pasting create /tmp/x.txt into zapcli prints the refusal without touching the socket, zap overwrite /tmp/x.txt is refused by zapgui, and deleting the file restores today's behaviour. All existing tests pass and the cheat sheet is updated.
 
+Menu section (added while testing): the whitelist menu gets a third section, Allowed extensions, under the Hidden files section. Same shape as the other two: a list with remove buttons, an add field, an error line. Entries are stored one per line in extensions.txt through config::read_lines and config::write_lines; removing every entry leaves an empty file, which the allowlist reads as allow-all. Validation on add uses whitelist::validate_extension_entry, which applies the parser's token rules (strip one leading dot, lowercase, 1 to 16 letters, digits, _ - +) and returns the normalised token. The section only edits the file; the parser still reads it fresh on every parse, so a change applies to the next chain.
+
 ## Step 11: Replace hints and collect-all parse errors
 
 Files: zap_wire/src/chain.rs (ParseFailure, the collector inside parse, Verb::from_word); zapgui/app_core/src/text_diff/similarity.rs (two pure helpers: a closest-line scorer and an edit distance); zapgui/app_core/src/chain/play.rs (hints wrapped around the existing failure strings); report.rs (make its one-line truncate visible to play.rs rather than writing a second); route_requests.rs (check only, no format change); wherever crate::chain re-exports ParseError (add ParseFailure beside it); CHAIN_CHEATSHEET.md. No new files.

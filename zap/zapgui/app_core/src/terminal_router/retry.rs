@@ -70,13 +70,19 @@ pub fn build_retry_chain(
     only: Option<&[usize]>,
     replacements: Option<&[Step]>,
 ) -> Result<Chain, String> {
-    let steps = match replacements {
-        Some(repl) => {
-            let Some(indices) = only else {
-                return Err(
-                    "retry: replacements need step numbers before them".to_string()
-                );
-            };
+    let steps: Vec<Step> = match (only, replacements) {
+        // Bare retry, or bare retry with explicit step numbers. The
+        // listed steps are the ones resubmitted, unchanged.
+        (None, None) | (Some(_), None) => payload(rec, only),
+        (None, Some(_)) => {
+            return Err(
+                "retry: replacements need step numbers before them".to_string()
+            );
+        }
+        // Retry with replacement bodies. Resend the full unapplied
+        // payload with the named steps substituted, so the reviewer can
+        // fix a broken step and get the whole chain back in one go.
+        (Some(indices), Some(repl)) => {
             if repl.len() != indices.len() {
                 return Err(format!(
                     "retry: {} step number(s) but {} replacement step(s)",
@@ -84,9 +90,43 @@ pub fn build_retry_chain(
                     repl.len()
                 ));
             }
-            repl.to_vec()
+            let mut repl_by_index: std::collections::HashMap<usize, &Step> =
+                std::collections::HashMap::new();
+            for (i, step) in indices.iter().zip(repl.iter()) {
+                if rec.statuses.get(*i) == Some(&StepStatus::Applied) {
+                    return Err(format!(
+                        "retry: step {} was already applied; can't replace it",
+                        i + 1
+                    ));
+                }
+                if repl_by_index.insert(*i, step).is_some() {
+                    return Err(format!(
+                        "retry: step {} is named twice",
+                        i + 1
+                    ));
+                }
+            }
+            let mut out: Vec<Step> = Vec::new();
+            for (i, step) in rec.steps.iter().enumerate() {
+                if rec.statuses.get(i) == Some(&StepStatus::Applied) {
+                    continue;
+                }
+                match repl_by_index.remove(&i) {
+                    Some(new_step) => out.push(new_step.clone()),
+                    None => out.push(step.clone()),
+                }
+            }
+            if !repl_by_index.is_empty() {
+                let mut names: Vec<String> =
+                    repl_by_index.keys().map(|i| (i + 1).to_string()).collect();
+                names.sort();
+                return Err(format!(
+                    "retry: step(s) {} not in the retry payload",
+                    names.join(", ")
+                ));
+            }
+            out
         }
-        None => payload(rec, only),
     };
     if steps.is_empty() {
         return Err("nothing to retry".to_string());
@@ -330,5 +370,73 @@ mod tests {
         )
         .expect_err("mismatch");
         assert!(err.contains("step number"), "got: {err}");
+    }
+
+    #[test]
+    fn build_retry_chain_with_replacements_resends_the_whole_payload() {
+        let dir = tmp();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        let c = dir.join("c.txt");
+        fs::write(&a, "one\n").expect("write");
+        fs::write(&b, "two\n").expect("write");
+        fs::write(&c, "three\n").expect("write");
+        let rec = RetryRecord {
+            steps: vec![
+                replace_step(&a, "one", "ONE"),
+                replace_step(&b, "two", "TWO"),
+                replace_step(&c, "three", "THREE"),
+            ],
+            statuses: vec![
+                StepStatus::Failed,
+                StepStatus::Failed,
+                StepStatus::Failed,
+            ],
+        };
+        let fixed = replace_step(&b, "two\n", "two-fixed");
+        let chain = build_retry_chain(&rec, Some(&[1]), Some(&[fixed]))
+            .expect("build");
+        assert_eq!(chain.steps.len(), 3, "all steps should be retried");
+        assert_eq!(chain.steps[0].after, "ONE\n");
+        assert_eq!(chain.steps[1].after, "two-fixed");
+        assert_eq!(chain.steps[2].after, "THREE\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_retry_chain_with_replacements_skips_applied_steps() {
+        let dir = tmp();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, "one\n").expect("write");
+        fs::write(&b, "two\n").expect("write");
+        let rec = RetryRecord {
+            steps: vec![
+                replace_step(&a, "one", "ONE"),
+                replace_step(&b, "two", "TWO"),
+            ],
+            statuses: vec![StepStatus::Applied, StepStatus::Failed],
+        };
+        let fixed = replace_step(&b, "two\n", "two-fixed");
+        let chain = build_retry_chain(&rec, Some(&[1]), Some(&[fixed]))
+            .expect("build");
+        assert_eq!(chain.steps.len(), 1, "applied step is not resent");
+        assert_eq!(chain.steps[0].after, "two-fixed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_retry_chain_refuses_to_replace_an_applied_step() {
+        let rec = RetryRecord {
+            steps: vec![make_step(Verb::Create, "/tmp/a")],
+            statuses: vec![StepStatus::Applied],
+        };
+        let err = build_retry_chain(
+            &rec,
+            Some(&[0]),
+            Some(&[make_step(Verb::Create, "/tmp/a")]),
+        )
+        .expect_err("should fail");
+        assert!(err.contains("already applied"), "got: {err}");
     }
 }

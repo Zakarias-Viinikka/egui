@@ -47,9 +47,13 @@ Any other request replies `zapgui: got "<request>"`.
 
 ## Chain grammar
 
-See CHAIN_CHEATSHEET.md. The parser is zap_wire::chain. zapcli parses
-first so a bad path or unknown verb never reaches the socket; zapgui
-parses again. zapgui/app_core/src/chain/{parser,step}.rs are re-exports.
+See CHAIN_CHEATSHEET.md. The parser is zap_wire::chain, with
+`ParseConfig` carrying the hidden set and the extension allowlist.
+`parse(input)` loads the real config; `parse_with(input, &config)`
+takes one. zapcli parses first so a bad path or unknown verb never
+reaches the socket; zapgui parses again. The chain tests use
+`parse_with` with an empty config so they never read the user's files.
+zapgui/app_core/src/chain/{parser,step}.rs are re-exports.
 
 ## Confirm and deny
 
@@ -57,10 +61,54 @@ The pending chain lives in one slot in terminal_router as an Arc<Chain>,
 holding steps, diffs and per-file snapshots. The UI reads the slot each
 frame.
 
-Four glass buttons: Verify, Mark, Allow/Confirm, Deny All. Confirm writes
-every unmarked step. Marked steps are skipped and kept for retry. Verify
-gates run and cargo steps. Deny All writes nothing and makes the whole
-chain the retry payload, keeping Marks.
+Four buttons in a fixed row: Verify, Mark, a 168-point approve slot, and
+Deny All. On an ordinary step the slot holds the green Confirm check; on
+a cargo, run or chmod step it holds a wide two-line ALLOW CARGO / ALLOW
+RUN / ALLOW EXEC button, accent-bordered in the verb's colour. Confirm
+writes every unmarked step. Marked steps are skipped and kept for retry.
+Deny All writes nothing and makes the whole chain the retry payload,
+keeping Marks.
+
+`confirm_gate` in drawing_requirements.rs is a pure function used by
+both Confirm and the wide Allow button. It stops on the first wanted
+step that fails its gate: cargo, run and chmod need both `verified` and
+`allowed`; zaprm, zapmv and rmdir need `visited`. Marked steps are not
+gated. The wide Allow button sets `allowed` for the shown step, then
+runs the same gate and write path as Confirm.
+
+A chain can show only some of its steps. `review_indices` on Chain is
+the set of step numbers that need eyes; empty means every step, which
+is what play_forward and retry produce. `steps_that_need_eyes` in
+play.rs computes it: a verb reason (always_reviewed), a whitelist reason
+(the step's path or a move's destination is not matched by the
+whitelist), or an approval reason (the path's final write is rejected
+by the .sh / .toml approval check). A verb reason marks that step only;
+a path reason marks every step that touches that path. An empty result
+auto-applies as before; a full list falls back to showing every step.
+The blocks column, the caption's starting step and the count use the
+visible list, but Mark, Verify, Verify-done, the `visited` flag, the
+click guards and the failure index stay keyed by real step number. A
+failure on a hidden step sets `revealed_all`, jumps to that step, and
+keeps the window open.
+
+A small pen button sits just left of the full-file pill when the shown
+step's verb has_editable_target (create, mkdir, zapmv, rename).
+Clicking it opens a single-line field over the first caption line,
+filled with the resolved full path (or the bare new name for a rename).
+Enter commits: `replan_with_target` in play.rs clones every applied
+step, sets the edited one's target with Step::set_target, remaps every
+later step whose path, dest, run-file or (for a mkdir) cwd sits under
+the old target to the new one, and plays the chain forward. On success
+the new Chain replaces the old one in the pending slot through
+`replace_pending_if`, and the old chain's waiter receives
+`ChainOutcome::Superseded`. Visited and verified are cleared for the
+edited step and every remapped step. Escape, a second click on the pen,
+loss of focus without Enter, a step change, a new chain or hiding the
+window cancels. While the field is open, confirm, mark, verify and deny
+ignore clicks and the error line reads "Enter applies the new name, Esc
+cancels". The `overrides` list on Chain records the from, the to and
+the number of followers; `report::build` adds one clause per override
+whose step was applied.
 
 Write failures leave the window open with a red error line and put the
 report on the clipboard with a popup. A chain with more than one step
@@ -203,12 +251,47 @@ A failed clipboard write retains the payload in zapgui memory and shows
 a failure popup. `error` in zapcli retries the copy. The payload is
 lost if zapgui exits before a successful retry.
 
-## Whitelist
+## Whitelist, hidden paths and extensions
 
-~/.config/zap/whitelist.txt (honours XDG_CONFIG_HOME), one absolute
-folder per line. All-inside chains auto-apply; any file outside or any
-zaprm / zapmv / cargo / run / unapproved .sh / .toml goes to review. See
-FILE_TRUST.md for the .sh / .toml rule.
+Three files in ~/.config/zap (honours XDG_CONFIG_HOME), all editable
+from the whitelist menu (`whitelist` in zapcli):
+
+- whitelist.txt - one absolute path per line. A regular file matches
+  only that file; a folder (or a path that does not exist yet) matches
+  by whole components. All-inside chains auto-apply; any file outside
+  or any zaprm / zapmv / chmod / cargo / run / unapproved .sh / .toml
+  goes to review. See FILE_TRUST.md for the .sh / .toml rule.
+- hidden.txt - paths and bare names hidden from the AI. See "Hidden
+  paths".
+- extensions.txt - optional extension allowlist for create, replace,
+  overwrite and append. Empty or missing allows every extension. See
+  "Allowed extensions".
+
+The menu has three sections, in order: Whitelisted folders, Hidden
+files, Allowed extensions. Each is a list with a remove button per
+entry and an add field. Entries are saved the moment they are added or
+removed.
+
+## Hidden paths
+
+A hidden.txt line starting with / or ~/ hides that path and everything
+below it. A bare name with no slash hides every path with a component of
+that name at any depth. Matching is by whole path components, never by
+string prefix. Hidden always wins over the whitelist. The chain parser,
+every read built-in (cat, head, tail, wc, ls, cd), run, cargo and last
+refuse a hidden path with the line "deliberately hidden by the user:
+<path>".
+
+## Allowed extensions
+
+When extensions.txt has entries, only those extensions may be written by
+create, replace, overwrite and append. zaprm, zapmv, mkdir, rmdir,
+chmod, run and cargo are not checked. Extensionless paths (Makefile,
+.gitignore) are refused. A token is 1 to 16 letters, digits, _, - or +;
+a leading dot is stripped and the rest lowercased. A broken file (has
+tokens, none valid) fails closed and refuses every checked verb. The
+parser reads the file fresh on every parse, so a change applies to the
+next chain.
 
 ## Line styles
 
@@ -235,8 +318,9 @@ handle_chain_run, shared slot in mod.rs, retry.rs, file_trust.rs,
 stream_run.rs, surface_review.rs.
 
 zapgui/app_core/src/text_diff/ - rows.rs (types), pair.rs (line pairing
-+ pair_runs), post_process.rs (rows -> blocks), similarity.rs, moves.rs,
-move_display.rs.
++ pair_runs), post_process.rs (rows -> blocks), similarity.rs
+(similarity, inline_spans, EDIT_THRESHOLD, closest_line, edit_distance,
+tokenize), moves.rs, move_display.rs.
 
 zapgui/app_core/src/last_change.rs, run_trust.rs, clipboard.rs.
 

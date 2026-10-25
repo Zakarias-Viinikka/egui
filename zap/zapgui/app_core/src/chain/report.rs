@@ -62,6 +62,21 @@ pub fn build(chain: &Chain, statuses: &[StepStatus], failure: Option<&str>) -> S
         out.push('.');
         emitted += 1;
     }
+    for o in &chain.overrides {
+        if statuses.get(o.step).copied() != Some(StepStatus::Applied) {
+            continue;
+        }
+        out.push(' ');
+        out.push_str(&format!(
+            "step {} of {}: the reviewer changed the target from {} to {}, and {} later step(s) were updated to match.",
+            o.step + 1,
+            total,
+            o.from,
+            o.to,
+            o.followers
+        ));
+    }
+
     if skipped > 0 {
         if emitted > 0 {
             out.push(' ');
@@ -104,6 +119,43 @@ fn describe(applied: &AppliedStep, would_have: bool) -> String {
                 .map(|d| d.display().to_string())
                 .unwrap_or_default();
             format!("{}moved {} to {}", prefix, path, dest)
+        }
+        Verb::Rename => {
+            let dest = applied
+                .dest
+                .as_ref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            format!("{}renamed {} to {}", prefix, path, dest)
+        }
+        Verb::AstGrep => {
+            let n = applied.files.len();
+            let occurrences: usize = applied.files.iter().map(|f| f.occurrences).sum();
+            let mut list: Vec<String> = applied
+                .files
+                .iter()
+                .take(8)
+                .map(|f| {
+                    f.path
+                        .strip_prefix(&applied.path)
+                        .unwrap_or(&f.path)
+                        .display()
+                        .to_string()
+                })
+                .collect();
+            if n > 8 {
+                list.push(format!("+{} more", n - 8));
+            }
+            format!(
+                "{}renamed identifier `{}` to `{}` ({} occurrences in {} files under {}: {})",
+                prefix,
+                applied.step.old_text,
+                applied.step.new_text,
+                occurrences,
+                n,
+                path,
+                list.join(", ")
+            )
         }
         Verb::Mkdir => format!("{}created folder {}", prefix, path),
         Verb::RemoveDir => format!("{}removed folder {}", prefix, path),
@@ -148,10 +200,12 @@ fn verb_of(applied: &AppliedStep) -> &'static str {
         Verb::Cargo => "cargo",
         Verb::Run => "run",
         Verb::Chmod => "chmod",
+        Verb::Rename => "rename",
+        Verb::AstGrep => "astgrep",
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     let first_line = s.lines().next().unwrap_or("");
     if first_line.chars().count() <= max {
         first_line.to_string()

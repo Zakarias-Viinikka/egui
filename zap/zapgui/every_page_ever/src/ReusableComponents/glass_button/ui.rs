@@ -259,3 +259,39 @@ pub fn wide_allow_button_ui(
 
     response.on_hover_text(tip).clicked()
 }
+
+/// A small glass button showing a pen, used as the edit-title affordance
+/// on the review window. About 22 px square.
+pub fn pen_ui(
+    ui: &mut egui::Ui,
+    center: egui::Pos2,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    tip: &str,
+) -> bool {
+    let size = 22.0;
+    let rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
+    let id = egui::Id::new("glass_pen").with(id_salt);
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let (fill, border) = if response.hovered() {
+        (FILL_HOVER, BORDER_HOVER)
+    } else {
+        (FILL, BORDER)
+    };
+    ui.painter().rect(
+        rect,
+        5.0,
+        fill,
+        egui::Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 210));
+    let tip_pt = egui::pos2(c.x + 5.0, c.y - 5.0);
+    let tail = egui::pos2(c.x - 5.0, c.y + 5.0);
+    let bar_l = egui::pos2(c.x + 2.0, c.y - 5.0);
+    let bar_r = egui::pos2(c.x + 5.0, c.y - 2.0);
+    ui.painter().line_segment([tail, tip_pt], stroke);
+    ui.painter().line_segment([tip_pt, bar_r], stroke);
+    ui.painter().line_segment([bar_l, tip_pt], stroke);
+    response.on_hover_text(tip).clicked()
+}

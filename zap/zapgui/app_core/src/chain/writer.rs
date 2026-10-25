@@ -14,34 +14,45 @@ enum Undo {
     RestoreMode { path: PathBuf, mode: u32 },
 }
 
+fn find_step_index(chain: &Chain, path: &Path) -> Option<usize> {
+    chain
+        .steps
+        .iter()
+        .position(|s| {
+            s.path == path
+                || s.dest.as_deref() == Some(path)
+                || s.files.iter().any(|f| f.path == path)
+        })
+}
+
 pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
+    apply_detailed(chain, wanted).map_err(|(_, s)| s)
+}
+
+/// Like `apply`, but on failure returns the failing step's index
+/// (0-based) along with the full reason. Used by the review window so a
+/// failure on a hidden step can reveal it.
+pub fn apply_detailed(chain: &Chain, wanted: &[bool]) -> Result<(), (usize, String)> {
     let total = chain.steps.len();
 
-    // Re-verify snapshots. If anything changed between review and confirm,
-    // refuse rather than clobber.
     for snap in &chain.snapshots {
-        let current = read_or_none(&snap.path)?;
+        let current = read_or_none(&snap.path)
+            .map_err(|e| (find_step_index(chain, &snap.path).unwrap_or(0), e))?;
         if current != snap.content {
-            let step_no = chain
-                .steps
-                .iter()
-                .position(|s| s.path == snap.path)
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let step_idx = find_step_index(chain, &snap.path).unwrap_or(0);
             let verb = chain
                 .steps
-                .iter()
-                .find(|s| s.path == snap.path)
+                .get(step_idx)
                 .map(|s| verb_name(s.step.verb))
                 .unwrap_or("step");
-            return Err(format!(
+            return Err((step_idx, format!(
                 "step {} of {} ({} {}) failed: {} changed since the chain was built",
-                step_no,
+                step_idx + 1,
                 total,
                 verb,
                 snap.path.display(),
                 snap.path.display()
-            ));
+            )));
         }
     }
 
@@ -51,17 +62,16 @@ pub fn apply(chain: &Chain, wanted: &[bool]) -> Result<(), String> {
         if !wanted.get(i).copied().unwrap_or(true) {
             continue;
         }
-        let step_no = i + 1;
         if let Err(reason) = execute_step(applied, &mut undos) {
             undo_all(&mut undos);
-            return Err(format!(
+            return Err((i, format!(
                 "step {} of {} ({} {}) failed: {}",
-                step_no,
+                i + 1,
                 total,
                 verb_name(applied.step.verb),
                 applied.path.display(),
                 reason
-            ));
+            )));
         }
         if !applied.no_op {
             record_last_change(applied);
@@ -84,6 +94,8 @@ fn verb_name(v: Verb) -> &'static str {
         Verb::Cargo => "cargo",
         Verb::Run => "run",
         Verb::Chmod => "chmod",
+        Verb::Rename => "rename",
+        Verb::AstGrep => "astgrep",
     }
 }
 
@@ -131,7 +143,7 @@ fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), Stri
             });
             Ok(())
         }
-        Verb::Move => {
+        Verb::Move | Verb::Rename => {
             let dest = applied
                 .dest
                 .clone()
@@ -178,6 +190,25 @@ fn execute_step(applied: &AppliedStep, undos: &mut Vec<Undo>) -> Result<(), Stri
                 path: applied.path.clone(),
                 mode: old_mode,
             });
+            Ok(())
+        }
+        Verb::AstGrep => {
+            // Every file must still read exactly as planned, or nothing
+            // is written.
+            for f in &applied.files {
+                match read_or_none(&f.path)? {
+                    Some(current) if current == f.before => {}
+                    _ => {
+                        return Err(format!(
+                            "{} changed since the chain was built",
+                            f.path.display()
+                        ));
+                    }
+                }
+            }
+            for f in &applied.files {
+                write_text(&f.path, &f.after, &Some(f.before.clone()), undos)?;
+            }
             Ok(())
         }
         Verb::Cargo | Verb::Run => Ok(()),
@@ -295,7 +326,7 @@ fn record_last_change(applied: &AppliedStep) {
             let before_v = last_change::classify_content(&before_text);
             last_change::record(&applied.path, before_v, Kind::Removed, None);
         }
-        Verb::Move => {
+        Verb::Move | Verb::Rename => {
             let dest = applied.dest.clone().unwrap_or_default();
             let content = applied.before.clone().unwrap_or_default();
             let content_v = last_change::classify_content(&content);
@@ -311,6 +342,12 @@ fn record_last_change(applied: &AppliedStep) {
                 Kind::RenamedTo(dest),
                 None,
             );
+        }
+        Verb::AstGrep => {
+            for f in &applied.files {
+                let before_v = last_change::classify_content(&f.before);
+                last_change::record(&f.path, before_v, Kind::Edited, Some(&f.after));
+            }
         }
         Verb::Mkdir | Verb::RemoveDir | Verb::Cargo | Verb::Run | Verb::Chmod => {}
     }
@@ -612,6 +649,130 @@ mod tests {
         assert!(err.contains("not empty"), "got: {err}");
         let meta = fs::metadata(&file).expect("meta");
         assert_eq!(meta.permissions().mode() & 0o777, 0o644);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_detailed_names_the_stale_file_step() {
+        let dir = tmp();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, "hello\n").expect("write");
+        fs::write(&b, "world\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &a, "hello", "HELLO"),
+            text_step(Verb::Replace, &b, "world", "WORLD"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        fs::write(&b, "stale\n").expect("write");
+        let (idx, msg) = apply_detailed(&chain, &[true, true]).expect_err("fail");
+        assert_eq!(idx, 1);
+        assert!(msg.contains("step 2 of 2"), "got: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_detailed_names_the_move_step_for_a_stale_dest() {
+        let dir = tmp();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, "hi\n").expect("write");
+        let chain = play_forward(vec![mv_step(&a, &b)], &dir).expect("play");
+        fs::write(&b, "spawned\n").expect("write");
+        let (idx, msg) = apply_detailed(&chain, &[true]).expect_err("fail");
+        assert_eq!(idx, 0);
+        assert!(msg.contains("step 1 of 1"), "got: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn astgrep_step(folder: &Path, old: &str, new: &str) -> Step {
+        Step {
+            verb: Verb::AstGrep,
+            path: folder.display().to_string(),
+            dest: None,
+            old_text: old.to_string(),
+            new_text: new.to_string(),
+            count: None,
+            no_newline: false,
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    /// Two files under a folder and a fake ast-grep that reports `foo` in
+    /// both. Returns (folder, a, b).
+    fn astgrep_two_files(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let proj = dir.join("proj");
+        fs::create_dir_all(&proj).expect("mkdir");
+        let a = proj.join("a.rs");
+        let b = proj.join("b.rs");
+        fs::write(&a, "fn foo() {}\n").expect("write");
+        fs::write(&b, "use x::foo;\n").expect("write");
+        let lines = format!(
+            "{}{}",
+            crate::chain::astgrep::testing::match_line(&a, 3, 6),
+            crate::chain::astgrep::testing::match_line(&b, 7, 10)
+        );
+        crate::chain::astgrep::testing::healthy(dir, &lines);
+        (proj, a, b)
+    }
+
+    #[test]
+    fn astgrep_writes_every_changed_file() {
+        let dir = tmp();
+        let (proj, a, b) = astgrep_two_files(&dir);
+        let chain = play_forward(vec![astgrep_step(&proj, "foo", "bar")], &dir).expect("play");
+        apply(&chain, &[true]).expect("apply");
+        assert_eq!(fs::read_to_string(&a).expect("read"), "fn bar() {}\n");
+        assert_eq!(fs::read_to_string(&b).expect("read"), "use x::bar;\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn astgrep_denied_writes_nothing() {
+        let dir = tmp();
+        let (proj, a, b) = astgrep_two_files(&dir);
+        let chain = play_forward(vec![astgrep_step(&proj, "foo", "bar")], &dir).expect("play");
+        apply(&chain, &[false]).expect("apply");
+        assert_eq!(fs::read_to_string(&a).expect("read"), "fn foo() {}\n");
+        assert_eq!(fs::read_to_string(&b).expect("read"), "use x::foo;\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stale_astgrep_file_names_the_astgrep_step_and_writes_nothing() {
+        let dir = tmp();
+        let (proj, a, b) = astgrep_two_files(&dir);
+        let note = dir.join("note.txt");
+        let steps = vec![
+            text_step(Verb::Create, &note, "", "hi\n"),
+            astgrep_step(&proj, "foo", "bar"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        fs::write(&b, "use x::foo; // edited\n").expect("write");
+        let (idx, msg) = apply_detailed(&chain, &[true, true]).expect_err("stale");
+        assert_eq!(idx, 1);
+        assert!(msg.contains("step 2 of 2 (astgrep"), "got: {msg}");
+        assert!(msg.contains("changed since"), "got: {msg}");
+        assert_eq!(fs::read_to_string(&a).expect("read"), "fn foo() {}\n");
+        assert!(!note.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_still_returns_the_old_message() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "hello\n").expect("write");
+        let chain = play_forward(
+            vec![text_step(Verb::Replace, &file, "hello", "world")],
+            &dir,
+        )
+        .expect("play");
+        fs::write(&file, "different\n").expect("write");
+        let err = apply(&chain, &[true]).expect_err("fail");
+        assert!(err.contains("step 1 of 1"));
+        assert!(err.contains("changed since"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

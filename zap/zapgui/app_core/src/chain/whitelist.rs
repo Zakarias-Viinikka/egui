@@ -249,3 +249,34 @@ pub fn validate_hidden_entry(raw: &str) -> Result<String, String> {
     }
     Ok(t.to_string())
 }
+
+pub fn extensions_path() -> PathBuf {
+    zap_wire::config::config_dir().join("extensions.txt")
+}
+
+pub fn load_extensions() -> Vec<String> {
+    zap_wire::config::read_lines(&extensions_path()).unwrap_or_default()
+}
+
+pub fn save_extensions(lines: &[String]) -> Result<(), String> {
+    zap_wire::config::write_lines(&extensions_path(), lines).map_err(|e| e.to_string())
+}
+
+/// Validate a menu entry for extensions.txt. Returns the normalised
+/// token (leading dot stripped, lowercase). Same rules as the parser.
+pub fn validate_extension_entry(raw: &str) -> Result<String, String> {
+    let t = raw.trim().trim_start_matches('.');
+    if t.is_empty() {
+        return Err("empty entry".to_string());
+    }
+    if t.len() > 16 {
+        return Err("extension too long (max 16)".to_string());
+    }
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+')
+    {
+        return Err("letters, digits, _ - + only".to_string());
+    }
+    Ok(t.to_ascii_lowercase())
+}

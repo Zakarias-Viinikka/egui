@@ -125,9 +125,24 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
         }
     };
 
+    // Partial approval: only the steps that need eyes are shown. A run
+    // chain always has at least the run step in the shown set.
+    let folders = crate::chain::whitelist::load();
+    let needing = crate::chain::play::steps_that_need_eyes(
+        &chain,
+        &folders,
+        |p, text| {
+            crate::terminal_router::file_trust::is_sensitive(p)
+                && !crate::terminal_router::file_trust::is_approved(p, text)
+        },
+    );
+    if needing.len() < chain.steps.len() {
+        chain.review_indices = needing;
+    }
+
     let (tx, rx) = mpsc::channel();
     chain.notify = Some(std::sync::Mutex::new(tx));
-    let mine = Arc::new(chain);
+    let mut mine = Arc::new(chain);
 
     // Fast path: a single run or cargo step whose target is already
     // trusted for this exact invocation. Skip the chain review and run
@@ -175,19 +190,26 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(600);
     let outcome = loop {
         if cancel.load(Ordering::SeqCst) {
+            drain_superseded(&rx, &mut mine);
             crate::terminal_router::clear_pending(&mine);
             let _ = write_frame(stream, &Frame::reply("zap: cancelled"));
             return;
         }
         if std::time::Instant::now() >= deadline {
+            drain_superseded(&rx, &mut mine);
             crate::terminal_router::clear_pending(&mine);
             let _ = write_frame(stream, &Frame::reply("zap: timed out"));
             return;
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(crate::chain::ChainOutcome::Superseded(next)) => {
+                mine = next.0;
+                continue;
+            }
             Ok(o) => break o,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                drain_superseded(&rx, &mut mine);
                 let _ = write_frame(stream, &Frame::reply("zap: chain handler closed"));
                 return;
             }
@@ -238,6 +260,26 @@ pub fn handle_chain_run(stream: &mut UnixStream, text: &str) {
         }
         crate::chain::ChainOutcome::Replaced => {
             let _ = write_frame(stream, &Frame::reply("zap: this chain was replaced"));
+        }
+        crate::chain::ChainOutcome::Superseded(_) => {
+            // Only reachable if the very first outcome was Superseded,
+            // which cannot happen: the UI always sends Superseded after
+            // the swap, so the wait loop reassigns mine and continues.
+            let _ = write_frame(stream, &Frame::reply("zap: chain was edited"));
+        }
+    }
+}
+
+/// Drain any Superseded messages that arrived while we were waiting.
+/// Each one replaces `mine` with the newer chain, so clear_pending acts
+/// on the live chain rather than the one the reviewer replaced.
+fn drain_superseded(
+    rx: &std::sync::mpsc::Receiver<crate::chain::ChainOutcome>,
+    mine: &mut Arc<crate::chain::Chain>,
+) {
+    while let Ok(o) = rx.try_recv() {
+        if let crate::chain::ChainOutcome::Superseded(next) = o {
+            *mine = next.0;
         }
     }
 }
@@ -430,7 +472,7 @@ fn handle_chain(rest: &str) -> String {
         return "zapgui: this chain has a run step; send it as a ChainRun frame".to_string();
     }
 
-    let chain = match play_forward(steps.clone(), std::path::Path::new(cwd)) {
+    let mut chain = match play_forward(steps.clone(), std::path::Path::new(cwd)) {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
@@ -442,31 +484,22 @@ fn handle_chain(rest: &str) -> String {
         }
     };
 
-    // If every touched file lives inside a whitelisted folder, apply
-    // immediately. No diff, no window. A chain with even one file outside
-    // goes wholly to review, because applying part of a chain would break
-    // all-or-nothing. A chain with any Remove or Move step always goes to
-    // review, so an auto-applied edit can never be paired with an
-    // auto-applied delete or rename.
-    let has_remove_or_move = chain
-        .steps
-        .iter()
-        .any(|s| matches!(s.step.verb, Verb::Remove | Verb::Move | Verb::RemoveDir | Verb::Chmod));
+    // Partial approval: split the chain into "needs eyes" and "does not".
+    // An empty result means nothing needs eyes and the chain auto-applies;
+    // a result that holds every step means everything needs eyes and the
+    // review shows it as before; anything between sets review_indices to
+    // the shown subset. Hidden steps still get written with the ones the
+    // user confirms.
     let folders = crate::chain::whitelist::load();
-    // .sh and .toml files always need review the first time, even inside a
-    // whitelisted folder. The approval key is the content the chain would
-    // leave in the file: if that exact write was approved before, skip the
-    // review. A changed write always goes to review.
-    let writes = chain.final_writes(&[]);
-    let sensitive_ok = crate::terminal_router::file_trust::all_approved(&writes);
-    let all_whitelisted = !has_remove_or_move
-        && sensitive_ok
-        && !folders.is_empty()
-        && chain
-            .snapshots
-            .iter()
-            .all(|s| crate::chain::whitelist::is_whitelisted(&s.path, &folders));
-    if all_whitelisted {
+    let needing = crate::chain::play::steps_that_need_eyes(
+        &chain,
+        &folders,
+        |p, text| {
+            crate::terminal_router::file_trust::is_sensitive(p)
+                && !crate::terminal_router::file_trust::is_approved(p, text)
+        },
+    );
+    if needing.is_empty() {
         let wanted = vec![true; chain.steps.len()];
         return match crate::chain::writer::apply(&chain, &wanted) {
             Ok(()) => {
@@ -486,6 +519,9 @@ fn handle_chain(rest: &str) -> String {
                 sentence
             }
         };
+    }
+    if needing.len() < chain.steps.len() {
+        chain.review_indices = needing;
     }
 
     match super::stash_pending_chain(chain) {
@@ -518,6 +554,13 @@ fn handle_overwrite(rest: &str) -> String {
         return format!("zapgui: overwrite needs an absolute path: {path}");
     }
 
+    {
+        let allow = zap_wire::extensions::ExtensionAllowlist::load();
+        if let Some(msg) = allow.check("overwrite", std::path::Path::new(path)) {
+            return format!("zapgui: overwrite refused: {msg}");
+        }
+    }
+
     let old = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return format!("zapgui: couldn't find {path}"),
@@ -540,7 +583,7 @@ fn handle_overwrite(rest: &str) -> String {
         cwd: None,
     };
 
-    let chain = match play_forward(vec![step], std::path::Path::new("/")) {
+    let mut chain = match play_forward(vec![step], std::path::Path::new("/")) {
         Ok(c) => c,
         Err(e) => {
             let sentence = format!("zap: nothing was written. {}.", e);
@@ -550,18 +593,18 @@ fn handle_overwrite(rest: &str) -> String {
         }
     };
 
-    // The bare overwrite form is a one-step chain, so it uses the same
-    // whitelist and .sh/.toml approval path a chain does.
-    let writes = chain.final_writes(&[]);
-    let sensitive_ok = crate::terminal_router::file_trust::all_approved(&writes);
+    // The bare overwrite form is a one-step chain, so it goes through the
+    // same "steps that need eyes" test as a full chain.
     let folders = crate::chain::whitelist::load();
-    let all_whitelisted = sensitive_ok
-        && !folders.is_empty()
-        && chain
-            .snapshots
-            .iter()
-            .all(|s| crate::chain::whitelist::is_whitelisted(&s.path, &folders));
-    if all_whitelisted {
+    let needing = crate::chain::play::steps_that_need_eyes(
+        &chain,
+        &folders,
+        |p, text| {
+            crate::terminal_router::file_trust::is_sensitive(p)
+                && !crate::terminal_router::file_trust::is_approved(p, text)
+        },
+    );
+    if needing.is_empty() {
         let wanted = vec![true; chain.steps.len()];
         return match crate::chain::writer::apply(&chain, &wanted) {
             Ok(()) => {
@@ -579,6 +622,9 @@ fn handle_overwrite(rest: &str) -> String {
                 sentence
             }
         };
+    }
+    if needing.len() < chain.steps.len() {
+        chain.review_indices = needing;
     }
 
     super::stash_pending_chain(chain);
