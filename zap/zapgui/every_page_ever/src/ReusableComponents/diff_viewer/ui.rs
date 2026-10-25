@@ -10,6 +10,7 @@ const BORDER: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 70, 70,
 const HR_COLOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 90, 90, 55);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 120, 120);
+const TEXT_DIM_MOVED: egui::Color32 = egui::Color32::from_rgb(100, 100, 100);
 const BAR_DEL: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const BAR_INS: egui::Color32 = egui::Color32::from_rgb(80, 180, 80);
 const BAR_MOVE: egui::Color32 = egui::Color32::from_rgb(170, 120, 220);
@@ -29,6 +30,15 @@ const SCROLLBAR_RESERVE: f32 = 14.0;
 const TAG_H: f32 = 16.0;
 const ROW_BOTTOM_PAD: f32 = 4.0;
 
+/// How moves should be drawn. Classic is today's behaviour: bars and
+/// strips on both sides. Dimmed hides the strip and the bar on the
+/// from side and draws its text in dim grey, for snippet views.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveDisplay {
+    Classic,
+    Dimmed,
+}
+
 /// Inputs the viewer needs beyond the row blocks. Defaults are what an
 /// old snippet-only view looked like: no moves, shared scroll, no
 /// scroll-to-change.
@@ -39,6 +49,9 @@ pub struct DiffViewerParams<'a> {
     /// When set, the right ("after") pane gets a colored glow. Used to
     /// flag execute / cargo-run requests at a glance.
     pub right_accent: Option<egui::Color32>,
+    /// How moves are drawn. Chain review snippet view passes Dimmed;
+    /// full-file view and surface reviews pass Classic.
+    pub moves: MoveDisplay,
 }
 
 impl Default for DiffViewerParams<'_> {
@@ -48,6 +61,7 @@ impl Default for DiffViewerParams<'_> {
             scroll_id: egui::Id::new("diff_scroll"),
             scroll_to_change_once: false,
             right_accent: None,
+            moves: MoveDisplay::Classic,
         }
     }
 }
@@ -114,8 +128,18 @@ fn layout_one(
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
-fn bar_color_for(kind: &RowKind, which: Which, in_move: bool) -> Option<egui::Color32> {
+fn bar_color_for(
+    kind: &RowKind,
+    which: Which,
+    in_move: bool,
+    moves: MoveDisplay,
+) -> Option<egui::Color32> {
     if in_move {
+        if matches!(moves, MoveDisplay::Dimmed)
+            && matches!((kind, which), (RowKind::Delete, Which::Left))
+        {
+            return None;
+        }
         return Some(BAR_MOVE);
     }
     match (kind, which) {
@@ -215,37 +239,43 @@ fn diff_viewer_body(
     for block in blocks {
         let mut first = true;
         for row in &block.rows {
+            let left_lineno = row.left.as_ref().and_then(|s| s.lineno);
+            let right_lineno = row.right.as_ref().and_then(|s| s.lineno);
+            let left_in_move = in_move(params.move_spans, MoveRole::From, left_lineno);
+            let right_in_move = in_move(params.move_spans, MoveRole::To, right_lineno);
+
+            let left_color = if matches!(params.moves, MoveDisplay::Dimmed)
+                && row.kind == RowKind::Delete
+                && left_in_move
+            {
+                TEXT_DIM_MOVED
+            } else {
+                TEXT
+            };
+            let right_color = TEXT;
+
             let left = row
                 .left
                 .as_ref()
-                .map(|s| layout_one(ui, &s.text, &font, TEXT, wrap_left));
+                .map(|s| layout_one(ui, &s.text, &font, left_color, wrap_left));
             let right = row
                 .right
                 .as_ref()
-                .map(|s| layout_one(ui, &s.text, &font, TEXT, wrap_right));
+                .map(|s| layout_one(ui, &s.text, &font, right_color, wrap_right));
 
             let lh = left.as_ref().map(|g| g.size().y).unwrap_or(0.0);
             let rh = right.as_ref().map(|g| g.size().y).unwrap_or(0.0);
             let mut h = lh.max(rh).max(ROW_MIN_H) + ROW_BOTTOM_PAD;
 
-            let left_lineno = row.left.as_ref().and_then(|s| s.lineno);
-            let right_lineno = row.right.as_ref().and_then(|s| s.lineno);
-            let tag_left =
-                span_starting_at(params.move_spans, MoveRole::From, left_lineno).map(|s| {
-                    let mut l = s.label.clone();
-                    if s.edited {
-                        l.push_str(" (edited)");
-                    }
-                    l
-                });
+            let tag_left = if matches!(params.moves, MoveDisplay::Classic) {
+                span_starting_at(params.move_spans, MoveRole::From, left_lineno)
+                    .map(|s| s.label.clone())
+            } else {
+                None
+            };
             let tag_right =
-                span_starting_at(params.move_spans, MoveRole::To, right_lineno).map(|s| {
-                    let mut l = s.label.clone();
-                    if s.edited {
-                        l.push_str(" (edited)");
-                    }
-                    l
-                });
+                span_starting_at(params.move_spans, MoveRole::To, right_lineno)
+                    .map(|s| s.label.clone());
             if tag_left.is_some() || tag_right.is_some() {
                 h += TAG_H;
             }
@@ -253,8 +283,8 @@ fn diff_viewer_body(
             laid.push(LaidRow {
                 left,
                 right,
-                left_in_move: in_move(params.move_spans, MoveRole::From, left_lineno),
-                right_in_move: in_move(params.move_spans, MoveRole::To, right_lineno),
+                left_in_move,
+                right_in_move,
                 tag_left,
                 tag_right,
                 left_lineno,
@@ -276,11 +306,13 @@ fn diff_viewer_body(
             .layout(egui::Layout::top_down(egui::Align::LEFT)),
     );
 
+    let moves_mode = params.moves;
     egui::ScrollArea::vertical()
         .id_salt(params.scroll_id)
         .auto_shrink([false, false])
         .show(&mut child, |ui| {
             let mut first_change_rect: Option<egui::Rect> = None;
+            let mut label_ys: Vec<f32> = Vec::with_capacity(laid.len());
             for lr in laid.iter() {
                 let (row_rect, _) = ui.allocate_exact_size(
                     egui::vec2(rect.width(), lr.height),
@@ -288,7 +320,7 @@ fn diff_viewer_body(
                 );
                 let mut y = row_rect.top();
 
-                if lr.block_start && lr.kind == RowKind::Change {
+                if lr.block_start && lr.kind != RowKind::Equal {
                     if first_change_rect.is_none() {
                         first_change_rect = Some(row_rect);
                     }
@@ -298,10 +330,11 @@ fn diff_viewer_body(
 
                 if let Some(label) = &lr.tag_left {
                     paint_strip(ui, inner_left, y, label);
-                    y += TAG_H;
                 }
                 if let Some(label) = &lr.tag_right {
                     paint_strip(ui, inner_right, y, label);
+                }
+                if lr.tag_left.is_some() || lr.tag_right.is_some() {
                     y += TAG_H;
                 }
 
@@ -317,6 +350,7 @@ fn diff_viewer_body(
                     lr.left_in_move,
                     &lr.row_kind,
                     lr.left.is_some(),
+                    moves_mode,
                 );
                 draw_side_paint(
                     ui,
@@ -328,6 +362,7 @@ fn diff_viewer_body(
                     lr.right_in_move,
                     &lr.row_kind,
                     lr.right.is_some(),
+                    moves_mode,
                 );
 
                 // Wrap markers: a small arrow at each continuation row,
@@ -335,9 +370,15 @@ fn diff_viewer_body(
                 paint_wrap_marks(ui, text_x_left - 10.0, y, lr.left.as_ref());
                 paint_wrap_marks(ui, text_x_right - 10.0, y, lr.right.as_ref());
 
-                // Pass 2: place the text as selectable labels.
-                place_label(ui, lr.left.as_ref(), text_x_left, y, wrap_left);
-                place_label(ui, lr.right.as_ref(), text_x_right, y, wrap_right);
+                label_ys.push(y);
+            }
+
+            // Place each pane's labels together so selection stays within its pane.
+            for (lr, y) in laid.iter().zip(label_ys.iter()) {
+                place_label(ui, lr.left.as_ref(), text_x_left, *y, wrap_left);
+            }
+            for (lr, y) in laid.iter().zip(label_ys.iter()) {
+                place_label(ui, lr.right.as_ref(), text_x_right, *y, wrap_right);
             }
 
             if params.scroll_to_change_once {
@@ -450,8 +491,9 @@ fn draw_side_paint(
     in_move: bool,
     kind: &RowKind,
     has_side: bool,
+    moves: MoveDisplay,
 ) {
-    if let Some(color) = bar_color_for(kind, which, in_move) {
+    if let Some(color) = bar_color_for(kind, which, in_move, moves) {
         if has_side {
             let bar_rect = egui::Rect::from_min_size(
                 egui::pos2(inner.left() + GUTTER_W, y_top + BAR_PAD),

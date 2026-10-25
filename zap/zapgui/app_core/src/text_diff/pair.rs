@@ -41,6 +41,17 @@ pub fn pair_lines_full(old: &str, new: &str) -> Vec<DiffRow> {
     rows
 }
 
+/// Pair two arbitrary slices of already-resolved sides. Used by
+/// move_display to reconstruct the paired view of a moved block: the old
+/// slice comes from the Delete rows at the move's original position,
+/// the new slice from the Insert rows at the destination.
+pub fn pair_runs(old: &[Side], new: &[Side]) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    let pairs = align(old, new);
+    emit_aligned(pairs, old.to_vec(), new.to_vec(), &mut rows);
+    rows
+}
+
 fn merge_adjacent_delete_insert(ops: &[DiffOp]) -> Vec<DiffOp> {
     let mut merged = Vec::with_capacity(ops.len());
     let mut i = 0;
@@ -296,19 +307,34 @@ fn emit_aligned(
                     }
                     i += 1;
                 }
-                for oi in dels {
+                if dels.len() == 1 && inses.len() == 1 {
+                    let l = old_lines[dels[0]].clone();
+                    let r = new_lines[inses[0]].clone();
+                    let kind = if same_text(&l.text, &r.text) {
+                        RowKind::Equal
+                    } else {
+                        RowKind::Change
+                    };
                     rows.push(DiffRow {
-                        left: Some(old_lines[oi].clone()),
-                        right: None,
-                        kind: RowKind::Delete,
+                        left: Some(l),
+                        right: Some(r),
+                        kind,
                     });
-                }
-                for ni in inses {
-                    rows.push(DiffRow {
-                        left: None,
-                        right: Some(new_lines[ni].clone()),
-                        kind: RowKind::Insert,
-                    });
+                } else {
+                    for oi in dels {
+                        rows.push(DiffRow {
+                            left: Some(old_lines[oi].clone()),
+                            right: None,
+                            kind: RowKind::Delete,
+                        });
+                    }
+                    for ni in inses {
+                        rows.push(DiffRow {
+                            left: None,
+                            right: Some(new_lines[ni].clone()),
+                            kind: RowKind::Insert,
+                        });
+                    }
                 }
             }
         }
@@ -376,7 +402,45 @@ mod tests {
         let old = "fn main() {\n";
         let new = "let result = compute();\n";
         let rows = pair_lines(old, new);
-        assert_eq!(kinds(&rows), vec![RowKind::Delete, RowKind::Insert]);
+        assert_eq!(kinds(&rows), vec![RowKind::Change]);
+    }
+
+    #[test]
+    fn short_line_replaced_by_long_line_gives_change() {
+        let old = "let a = 1;\n";
+        let new = "let a = compute_something_long(b);\n";
+        let rows = pair_lines(old, new);
+        assert_eq!(kinds(&rows), vec![RowKind::Change]);
+    }
+
+    #[test]
+    fn unrelated_assignments_give_change() {
+        let old = "x = 1;\n";
+        let new = "y = 2;\n";
+        let rows = pair_lines(old, new);
+        assert_eq!(kinds(&rows), vec![RowKind::Change]);
+    }
+
+    #[test]
+    fn multiple_unrelated_lines_remain_deletes_then_inserts() {
+        let old = "old alpha\nold beta\n";
+        let new = "new gamma\nnew delta\n";
+        let rows = pair_lines_full(old, new);
+        assert_eq!(
+            kinds(&rows),
+            vec![
+                RowKind::Delete,
+                RowKind::Delete,
+                RowKind::Insert,
+                RowKind::Insert,
+            ]
+        );
+    }
+
+    #[test]
+    fn identical_text_gives_equal() {
+        let rows = pair_lines_full("same line\n", "same line\n");
+        assert_eq!(kinds(&rows), vec![RowKind::Equal]);
     }
 
     #[test]

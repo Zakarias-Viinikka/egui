@@ -5,7 +5,7 @@ const PAD: f32 = 7.0;
 const HOVER_BG: egui::Color32 = egui::Color32::from_gray(225);
 const X_COLOR: egui::Color32 = egui::Color32::from_gray(70);
 
-pub fn close_button_ui(ui: &mut egui::Ui, center: egui::Pos2) -> bool {
+pub fn close_button_ui(ui: &mut egui::Ui, center: egui::Pos2, tip: &str) -> bool {
     let rect = egui::Rect::from_center_size(center, egui::vec2(SIZE, SIZE));
     let response = ui.interact(rect, egui::Id::new("close_button"), egui::Sense::click());
 
@@ -21,5 +21,5 @@ pub fn close_button_ui(ui: &mut egui::Ui, center: egui::Pos2) -> bool {
     ui.painter().line_segment([tl, br], stroke);
     ui.painter().line_segment([tr, bl], stroke);
 
-    response.clicked()
+    response.on_hover_text(tip).clicked()
 }

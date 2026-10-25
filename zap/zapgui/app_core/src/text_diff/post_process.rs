@@ -63,14 +63,10 @@ pub fn process(rows: &[DiffRow]) -> Vec<DiffRowProcessedForUi> {
             continue;
         }
 
-        let context = equals.pop();
         flush_equals(&mut out, &mut equals);
 
-        let mut block: Vec<DiffRow> = Vec::new();
-        block.extend(context);
-        block.extend(run);
-        let kind = run_kind(&block);
-        out.push(DiffRowProcessedForUi { rows: block, kind });
+        let kind = run_kind(&run);
+        out.push(DiffRowProcessedForUi { rows: run, kind });
     }
 
     flush_equals(&mut out, &mut equals);
@@ -106,4 +102,45 @@ pub fn debug_format(blocks: &[DiffRowProcessedForUi]) -> String {
         out.push('\n');
     }
     out
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(kind: RowKind, left: &str, right: &str) -> DiffRow {
+        DiffRow {
+            left: Some(Side {
+                lineno: None,
+                text: left.to_string(),
+            }),
+            right: Some(Side {
+                lineno: None,
+                text: right.to_string(),
+            }),
+            kind,
+        }
+    }
+
+    #[test]
+    fn equal_context_stays_in_separate_blocks() {
+        let rows = vec![
+            row(RowKind::Equal, "before 1", "before 1"),
+            row(RowKind::Equal, "before 2", "before 2"),
+            row(RowKind::Equal, "before 3", "before 3"),
+            row(RowKind::Change, "old", "new"),
+            row(RowKind::Equal, "after 1", "after 1"),
+            row(RowKind::Equal, "after 2", "after 2"),
+            row(RowKind::Equal, "after 3", "after 3"),
+        ];
+
+        let blocks = process(&rows);
+        assert_eq!(
+            blocks.iter().map(|b| b.rows.len()).collect::<Vec<_>>(),
+            vec![3, 1, 3]
+        );
+        assert_eq!(
+            blocks.iter().map(|b| b.kind.clone()).collect::<Vec<_>>(),
+            vec![RowKind::Equal, RowKind::Change, RowKind::Equal]
+        );
+    }
 }

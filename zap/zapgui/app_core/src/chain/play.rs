@@ -129,6 +129,12 @@ pub fn play_forward(steps: Vec<Step>, cwd: &Path) -> Result<Chain, String> {
     let all_spans = move_detect::detect(&step_inputs);
     for (i, spans) in all_spans.into_iter().enumerate() {
         if let Some(slot) = applied.get_mut(i) {
+            if !spans.is_empty() {
+                let before = slot.before.as_deref().unwrap_or("");
+                let flat = pair_lines(before, &slot.after);
+                let new_rows = crate::text_diff::move_display::apply(flat, &spans);
+                slot.rows = process(&new_rows);
+            }
             slot.move_spans = spans;
         }
     }

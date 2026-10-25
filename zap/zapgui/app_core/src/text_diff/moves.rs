@@ -41,6 +41,13 @@ pub struct MoveSpan {
     pub last_line: u32,
     pub label: String,
     pub edited: bool,
+    /// Unique across the chain. The From and To spans of one match share
+    /// this value.
+    pub pair: u32,
+    /// Step index (0-based) that holds the partner span.
+    pub partner_step: u32,
+    /// First line of the partner span's range.
+    pub partner_first_line: u32,
 }
 
 /// A candidate run: a maximal set of consecutive Delete-only rows (or
@@ -136,7 +143,7 @@ pub fn detect(steps: &[(Vec<DiffRow>, String)]) -> Vec<Vec<MoveSpan>> {
 
     let mut out: Vec<Vec<MoveSpan>> = (0..steps.len()).map(|_| Vec::new()).collect();
 
-    for (f, t, _score) in matches {
+    for (match_idx, (f, t, _score)) in matches.into_iter().enumerate() {
         let edited = !lines_identical(&f.lines, &t.lines);
 
         let to_path = &steps[t.step].1;
@@ -164,12 +171,16 @@ pub fn detect(steps: &[(Vec<DiffRow>, String)]) -> Vec<Vec<MoveSpan>> {
             to_label
         };
 
+        let pair_id = match_idx as u32;
         out[f.step].push(MoveSpan {
             role: MoveRole::From,
             first_line: f.first_line,
             last_line: f.last_line,
             label: from_label,
             edited,
+            pair: pair_id,
+            partner_step: t.step as u32,
+            partner_first_line: t.first_line,
         });
         out[t.step].push(MoveSpan {
             role: MoveRole::To,
@@ -177,6 +188,9 @@ pub fn detect(steps: &[(Vec<DiffRow>, String)]) -> Vec<Vec<MoveSpan>> {
             last_line: t.last_line,
             label: to_label,
             edited,
+            pair: pair_id,
+            partner_step: f.step as u32,
+            partner_first_line: f.first_line,
         });
     }
 
@@ -393,5 +407,34 @@ mod tests {
         new.push_str("line a here\nline b here\nline c CHANGED here\nline d here\nline e here\n");
         let spans = detect_one(old, new);
         assert!(spans.is_empty(), "a shifted block is not a move: {spans:?}");
+    }
+
+    #[test]
+    fn spans_pair_up_correctly() {
+        let prefix = stable_lines("prefix");
+        let suffix = stable_lines("suffix");
+        let block = moved_block();
+        let old = format!("{prefix}{block}{suffix}");
+        let new = format!("{prefix}{suffix}{block}");
+
+        let rows = crate::text_diff::pair::pair_lines_full(&old, &new);
+        let steps = vec![(rows, "test.rs".to_string())];
+        let spans = detect(&steps);
+        let step_spans = &spans[0];
+        let from = step_spans.iter().find(|s| s.role == MoveRole::From).expect("from");
+        let to = step_spans.iter().find(|s| s.role == MoveRole::To).expect("to");
+        assert_eq!(from.pair, to.pair);
+        assert_eq!(from.partner_step, 0);
+        assert_eq!(to.partner_step, 0);
+        assert_eq!(from.partner_first_line, to.first_line);
+        assert_eq!(to.partner_first_line, from.first_line);
+    }
+
+    #[test]
+    fn three_short_brace_lines_are_not_a_move() {
+        let old = "first line here\n}\n}\n}\nsecond line here\n";
+        let new = "first line here\nsecond line here\n}\n}\n}\n";
+        let spans = detect_one(old, new);
+        assert!(spans.is_empty(), "got {spans:?}");
     }
 }

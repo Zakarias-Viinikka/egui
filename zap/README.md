@@ -202,10 +202,12 @@ above the diff carries a matching accent bar on its left and reads
 `step n of m · verb path`, with ` · marked for retry` or
 ` · verified` appended when the shown step carries that flag.
 
-Below the caption, a dimmer line names the deepest common folder of
-every path the chain touches: `edits confined to /abs/folder/`. It is
-computed once in `play_forward`, over all step paths and move
-destinations, and stored on the Chain as `boundary`.
+On the caption row, left of the full-file pill, a chip names the deepest
+common folder of every path the chain touches: `confined to /abs/folder/`.
+It is computed once in `play_forward`, over all step paths and move
+destinations, and stored on the Chain as `boundary`. The chip is green
+normally, amber when the folder has two components or fewer, and
+red-orange reading `edits span the whole disk` when the boundary is `/`.
 
 A chain with more than one step shows a column of glass blocks on the right,
 one per step. The shown step's block is brighter, denied blocks are red,
@@ -217,9 +219,10 @@ On success the slot empties (only if it still holds the same Arc, so a newer
 chain survives) and the window hides with `ViewportCommand::Visible(false)`,
 not `Close`, so the process and its listener stay alive.
 
-Clicks are ignored for 500 ms after the displayed diff changes, after a
-Mark, or after the window appears, so a click meant for something else
-can't land on a freshly shown diff.
+Clicks are ignored for 150 ms after the displayed diff changes, after a
+Mark, or after the window appears, and the surface review guards Confirm
+and Deny All the same way, so a click meant for something else can't land
+on a freshly shown diff.
 
 A new chain while one is showing replaces it. The reply and clipboard both
 say `zap: replaced unconfirmed chain (<first path>).` so it doesn't

@@ -27,6 +27,7 @@ pub fn glass_button_ui(
     center: egui::Pos2,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     icon: Icon,
+    tip: &str,
 ) -> bool {
     let rect = egui::Rect::from_center_size(center, egui::vec2(SIZE, SIZE));
     let id = egui::Id::new("glass_button").with(id_salt);
@@ -106,14 +107,7 @@ pub fn glass_button_ui(
         }
     }
 
-    let label = match icon {
-        Icon::Confirm => "confirm",
-        Icon::Deny => "deny all",
-        Icon::Mark => "mark for retry",
-        Icon::Verify => "verify",
-        Icon::AllowRun => "allow & run",
-    };
-    response.on_hover_text(label).clicked()
+    response.on_hover_text(tip).clicked()
 }
 
 /// A small glass-style pill: a rounded rectangle with a label, sized to
@@ -124,6 +118,7 @@ pub fn pill_ui(
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     label: &str,
     active: bool,
+    tip: &str,
 ) -> bool {
     let font = egui::FontId::monospace(12.0);
     let galley = ui
@@ -160,7 +155,7 @@ pub fn pill_ui(
         egui::Color32::from_rgb(220, 220, 220),
     );
 
-    response.clicked()
+    response.on_hover_text(tip).clicked()
 }
 
 const FILL_SELECTED: egui::Color32 = egui::Color32::from_rgba_premultiplied(60, 60, 60, 200);
@@ -190,6 +185,7 @@ pub fn glass_step_block_ui(
     id_salt: impl std::hash::Hash + std::fmt::Debug,
     state: BlockState,
     accent: Option<egui::Color32>,
+    tip: &str,
 ) -> bool {
     let rect = egui::Rect::from_center_size(center, egui::vec2(SIZE, SIZE));
     let id = egui::Id::new("glass_step_block").with(id_salt);
@@ -212,5 +208,5 @@ pub fn glass_step_block_ui(
         egui::StrokeKind::Inside,
     );
 
-    response.clicked()
+    response.on_hover_text(tip).clicked()
 }

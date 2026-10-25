@@ -12,11 +12,17 @@ use every_page_ever::ReusableComponents::glass_button::ui::{
     self as glass_button, BlockState, Icon as GlassIcon,
 };
 
-const CLICK_GUARD: Duration = Duration::from_millis(500);
+const CLICK_GUARD: Duration = Duration::from_millis(150);
 const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const CAPTION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
 const CAPTION_MARKED_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
-const BOUNDARY_COLOR: egui::Color32 = egui::Color32::from_rgb(150, 150, 160);
+const BOUNDARY_GREEN: egui::Color32 = egui::Color32::from_rgb(100, 200, 120);
+const BOUNDARY_AMBER: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
+const BOUNDARY_ORANGE: egui::Color32 = egui::Color32::from_rgb(240, 110, 40);
+const CHIP_PAD_X: f32 = 8.0;
+const CHIP_PAD_Y: f32 = 3.0;
+const CLOSE_TIP: &str = "Hide this window. The waiting chain stays waiting.";
+const PILL_TIP: &str = "Switch between the changed lines and the whole file.";
 const SURFACE_BANNER_BG: egui::Color32 = egui::Color32::from_rgb(60, 42, 12);
 const SURFACE_BANNER_BORDER: egui::Color32 = egui::Color32::from_rgb(230, 160, 40);
 const SURFACE_BANNER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 200, 110);
@@ -64,11 +70,71 @@ fn banner_hint(kind: BannerKind) -> &'static str {
     }
 }
 
-fn boundary_line(boundary: &std::path::Path) -> String {
+fn boundary_chip_text(boundary: &std::path::Path) -> String {
     if boundary == std::path::Path::new("/") {
-        "edits confined to /".to_string()
+        "edits span the whole disk".to_string()
     } else {
-        format!("edits confined to {}/", boundary.display())
+        format!("confined to {}/", boundary.display())
+    }
+}
+
+fn boundary_chip_color(boundary: &std::path::Path) -> egui::Color32 {
+    if boundary == std::path::Path::new("/") {
+        return BOUNDARY_ORANGE;
+    }
+    let normal = boundary
+        .components()
+        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+        .count();
+    if normal <= 2 {
+        BOUNDARY_AMBER
+    } else {
+        BOUNDARY_GREEN
+    }
+}
+
+fn chip_galley(
+    ui: &egui::Ui,
+    text: &str,
+    color: egui::Color32,
+    max_w: f32,
+) -> Arc<egui::Galley> {
+    let font = egui::FontId::monospace(11.0);
+    let avail = (max_w - CHIP_PAD_X * 2.0).max(24.0);
+    let full = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font.clone(), color);
+    if full.size().x <= avail {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for k in 1..chars.len() {
+        let candidate: String = std::iter::once('\u{2026}')
+            .chain(chars[k..].iter().copied())
+            .collect();
+        let g = ui
+            .painter()
+            .layout_no_wrap(candidate, font.clone(), color);
+        if g.size().x <= avail {
+            return g;
+        }
+    }
+    ui.painter()
+        .layout_no_wrap("\u{2026}".to_string(), font, color)
+}
+
+fn verb_word(v: Verb) -> &'static str {
+    match v {
+        Verb::Create => "create",
+        Verb::Replace => "replace",
+        Verb::Overwrite => "overwrite",
+        Verb::Append => "append",
+        Verb::Remove => "delete",
+        Verb::RemoveDir => "rmdir",
+        Verb::Cargo => "cargo",
+        Verb::Run => "run",
+        Verb::Move => "rename",
+        Verb::Mkdir => "mkdir",
     }
 }
 
@@ -193,6 +259,24 @@ fn caption_wrap_width(screen: egui::Rect, has_blocks: bool) -> f32 {
     ((screen.right() - margin - right_pad) - (screen.left() + margin) - PILL_RESERVE).max(120.0)
 }
 
+fn caption_area(screen: egui::Rect, has_blocks: bool) -> (f32, f32) {
+    let margin = 40.0;
+    let blocks_col_w = 56.0;
+    let gap = 12.0;
+    let right_pad = if has_blocks { blocks_col_w + gap } else { 0.0 };
+    (screen.left() + margin, screen.right() - margin - right_pad)
+}
+
+fn pill_width(ui: &egui::Ui, label: &str) -> f32 {
+    let font = egui::FontId::monospace(12.0);
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font, egui::Color32::WHITE)
+        .size()
+        .x;
+    text_w + 20.0
+}
+
 fn layout_caption(
     ui: &egui::Ui,
     text: &str,
@@ -214,36 +298,6 @@ fn layout_caption(
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
-/// Caption with a second, dimmer line naming the deepest common folder
-/// of everything the chain touches. Used by the chain review; the
-/// surface review keeps the single-line caption.
-fn layout_caption_with_boundary(
-    ui: &egui::Ui,
-    text: &str,
-    color: egui::Color32,
-    boundary: &str,
-    wrap_width: f32,
-) -> Arc<egui::Galley> {
-    let mut job = LayoutJob::default();
-    let caption_format = egui::TextFormat {
-        font_id: egui::FontId::monospace(13.0),
-        color,
-        ..Default::default()
-    };
-    let boundary_format = egui::TextFormat {
-        font_id: egui::FontId::monospace(11.0),
-        color: BOUNDARY_COLOR,
-        ..Default::default()
-    };
-    job.append(text, 0.0, caption_format.clone());
-    job.append("\n", 0.0, caption_format);
-    job.append(boundary, 0.0, boundary_format);
-    job.wrap = TextWrapping {
-        max_width: wrap_width,
-        ..Default::default()
-    };
-    ui.fonts_mut(|f| f.layout_job(job))
-}
 
 pub struct NecessaryStructForEgui {
     shown: Option<Arc<Chain>>,
@@ -266,6 +320,8 @@ pub struct NecessaryStructForEgui {
     /// Set for one frame when the pill is clicked, so the viewer scrolls
     /// to the first change after switching modes.
     scroll_to_change_pending: bool,
+    surface_shown_at: Instant,
+    did_init_style: bool,
 }
 
 impl Default for NecessaryStructForEgui {
@@ -287,6 +343,8 @@ impl Default for NecessaryStructForEgui {
             menu_error: None,
             full_file: false,
             scroll_to_change_pending: false,
+            surface_shown_at: Instant::now(),
+            did_init_style: false,
         }
     }
 }
@@ -306,6 +364,12 @@ impl eframe::App for NecessaryStructForEgui {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if !self.did_init_style {
+            self.did_init_style = true;
+            ui.ctx()
+                .all_styles_mut(|style| style.interaction.tooltip_delay = 0.15);
+        }
+
         if app_core::terminal_router::take_menu_request() {
             self.open_menu();
             ui.ctx()
@@ -330,6 +394,7 @@ impl eframe::App for NecessaryStructForEgui {
             let now_none = current_surface.is_none();
             self.shown_surface = current_surface;
             self.surface_step = 0;
+            self.surface_shown_at = Instant::now();
             self.full_file = false;
             if was_shown && now_none {
                 // The review was withdrawn by its own handler (cancel,
@@ -442,7 +507,32 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             });
         let has_banner = banner_kind.is_some();
 
-        let wrap_width = caption_wrap_width(screen, show_blocks);
+        let pill_label = if self.full_file {
+            "changes only"
+        } else {
+            "full file"
+        };
+        let (cap_left, cap_right) = caption_area(screen, show_blocks);
+        let cap_area_w = cap_right - cap_left;
+        let pill_w = pill_width(ui, pill_label);
+        let pill_left = cap_right - 50.0 - pill_w / 2.0;
+        let chip_right = pill_left - 8.0;
+        let chip_max_w = cap_area_w * 0.45;
+        let chip = chain.as_ref().map(|c| {
+            let text = boundary_chip_text(&c.boundary);
+            let color = boundary_chip_color(&c.boundary);
+            let g = chip_galley(ui, &text, color, chip_max_w);
+            (g, color)
+        });
+        let chip_w = chip
+            .as_ref()
+            .map(|(g, _)| g.size().x + CHIP_PAD_X * 2.0)
+            .unwrap_or(0.0);
+        let wrap_width = if chip.is_some() {
+            (chip_right - chip_w - 12.0 - cap_left).max(120.0)
+        } else {
+            caption_wrap_width(screen, show_blocks)
+        };
 
         let (caption_galley, caption_color) = if let Some(c) = chain.as_ref() {
             if let Some(step) = c.steps.get(self.shown_step) {
@@ -489,14 +579,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 } else {
                     CAPTION_COLOR
                 };
-                let boundary_label = boundary_line(&c.boundary);
-                let g = layout_caption_with_boundary(
-                    ui,
-                    &text,
-                    color,
-                    &boundary_label,
-                    wrap_width,
-                );
+                let g = layout_caption(ui, &text, color, wrap_width);
                 (Some(g), color)
             } else {
                 (None, CAPTION_COLOR)
@@ -535,18 +618,34 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 .galley(layout.caption.left_top(), g, caption_color);
         }
 
+        if let Some((g, color)) = chip {
+            let size = g.size() + egui::vec2(CHIP_PAD_X * 2.0, CHIP_PAD_Y * 2.0);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    chip_right - size.x,
+                    layout.caption.center().y - size.y / 2.0,
+                ),
+                size,
+            );
+            ui.painter().rect(
+                rect,
+                size.y / 2.0,
+                egui::Color32::TRANSPARENT,
+                egui::Stroke::new(1.0, color),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter()
+                .galley(rect.min + egui::vec2(CHIP_PAD_X, CHIP_PAD_Y), g, color);
+        }
+
         if chain.is_some() {
-            let label = if self.full_file {
-                "changes only"
-            } else {
-                "full file"
-            };
             if glass_button::pill_ui(
                 ui,
                 layout.pill_center,
                 "full_file_toggle",
-                label,
+                pill_label,
                 self.full_file,
+                PILL_TIP,
             ) {
                 self.full_file = !self.full_file;
                 self.scroll_to_change_pending = true;
@@ -593,6 +692,11 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 _ => None,
             });
 
+        let moves_mode = if self.full_file {
+            diff_viewer::MoveDisplay::Classic
+        } else {
+            diff_viewer::MoveDisplay::Dimmed
+        };
         diff_viewer::diff_viewer_ui_no_copy(
             ui,
             layout.viewer,
@@ -602,6 +706,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 scroll_id: egui::Id::new(("diff_scroll", self.shown_step, self.full_file)),
                 scroll_to_change_once: scroll_once,
                 right_accent,
+                moves: moves_mode,
             },
         );
 
@@ -623,6 +728,29 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     .as_ref()
                     .and_then(|c| c.steps.get(i))
                     .map(|s| verb_accent(s.step.verb));
+                let step_ref = chain.as_ref().and_then(|c| c.steps.get(i));
+                let mut tip = if let Some(s) = step_ref {
+                    let file_name = s
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| s.path.display().to_string());
+                    format!(
+                        "Step {} of {}: {} {}",
+                        i + 1,
+                        step_count,
+                        verb_word(s.step.verb),
+                        file_name
+                    )
+                } else {
+                    format!("Step {} of {}", i + 1, step_count)
+                };
+                if marked {
+                    tip.push_str(", marked");
+                }
+                if self.verified.get(i).copied().unwrap_or(false) {
+                    tip.push_str(", verified");
+                }
                 let y = start_y + i as f32 * (layout.block_size + layout.gap);
                 if glass_button::glass_step_block_ui(
                     ui,
@@ -630,6 +758,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     i,
                     state,
                     accent,
+                    &tip,
                 ) {
                     clicked_step = Some(i);
                 }
@@ -643,7 +772,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             *slot = true;
         }
 
-        if close_button::close_button_ui(ui, layout.close_center) {
+        if close_button::close_button_ui(ui, layout.close_center, CLOSE_TIP) {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
@@ -675,6 +804,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 egui::pos2(start_x, layout.button_y),
                 0,
                 GlassIcon::Verify,
+                "Tick this once you have read the step. Run and cargo steps cannot be confirmed until verified.",
             ) {
                 verify_clicked = true;
             }
@@ -683,6 +813,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 egui::pos2(start_x + step_x, layout.button_y),
                 1,
                 GlassIcon::Mark,
+                "Leave this step out. Confirm skips marked steps and keeps them for retry.",
             ) {
                 mark_clicked = true;
             }
@@ -691,11 +822,17 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             } else {
                 GlassIcon::Confirm
             };
+            let approve_tip = if shown_is_run {
+                "Write the steps, then run the command in this step."
+            } else {
+                "Write every step that is not marked."
+            };
             if glass_button::glass_button_ui(
                 ui,
                 egui::pos2(start_x + 2.0 * step_x, layout.button_y),
                 2,
                 approve_icon,
+                approve_tip,
             ) && click_ok
             {
                 confirmed = true;
@@ -705,6 +842,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 egui::pos2(start_x + 3.0 * step_x, layout.button_y),
                 3,
                 GlassIcon::Deny,
+                "Write nothing. All steps stay available for retry.",
             ) && click_ok
             {
                 deny_all_clicked = true;
@@ -897,9 +1035,11 @@ impl NecessaryStructForEgui {
             "full_file_toggle",
             label,
             self.full_file,
+            PILL_TIP,
         ) {
             self.full_file = !self.full_file;
             self.scroll_to_change_pending = true;
+            self.surface_shown_at = Instant::now();
         }
 
         let owned_blocks;
@@ -942,6 +1082,7 @@ impl NecessaryStructForEgui {
                 )),
                 scroll_to_change_once: scroll_once,
                 right_accent,
+                moves: diff_viewer::MoveDisplay::Classic,
             },
         );
 
@@ -955,6 +1096,17 @@ impl NecessaryStructForEgui {
                 } else {
                     BlockState::Normal
                 };
+                let file_name = review
+                    .files
+                    .get(i)
+                    .map(|f| {
+                        f.path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| f.path.display().to_string())
+                    })
+                    .unwrap_or_default();
+                let tip = format!("File {} of {}: {}", i + 1, file_count, file_name);
                 let y = start_y + i as f32 * (layout.block_size + layout.gap);
                 if glass_button::glass_step_block_ui(
                     ui,
@@ -962,13 +1114,15 @@ impl NecessaryStructForEgui {
                     1000 + i,
                     state,
                     None,
+                    &tip,
                 ) {
                     self.surface_step = i;
+                    self.surface_shown_at = Instant::now();
                 }
             }
         }
 
-        if close_button::close_button_ui(ui, layout.close_center) {
+        if close_button::close_button_ui(ui, layout.close_center, CLOSE_TIP) {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
@@ -977,12 +1131,15 @@ impl NecessaryStructForEgui {
         let start_x = layout.viewer.center().x - total_w / 2.0 + layout.button_size / 2.0;
         let mut confirm_clicked = false;
         let mut deny_clicked = false;
+        let surface_click_ok = self.surface_shown_at.elapsed() >= CLICK_GUARD;
         if glass_button::glass_button_ui(
             ui,
             egui::pos2(start_x, layout.button_y),
             0,
             GlassIcon::Confirm,
-        ) {
+            "Write every step that is not marked.",
+        ) && surface_click_ok
+        {
             confirm_clicked = true;
         }
         if glass_button::glass_button_ui(
@@ -990,7 +1147,9 @@ impl NecessaryStructForEgui {
             egui::pos2(start_x + layout.button_size + layout.gap, layout.button_y),
             1,
             GlassIcon::Deny,
-        ) {
+            "Write nothing. All steps stay available for retry.",
+        ) && surface_click_ok
+        {
             deny_clicked = true;
         }
 
@@ -1012,7 +1171,7 @@ impl NecessaryStructForEgui {
     fn draw_menu(&mut self, ui: &mut egui::Ui, screen: egui::Rect) {
         let close_margin = 20.0;
         let close_center = egui::pos2(screen.right() - close_margin, screen.top() + close_margin);
-        if close_button::close_button_ui(ui, close_center) {
+        if close_button::close_button_ui(ui, close_center, CLOSE_TIP) {
             self.menu_open = false;
         }
 

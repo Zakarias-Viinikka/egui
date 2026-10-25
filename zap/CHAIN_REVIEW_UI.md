@@ -23,11 +23,14 @@ layout shifts down when one is present.
 ## Caption
 
 One galley, monospace 13. Reads `step n of m · verb path`. Suffixes:
-` · marked for retry`, ` · verified`. The caption is laid out with
-`layout_caption_with_boundary`, which appends a second, dimmer line
-naming the chain's `boundary` (deepest common folder of every path the
-chain touches). A colored accent bar sits at the caption's left, in the
-shown step's verb color.
+` · marked for retry`, ` · verified`. The chain's `boundary` (deepest
+common folder of every path the chain touches) is drawn separately as a
+chip on the same row, right-aligned just left of the full-file pill, so
+it adds no height. The chip is green normally, amber at two components or
+fewer, red-orange with `edits span the whole disk` for `/`, and shortens
+from the left with an ellipsis when it would exceed 45% of the caption
+area. A colored accent bar sits at the caption's left, in the shown
+step's verb color.
 
 ## Viewer
 
@@ -50,8 +53,11 @@ Four glass buttons in a row, centered on the viewer:
   payload, preserves any Marks set before.
 
 Mark and Verify are toggle buttons: no click guard, and the shown diff
-recenters on the click. Confirm and Deny All are guarded by the 500 ms
-`CLICK_GUARD`.
+recenters on the click. Confirm and Deny All are guarded by the 150 ms
+`CLICK_GUARD`, in the chain window and in the surface review. Every
+button, the pill, the close button and the step blocks carry a hover
+tooltip; the tooltip delay is set to 0.15 s the first time the window
+draws.
 
 ## Mis-click guard
 

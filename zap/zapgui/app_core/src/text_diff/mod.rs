@@ -1,3 +1,4 @@
+pub mod move_display;
 pub mod moves;
 pub mod pair;
 pub mod post_process;
