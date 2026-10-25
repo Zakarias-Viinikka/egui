@@ -1,84 +1,68 @@
 # CHAIN REVIEW UI
 
-The chain review window is drawn by
-`zapgui/app/src/egui_setup/drawing_requirements.rs`. It reads the
-pending `Arc<Chain>` from `terminal_router` every frame.
+Last updated: 2026-10-25
+
+Drawn by zapgui/app/src/egui_setup/drawing_requirements.rs. Reads the
+pending Arc<Chain> from terminal_router every frame.
 
 ## Layout
 
-`PageLayout::new` computes the rects once per frame: banner (optional),
-caption (height grows to fit), viewer, block column (right), button row,
-close button, error line, pill. All in points.
-
-A surface review uses the same layout with a different caption and
-banner.
+PageLayout::new computes rects each frame: banner (optional), caption
+(grows to fit), viewer, block column, button row, close button, error
+line, pill. All in points. Surface review uses the same layout with a
+different caption and banner.
 
 ## Banner
 
 Delete, rename, execute and cargo-run each have a banner at the top with
-their own colors and hint. `BannerKind` in `surface_review.rs`. The
-banner takes its height off the top of the caption, so the rest of the
-layout shifts down when one is present.
+their own colours and hint. BannerKind in surface_review.rs. Takes its
+height off the top of the caption.
 
 ## Caption
 
-One galley, monospace 13. Reads `step n of m · verb path`. Suffixes:
-` · marked for retry`, ` · verified`. The chain's `boundary` (deepest
-common folder of every path the chain touches) is drawn separately as a
-chip on the same row, right-aligned just left of the full-file pill, so
-it adds no height. The chip is green normally, amber at two components or
-fewer, red-orange with `edits span the whole disk` for `/`, and shortens
-from the left with an ellipsis when it would exceed 45% of the caption
-area. A colored accent bar sits at the caption's left, in the shown
-step's verb color.
+Monospace 13. Reads `step n of m - verb path`. Suffixes: ` - marked for
+retry`, ` - verified`. A boundary chip on the same row, right-aligned
+left of the full-file pill: green normally, amber at two components or
+fewer, red-orange `edits span the whole disk` for `/`, ellipsis-truncated
+above 45% of the caption area. Accent bar at the caption's left in the
+shown step's verb colour.
 
 ## Viewer
 
-`every_page_ever::ReusableComponents::diff_viewer::ui`. Three-pass
-renderer. Wrap and per-side bars and move strips are documented in the
-top of that file.
+every_page_ever::ReusableComponents::diff_viewer::ui. Three-pass.
+Snippet view uses Dimmed move display (source rows dim grey, no bar or
+strip); full-file and surface reviews use Classic.
 
 ## Buttons
 
-Four glass buttons in a row, centered on the viewer:
+Four glass buttons centred on the viewer:
 
-- **Verify** (steel circle with a check). Toggles the per-step
-  `verified` flag. On a run or cargo step, Confirm refuses to fire until
-  this is set.
-- **Mark** (amber bookmark). Toggles the per-step `marked` flag. A
-  marked step is skipped by Confirm and put into the retry payload.
-- **Allow & Run** (purple play triangle) on a run or cargo step, or
-  **Confirm** (green check) otherwise. Writes every unmarked step.
-- **Deny All** (red X). Writes nothing, makes the whole chain the retry
-  payload, preserves any Marks set before.
+- Verify (steel circle). Toggles the per-step verified flag. Required
+  for run / cargo steps.
+- Mark (amber bookmark). Toggles the marked flag. Skipped by Confirm,
+  kept for retry.
+- Allow & Run (purple play) on run / cargo steps, else Confirm (green
+  check). Writes every unmarked step.
+- Deny All (red X). Writes nothing, makes the whole chain the retry
+  payload, keeps Marks.
 
-Mark and Verify are toggle buttons: no click guard, and the shown diff
-recenters on the click. Confirm and Deny All are guarded by the 150 ms
-`CLICK_GUARD`, in the chain window and in the surface review. Every
-button, the pill, the close button and the step blocks carry a hover
-tooltip; the tooltip delay is set to 0.15 s the first time the window
-draws.
+Verify and Mark have no click guard. Confirm and Deny All guarded by the
+150 ms CLICK_GUARD in both windows. Every button, the pill, the close
+button and the step blocks have tooltips; delay 0.15 s.
 
 ## Mis-click guard
 
-Confirm refuses to write a run or cargo step whose `verified` flag is
-unset, or a `zaprm` / `zapmv` / `rmdir` step the user hasn't looked at.
-The window jumps to that step and shows the reason in the error line.
+Confirm refuses to write a run or cargo step whose verified flag is
+unset, or a zaprm / zapmv / rmdir step the user hasn't visited. Jumps to
+that step with an error line.
 
 ## Block column
 
-One glass block per step on the right. Border tinted by verb
-(`verb_accent` in drawing_requirements.rs: create/mkdir green, edit
-blue, delete red, move cyan, cargo amber, run purple). State wins over
-accent: marked amber, denied red, selected brighter. Clicking a block
-jumps to that step.
+One block per step on the right, border tinted by verb. Marked amber,
+denied red, selected brighter. Click jumps to that step.
 
-## Where state lives
+## State
 
-Per-frame UI state is in `NecessaryStructForEgui`: `shown`,
-`shown_step`, `marked: Vec<bool>`, `visited: Vec<bool>`,
-`verified: Vec<bool>`, `full_file`, `scroll_to_change_pending`. All
-reset when a new chain is shown.
-
-The pending chain itself lives in `terminal_router::PENDING_CHAIN`, an
-`OnceLock<Mutex<Option<Arc<Chain>>>>`.
+Per-frame in NecessaryStructForEgui: shown, shown_step, marked,
+visited, verified, full_file, scroll_to_change_pending. All reset on new
+chain. Pending chain itself in terminal_router::PENDING_CHAIN.

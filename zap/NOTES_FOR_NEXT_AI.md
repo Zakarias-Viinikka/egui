@@ -1,184 +1,104 @@
 # Notes for the next AI
 
+Last updated: 2026-10-25
+
 ## How the user works
 
-- Short answers. Every sentence should add information.
-- Prose, not bullets, unless they ask for bullets.
-- Explain one thing at a time. If you have more, ask first.
-- Take them literally.
-- No metaphors. No dumbed-down versions. Plain words, no jargon.
-- One paste per task. Combine commands. They hate doing things one at a
-  time.
+Short answers. Every sentence adds information. Prose, not bullets.
+Explain one thing at a time; if you have more, ask first. Take them
+literally. No metaphors, no jargon, no dumbed-down versions. One paste
+per task; they hate doing things one at a time.
 
 ## How they edit code
 
 Whole-file rewrites via `cat > file << 'EOF'`. Targeted edits via Python
-heredoc that asserts the old text is present before replacing. Never sed
-or perl. Never nest heredocs. Absolute paths from `$HOME`.
+heredoc that asserts the old text exists before replacing. Never sed,
+never perl -i, never nested heredocs. Absolute paths from $HOME.
 
-They prefer zap chains when the change fits the grammar. `replace`,
-`overwrite`, `append`, `create` with markers. A chain with any `zaprm` or
-`zapmv` always goes to review, so a same-file edit that also deletes is two
-steps in one chain and one review window.
-
-When a chain has many fiddly edits, use Python heredoc instead. The
-matcher in Python is exact; the parser in a chain is line-oriented and
-weaker at whitespace.
+Prefer zap chains when the change fits the grammar. Python heredoc when
+many fiddly edits - the matcher is exact, the chain parser is
+line-oriented.
 
 ## Building
 
-`~/ProgStuff/egui/zap/build_both.sh` builds zapgui, zapcli and zap-settings,
-installs them to `~/.local/bin`, refreshes the `zap` wrapper, and restarts
-zapgui hidden. End any command block with `build_both.sh && zap` or
-`build_both.sh && zapgui` so they don't have to launch it manually.
+~/ProgStuff/egui/zap/build_both.sh builds zapgui, zapcli, zap-settings,
+the zap wrapper and fading_popup, restarts zapgui hidden. End command
+blocks with `build_both.sh && zap`.
 
-From the zap root, `c t` runs `cargo test` in zapgui, zapcli and zap_wire,
-one after the other, printing a header per workspace. `c c` for check,
-`c b` for build. Inside a workspace, `c` falls through to plain cargo.
+c t / c c / c b from the zap root test / check / build all three
+workspaces. Inside a workspace c falls through to plain cargo.
 
-The `RUSTFLAGS` set by `build_both.sh` and by the root `local_cargo.sh`
-overrides the cranelift rustflags in `~/.cargo/config.toml`. That's why
-fontdue compiles. Don't remove it.
+The RUSTFLAGS set by build_both.sh and local_cargo.sh override the
+cranelift rustflags in ~/.cargo/config.toml - that's why fontdue
+compiles. Don't remove them.
 
 ## What's done
 
-- zapcli with ls, cd, cat (multi-file, `=== path ===` headers), settings,
-  exit/quit, cls/clear, copy, copy all, zap, overwrite, create, replace,
-  zaprm, zapmv, mkdir, append, head, tail, wc, last, help, whitelist, cargo,
-  run.
-- Chains: create/replace/overwrite/append/zaprm/zapmv/mkdir blocks that play
-  forward in memory and are written all-or-nothing. See
-  `CHAIN_CHEATSHEET.md`.
-- Shared parser in `zap_wire::chain`. Both zapcli and zapgui call it, so
-  the absolute-path rule and the cargo allow-list are enforced the same
-  way on both sides.
-- Absolute-path rule on chain writes: relative paths are rejected in
-  zapcli before anything leaves the socket.
-- Marker escape: `@@new` / `@@old` / `@@end` at the start of a content
-  line means one literal `@`. Only lines that collide with a marker word
-  are escapes; `@@ -1,3 +1,4 @@` and `@derive(Debug)` pass through.
-- `append` verb with `--no-newline` on `create` and `append`.
-- Run steps in a chain: a `cd <folder>` line followed by a `cargo <args>`
-  or `run <file> [args]` line, at most one per chain, and it must be the
-  last step. Nothing runs until the human confirms. The connection
-  (`FrameKind::ChainRun`) stays open through review, the writes and the
-  run, so the pane streams output the whole time.
-- zapgui diff view with per-step review: caption, glass-block column for
-  picking a step, confirm and deny below.
-- Word wrap in the viewer, per-side bar colours (red left / green right,
-  violet on a move), a bright arrow marking the continuation row of a
-  wrapped line.
-- Select-and-copy text inside the viewer: rows are selectable labels,
-  Ctrl+C works.
-- Full-file toggle: a pill labelled "full file" / "changes only" that
-  re-pairs the step's before/after without the 3-line context limit.
-- Move detection: a run of deleted lines matched against a run of
-  inserted lines, shown as a violet bar plus a labelled strip above the
-  span. Runs across the whole chain, so a move between two files is
-  caught too. Thresholds are first guesses; see `text_diff/moves.rs`.
-- Edit-vs-replace: paired old/new lines use token similarity. A small
-  change is a `Change` row; an unrelated swap reads as `Delete` then
-  `Insert`.
-- Failure reports name the step index and verb.
-- Deny turns the step's block red; if that step is also the shown one, a
-  brighter red.
-- Popups wired to the `fading_popup` binary in
-  `~/ProgStuff/egui/reusable_components`. `build_both.sh` builds and
-  installs it.
-- Distinct banners for RUN / EXECUTE / DELETE / RENAME requests.
-- Mis-click guard: Confirm refuses to apply a zaprm, zapmv, cargo or run
-  the user never looked at.
-- Whitelist: `~/.config/zap/whitelist.txt` and every chain that only
-  touches files inside it applies silently, unless it has rm, mv, cargo
-  or run.
-- Menu on a normal zapgui launch; `--hidden` for the auto-launch path.
-- Single-instance: a manual second launch re-shows the menu on the
-  running one instead of stealing its socket.
+- zapcli verbs: ls, cd, cat (multi-file, === path === headers),
+  s / settings, exit / quit, cls / clear, copy, copy all, zap,
+  overwrite, create, replace, zaprm, zapmv, mkdir, rmdir, append, head,
+  tail, wc, last, retry, help, whitelist, cargo, run.
+- Chains play forward in memory, written all-or-nothing. Shared parser
+  in zap_wire::chain. Absolute-path rule. Marker escape @@. --no-newline
+  on create / append.
+- Run steps: cd + cargo or run, at most one, must be last.
+  FrameKind::ChainRun keeps the connection open through review, writes
+  and run.
+- Diff view: three-pass renderer, word wrap, per-side bars, selectable
+  text, full-file toggle, one-line edit as one row, HR above any non-
+  Equal block, pane-local selection.
+- Move detection across the whole chain. Snippet view is Dimmed (source
+  rows dim grey, no strip; same-step destinations paired Change rows).
+  Full-file and surface reviews are Classic.
+- Review window: Verify / Mark / Allow / Deny, 150 ms click guard in
+  both windows, tooltips everywhere, boundary chip on the caption row.
+  Verb-tinted blocks. Distinct banners per verb.
+- Reports: sentence per decision, on the clipboard, popup label.
+- Whitelist in ~/.config/zap/whitelist.txt; rm / mv / cargo / run /
+  unapproved .sh / .toml always go to review. FILE_TRUST.md.
 - egui patched so hidden-at-startup doesn't flash.
-- Cargo and run stream into a bottom pane, with the progress bar drawn.
-- Run targets are trusted per (path, args, content hash); rename through
-  a confirmed mv carries the trust.
-- `last` shows the last change zap made to a file: diff plus the file's
-  current contents; zapcli copies the whole thing to the clipboard by
-  default and marks the lines peek-only so `copy` skips them.
-- head/tail/wc/last output is peek-only; copy skips it.
-- Input line is an egui TextEdit: Ctrl+Z, click-to-position, selection.
-- Ctrl+C clears input, Ctrl+Shift+C is unreliable (see README).
-- `rmdir` verb: one line, no markers, refuses non-empty folders,
-  always reviewed.
-- `retry [<step>...]` verb: rebuild a chain from the last finished
-  review's unapplied steps. See RETRY.md.
-- `zaprm` and `zapmv` replaced `rm` and `mv`. Old names give a clear
-  "use zaprm" / "use zapmv" error at parse time.
-- The chain review window has four buttons: Verify, Mark,
-  Allow/Confirm, Deny All. Run and cargo steps need Verify before
-  Confirm will fire; the Confirm icon becomes a purple play arrow on
-  those steps.
-- Step blocks are bordered by verb (create / edit / delete / rename /
-  cargo / run each have an accent); the caption carries a matching bar.
-- A second caption line names the deepest common folder of everything
-  the chain touches: `edits confined to /abs/folder/`.
-- `.sh` and `.toml` files need approval even inside a whitelisted
-  folder, once per (path, content hash). See FILE_TRUST.md.
-- Chain failures report every failing step in one sentence instead of
-  stopping at the first.
-- `cd /path && c c` is no longer treated as a chain candidate.
-- Popup position tracks the display size instead of assuming 1920x1080.
-- Both projects under `~/ProgStuff/egui/zap/`.
+- Single-instance: second launch re-shows the menu on the running one.
+- Run targets trusted per (path, args, content hash); rename through a
+  confirmed mv carries the trust.
+- last shows diff plus current contents, copies to clipboard, peek-only
+  so copy skips it. head / tail / wc same skip rule.
+- Input line is an egui TextEdit: Ctrl+Z, selection, click-to-place.
+  Ctrl+C clears input; Ctrl+Shift+C is unreliable (see README).
+- retry [<step>...] rebuilds the last review's unapplied steps.
 
-## What's spec'd but not built
+## What's not built
 
-In `todo.md` and `todo_later.md`. Highlights:
-
-- `find`, `grep`, `rg` under the hood.
-- git read-only: status, log, diff, show.
-- fzf-style pickers replaced with something (`cdf`, `s`, `b`, `co`, `cop`).
-- `t` (tree to clipboard), `cur` (pwd to clipboard).
-- `chmod +x` as a chain step, always reviewed, with an EXEC REQUEST
-  banner.
-- A chain that mixes auto-apply-safe steps with one rm/mv should only
-  ask for approval on the rm/mv step, not the whole chain.
-- `last` should give diff plus current contents, and copy to clipboard
-  by default.
-- Word wrap on the input line in zapcli is wrong: pasting wraps but
-  continuation lines start indented; typing runs past the right edge.
+In todo.md and todo_later.md. Highlights: find / grep / rg, git
+read-only, fzf-style pickers (cdf, s, b, co, cop), t / cur, chmod +x as
+a chain step, partial-chain approval (only ask about the rm / mv step),
+input-line word wrap (continuation indent + overrun).
 
 ## Things that bit us
 
-- `wmctrl -a` is the only thing that raises the window on XFCE.
-  `ViewportCommand::Focus` only sets keyboard focus.
-- wmctrl on a hidden window silently does nothing. Make visible first.
-- A hidden window gets no egui ticks. Call `ctx.request_repaint()` after
+- wmctrl -a is the only thing that raises the window on XFCE.
+  ViewportCommand::Focus only sets keyboard focus. On a hidden window
+  wmctrl silently does nothing - make visible first.
+- A hidden window gets no egui ticks. Call ctx.request_repaint() after
   stashing anything for the UI.
-- `ui.max_rect()` is in points, not pixels. On HiDPI it can be smaller
-  than you expect.
-- `add_sized` centers its widget. Use `allocate_ui_with_layout` with
-  left_to_right if you want left alignment.
-- `TextWrapMode::Wrap` on a Label allocates full width. That's what you
-  want for whole-row selection hit-testing, and it's why the viewer's
-  labels use it.
-- egui's `LabelSelectionState` constrains a drag to labels that overlap
-  the selection's x-range. Left and right column labels have disjoint
-  x-ranges, so a drag stays inside one column even when the labels are
-  added interleaved. Don't assume draw order matters for that.
-- eframe unconditionally calls `window.set_visible(true)` after the first
-  frame. Tracked as egui issue #3654. Only patchable.
-- egui-winit converts Ctrl+C to Event::Copy regardless of Shift. Tracked
-  as issue #4065. The `raw_input_hook` workaround in zapcli is the only
-  way to intercept.
-- `mpsc::Sender` is Send but not Sync. A `Chain` stored inside an `Arc`
-  cannot hold one bare; wrap it in a `Mutex`.
-- `LayoutJob` and `TextWrapping` live at `egui::text::`, not at the crate
-  root.
-- `similar::TextDiffable` is not a public trait. Inline the pairing body
-  in both `pair_lines` and `pair_lines_full` rather than generic over
-  the diff type.
+- ui.max_rect() is points, not pixels. HiDPI surprises.
+- add_sized centres its widget. allocate_ui_with_layout + left_to_right
+  for left alignment.
+- TextWrapMode::Wrap on a Label allocates full width - needed for
+  whole-row selection.
+- eframe unconditionally calls window.set_visible(true) after the first
+  frame (egui issue 3654). Only patchable.
+- egui-winit turns Ctrl+C into Event::Copy regardless of Shift (issue
+  4065). raw_input_hook in zapcli is the only interception point.
+- mpsc::Sender is Send but not Sync. Chain inside an Arc needs the
+  Sender in a Mutex.
+- LayoutJob and TextWrapping live at egui::text::.
+- similar::TextDiffable is not public. Inline the pairing body in
+  pair_lines and pair_lines_full.
 
-## A stylistic thing
-
-Every command returns a `Vec<Line>` where each Line knows its own style.
-The UI never inspects line text to decide colour. If you add a command,
-pick a LineStyle per line. Don't guess from content.
 ## Where the pending decisions live
 
-`implementation_plan_2026-10-16.md` is the source of truth for the next batch of work. Its header is the session contract; steps 1-3 are the format template and step 4 onward are the settled designs. Every design choice the planning AI made — theme list and default, EDIT_THRESHOLD and its two-sided split, what final_writes means, the shape of Allow Special Request, the chmod grammar and mode function, the HiddenSet's two forms, review_indices and the stale-hidden-step reveal — is stated there, not in this file. When a step's design meets implementation and turns out wrong, amend the step in the plan file; do not restate it here.
+implementation_plan_2026-10-16.md is the source of truth for the next
+batch. Its header is the session contract; steps 1-3 are the format
+template; step 4 onward are the settled designs. When a step's design
+turns out wrong at implementation time, amend the step in the plan; do
+not restate it here.
