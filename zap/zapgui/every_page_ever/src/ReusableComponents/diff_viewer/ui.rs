@@ -87,6 +87,13 @@ enum Which {
     Right,
 }
 
+#[derive(Clone, Copy)]
+struct MenuState {
+    pos: egui::Pos2,
+    which: Which,
+    row: Option<usize>,
+}
+
 struct LaidRow {
     left: Option<Arc<Galley>>,
     right: Option<Arc<Galley>>,
@@ -397,6 +404,8 @@ fn diff_viewer_body(
     );
 
     let moves_mode = params.moves;
+    let mut row_rects: Vec<egui::Rect> = Vec::with_capacity(laid.len());
+    let mut menu_open: Option<MenuState> = None;
     egui::ScrollArea::vertical()
         .id_salt(params.scroll_id)
         .auto_shrink([false, false])
@@ -408,6 +417,7 @@ fn diff_viewer_body(
                     egui::vec2(rect.width(), lr.height),
                     egui::Sense::hover(),
                 );
+                row_rects.push(row_rect);
                 let mut y = row_rect.top();
 
                 if lr.block_start && lr.kind != RowKind::Equal {
@@ -485,7 +495,164 @@ fn diff_viewer_body(
                     ui.scroll_to_rect(shifted, Some(egui::Align::TOP));
                 }
             }
+
+            // Right-click anywhere in either pane box to open the copy
+            // menu. The hit test is by hand: pick the pane by which box
+            // contains the pointer, then the row from the per-row rects.
+            if ui.input(|i| i.pointer.secondary_clicked()) {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    let which = if left_box.contains(pos) {
+                        Some(Which::Left)
+                    } else if right_box.contains(pos) {
+                        Some(Which::Right)
+                    } else {
+                        None
+                    };
+                    if let Some(which) = which {
+                        let row = row_rects.iter().position(|r| r.contains(pos));
+                        menu_open = Some(MenuState { pos, which, row });
+                    }
+                }
+            }
         });
+
+    draw_row_menu(ui, &params, blocks, menu_open);
+}
+
+fn row_side_text(blocks: &[DiffRowProcessedForUi], row_idx: usize, which: Which) -> String {
+    let mut n = 0usize;
+    for block in blocks {
+        for row in &block.rows {
+            if n == row_idx {
+                return match which {
+                    Which::Left => row
+                        .left
+                        .as_ref()
+                        .map(|s| s.text.clone())
+                        .unwrap_or_default(),
+                    Which::Right => row
+                        .right
+                        .as_ref()
+                        .map(|s| s.text.clone())
+                        .unwrap_or_default(),
+                };
+            }
+            n += 1;
+        }
+    }
+    String::new()
+}
+
+fn side_joined_text(blocks: &[DiffRowProcessedForUi], which: Which) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for block in blocks {
+        for row in &block.rows {
+            if let Some(s) = match which {
+                Which::Left => row.left.as_ref(),
+                Which::Right => row.right.as_ref(),
+            } {
+                out.push(&s.text);
+            }
+        }
+    }
+    out.join("\n")
+}
+
+fn draw_row_menu(
+    ui: &mut egui::Ui,
+    params: &DiffViewerParams<'_>,
+    blocks: &[DiffRowProcessedForUi],
+    open: Option<MenuState>,
+) {
+    let state_id = egui::Id::new(("diff_row_menu_state", params.scroll_id));
+    let was_open = ui
+        .data(|d| d.get_temp::<Option<MenuState>>(state_id))
+        .flatten()
+        .is_some();
+    if let Some(s) = open {
+        ui.data_mut(|d| d.insert_temp::<Option<MenuState>>(state_id, Some(s)));
+    }
+    let state = ui
+        .data(|d| d.get_temp::<Option<MenuState>>(state_id))
+        .flatten();
+    let Some(state) = state else { return };
+    let just_opened = !was_open;
+
+    let mut close = false;
+    let area = egui::Area::new(egui::Id::new(("diff_row_menu_area", params.scroll_id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(state.pos)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(180.0);
+                ui.vertical(|ui| {
+                    let line = match state.row {
+                        Some(i) => row_side_text(blocks, i, state.which),
+                        None => String::new(),
+                    };
+                    let can_line = !line.is_empty();
+                    if ui
+                        .add_enabled(can_line, egui::Button::new("Copy line"))
+                        .clicked()
+                    {
+                        let _ = app_core::clipboard::copy_to_clipboard(&line);
+                        app_core::chain::popup::show("Copied line");
+                        close = true;
+                    }
+                    let side_text = side_joined_text(blocks, state.which);
+                    let can_side = !side_text.is_empty();
+                    let side_label = match state.which {
+                        Which::Left => "Copy left side",
+                        Which::Right => "Copy right side",
+                    };
+                    if ui
+                        .add_enabled(can_side, egui::Button::new(side_label))
+                        .clicked()
+                    {
+                        let _ = app_core::clipboard::copy_to_clipboard(&side_text);
+                        app_core::chain::popup::show("Copied side");
+                        close = true;
+                    }
+                    if ui.button("Copy both sides as text").clicked() {
+                        let s = app_core::text_diff::debug_format(blocks);
+                        let _ = app_core::clipboard::copy_to_clipboard(&s);
+                        app_core::chain::popup::show("Copied diff");
+                        close = true;
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Ctrl+C copies selected text")
+                            .small()
+                            .color(egui::Color32::from_gray(140)),
+                    );
+                });
+            });
+        });
+
+    if just_opened {
+        // The popup's rect isn't laid out yet on the frame it opens, so
+        // the outside-click test would read "click outside the menu" and
+        // close it on the same frame the user opened it. Skip the close
+        // logic for that one frame.
+        if close {
+            ui.data_mut(|d| d.insert_temp::<Option<MenuState>>(state_id, None));
+        }
+        return;
+    }
+    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let clicked_outside = ui.input(|i| {
+        if i.pointer.primary_clicked() || i.pointer.secondary_clicked() {
+            match i.pointer.interact_pos() {
+                Some(p) => !area.response.rect.contains(p),
+                None => false,
+            }
+        } else {
+            false
+        }
+    });
+    if close || esc || clicked_outside {
+        ui.data_mut(|d| d.insert_temp::<Option<MenuState>>(state_id, None));
+    }
 }
 
 /// A marker in the gutter for each continuation row of a wrapped galley.

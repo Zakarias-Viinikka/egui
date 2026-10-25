@@ -22,9 +22,16 @@ zap_wire/src/hidden.rs holds the HiddenSet matcher.
 
 ## 3. zapgui
 
-zapgui/app_core/src/chain/ - play.rs (play forward + move detection),
-writer.rs (the one write routine), report.rs, whitelist.rs, popup.rs,
-plus step / parser re-exports.
+zapgui/app_core/src/chain/ - play.rs (play forward + move detection +
+steps_that_need_eyes + the edit-title pen's replan_with_target),
+writer.rs (the one write routine, apply and apply_detailed), report.rs
+(capped build, build_capped), whitelist.rs, popup.rs (notify_copied),
+astgrep.rs (the ast-grep subprocess and its per-file output), plus
+step / parser re-exports.
+
+zapgui/fading_popup/ - the popup binary, its own cargo workspace. Not
+touched by c t; build_both.sh builds it. Font copied in by
+build_both.sh from ~/ProgStuff/egui/reusable_components/fading_popup.
 
 zapgui/app_core/src/terminal_router/ - mod.rs (socket state + pending
 slot), listener.rs, route_requests.rs (dispatch, whitelist auto-apply,
@@ -56,7 +63,14 @@ once.
 zapcli/app_core/src/command_router/mod.rs - dispatch. Look here to know
 what verbs exist. core_commands/<name>.rs per verb, core_commands/chain.rs
 forwards chains. cargo and run live inline in mod.rs (they open
-streaming sessions). head / tail / wc / last return peek lines.
+streaming sessions). head / tail return PeekAndCopy (peek lines plus
+the same text on the clipboard); wc / last return Peek. Unknown verbs
+print `unknown command: <verb>`; blank Enter is Silent.
+
+zapcli/app_core/src/general_util/instance_guard.rs - a second launch of
+zapcli connects to /run/user/1000/zapcli.sock, sends "focus" and exits;
+the running one raises itself. zapcli/app/src/egui_main.rs binds that
+socket at startup.
 
 zapcli/app_core/src/general_util/{path_parsing,socket}.rs.
 zapcli/app_core/src/shortcuts/ - Ctrl+C and Ctrl+Shift+C.
@@ -115,9 +129,13 @@ or above EDIT_THRESHOLD; the viewer draws blue bars). Side has
 `changed: Vec<Range<usize>>` (byte ranges from inline_spans that differ
 from the paired line). Both are set only on Change rows. Use
 `DiffRow::new` / `Side::new`; the constructors default the new fields
-and every construction site already goes through them. A new field still
-needs a decision about what the viewer, debug_format and the clipboard
-builders do with it.
+and every construction site already goes through them. Consumers to
+keep in sync: text_diff::process (blocks), pair_lines_full,
+debug_format (the clipboard diff), the viewer's layout and placement
+(diff_viewer/ui.rs, especially `astgrep_pair_by_index` in play.rs which
+builds rows directly), and the diff viewer's right-click text builders
+(row_side_text, side_joined_text). A new field needs a decision in each
+of those.
 
 ## 9. similar::TextDiffable isn't public
 

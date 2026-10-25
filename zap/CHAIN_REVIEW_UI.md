@@ -35,20 +35,43 @@ strip); full-file and surface reviews use Classic.
 
 ## Buttons
 
-Four glass buttons centred on the viewer:
+Four controls in a fixed row centred on the viewer; positions don't
+change when the shown step changes:
 
 - Verify (steel circle). Toggles the per-step verified flag. Required
-  for run / cargo steps.
-- Mark (amber bookmark). Toggles the marked flag. Skipped by Confirm,
-  kept for retry.
-- Allow & Run (purple play) on run / cargo steps, else Confirm (green
-  check). Writes every unmarked step.
+  for cargo, run, chmod and rename steps.
+- Mark (amber bookmark). Toggles the marked flag. Mark means "skip this
+  step when I confirm"; it stays as the retry payload. Confirm never
+  writes a marked step.
+- Approve slot (168 points wide). Green Confirm check on ordinary steps
+  (writes every unmarked step). On cargo, run, chmod and rename steps
+  it holds a wide two-line button (small SPECIAL REQUEST above ALLOW
+  CARGO / ALLOW RUN / ALLOW EXEC / ALLOW) with a 3-point accent border
+  in the verb's colour. Clicking it sets the shown step's `allowed`
+  flag and then runs the same gate and write path as Confirm.
 - Deny All (red X). Writes nothing, makes the whole chain the retry
-  payload, keeps Marks.
+  payload with earlier Marks kept.
 
-Verify and Mark have no click guard. Confirm and Deny All guarded by the
-150 ms CLICK_GUARD in both windows. Every button, the pill, the close
-button and the step blocks have tooltips; delay 0.15 s.
+`confirm_gate` is the pure gate behind Confirm and the wide button. It
+stops on the first wanted step that fails its gate: cargo, run, chmod
+and rename need verified AND allowed; zaprm, zapmv and rmdir need
+visited. Marked steps are not gated. A stopped press jumps to that step
+with an error line naming the missing flag.
+
+Verify and Mark have no click guard. Confirm and Deny All use
+CLICK_GUARD (150 ms). The wide Allow button uses SPECIAL_CLICK_GUARD
+(600 ms) so a miscued click after a step change can't approve a special
+request by accident. Every button, the pill, the close button and the
+step blocks have tooltips; delay 0.15 s.
+
+## Right-click menu
+
+Right-click inside either pane box opens a small popup: Copy line, Copy
+left/right side, Copy both sides as text, and a hint about Ctrl+C.
+Greyed when the clicked side is empty. Closes on pick, Esc or a click
+outside. Copying calls app_core::clipboard::copy_to_clipboard then
+chain::popup::notify_copied, so a popup reading e.g. "Copied line ·
+copied" appears.
 
 ## Mis-click guard
 
@@ -56,6 +79,16 @@ button and the step blocks have tooltips; delay 0.15 s.
 run, chmod or rename step whose verified or allowed flag is unset, or
 a zaprm / zapmv / rmdir step the user hasn't visited. Jumps to that
 step with an error line.
+
+## Popups
+
+Every Confirm, Deny All, failure and whitelist auto-apply calls
+`chain::popup::notify_copied(headline, text)`, which writes the
+clipboard first and then shows the fading_popup window. The popup is
+centred on the monitor in use, sits at the top of the work area so a
+review can stay open underneath, lasts 2.0 s total (1.5 hold + 0.5
+fade), and replaces the previous popup rather than stacking. Text ends
+with " · copied" or " · copy failed".
 
 ## Edit-title pen
 

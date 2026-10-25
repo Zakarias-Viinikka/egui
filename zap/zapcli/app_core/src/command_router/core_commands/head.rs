@@ -44,7 +44,12 @@ pub fn run(args: &[&str], session: &Session) -> Outcome {
             break;
         }
     }
-    Outcome::Peek(out)
+    let text: String = out
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Outcome::PeekAndCopy { lines: out, text }
 }
 
 fn parse_args(args: &[&str], default: usize) -> Result<(usize, Vec<String>), String> {

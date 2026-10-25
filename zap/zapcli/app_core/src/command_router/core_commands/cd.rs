@@ -2,6 +2,14 @@ use super::super::{Line, Outcome, Session};
 use crate::general_util::path_parsing::{home_dir, resolve};
 
 pub fn run(args: &[&str], session: &mut Session) -> Outcome {
+    if args
+        .iter()
+        .any(|a| a.contains("&&") || a.contains('|') || a.contains(';'))
+    {
+        return Outcome::Print(vec![Line::error(
+            "cd: shell operators are not supported; give cd one folder",
+        )]);
+    }
     let target = match args.first() {
         None => home_dir(),
         Some(s) => resolve(s, &session.cwd),

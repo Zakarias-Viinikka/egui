@@ -1,8 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::last_change::{self, Before, Kind};
 
-use super::play::{read_or_none, AppliedStep, Chain};
+use super::play::{apply_step, read_or_none, AppliedStep, Chain};
 use super::step::Verb;
 
 enum Undo {
@@ -56,13 +57,104 @@ pub fn apply_detailed(chain: &Chain, wanted: &[bool]) -> Result<(), (usize, Stri
         }
     }
 
+    // A marked step on the same file as a wanted step must not be
+    // silently included. Every content step's `after` text was built on
+    // top of all the earlier steps on that path, so writing a later
+    // step's `after` would write the skipped one's edit too. Instead,
+    // compute the final content per path from the wanted steps alone,
+    // then write once per path.
+    let mut per_path_steps: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    for (i, applied) in chain.steps.iter().enumerate() {
+        if matches!(
+            applied.step.verb,
+            Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append
+        ) {
+            per_path_steps
+                .entry(applied.path.clone())
+                .or_default()
+                .push(i);
+        }
+    }
+    let mut final_content: HashMap<PathBuf, Option<String>> = HashMap::new();
+    for (path, indices) in &per_path_steps {
+        let before = chain
+            .snapshots
+            .iter()
+            .find(|s| s.path == *path)
+            .and_then(|s| s.content.clone());
+        let mut current = before;
+        for &i in indices {
+            if !wanted.get(i).copied().unwrap_or(true) {
+                continue;
+            }
+            let applied = &chain.steps[i];
+            match apply_step(&applied.step, current.as_deref(), path) {
+                Ok((new_text, _)) => current = Some(new_text),
+                Err(reason) => {
+                    // The latest earlier skipped step on this path is the
+                    // most likely cause of the missing text.
+                    let mut skipped: Option<usize> = None;
+                    for &j in indices {
+                        if j < i && !wanted.get(j).copied().unwrap_or(true) {
+                            skipped = Some(j);
+                        }
+                    }
+                    let detail = match skipped {
+                        Some(j) => format!(
+                            "step {} can't be applied without step {} (same file, step {} is marked): {}",
+                            i + 1,
+                            j + 1,
+                            j + 1,
+                            reason
+                        ),
+                        None => reason,
+                    };
+                    return Err((i, format!(
+                        "step {} of {} ({} {}) failed: {}",
+                        i + 1,
+                        total,
+                        verb_name(applied.step.verb),
+                        path.display(),
+                        detail
+                    )));
+                }
+            }
+        }
+        final_content.insert(path.clone(), current);
+    }
+
     let mut undos: Vec<Undo> = Vec::new();
+    let mut paths_done: HashSet<PathBuf> = HashSet::new();
 
     for (i, applied) in chain.steps.iter().enumerate() {
         if !wanted.get(i).copied().unwrap_or(true) {
             continue;
         }
-        if let Err(reason) = execute_step(applied, &mut undos) {
+        let result = match applied.step.verb {
+            Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append => {
+                if !paths_done.insert(applied.path.clone()) {
+                    // Already written as the final content for this path.
+                    Ok(())
+                } else {
+                    let final_text = final_content.get(&applied.path).cloned().flatten();
+                    let before = chain
+                        .snapshots
+                        .iter()
+                        .find(|s| s.path == applied.path)
+                        .and_then(|s| s.content.clone());
+                    if final_text == before {
+                        // Every wanted step on this path was a no-op.
+                        Ok(())
+                    } else if let Some(new) = final_text {
+                        write_text(&applied.path, &new, &before, &mut undos)
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            _ => execute_step(applied, &mut undos),
+        };
+        if let Err(reason) = result {
             undo_all(&mut undos);
             return Err((i, format!(
                 "step {} of {} ({} {}) failed: {}",
@@ -73,9 +165,33 @@ pub fn apply_detailed(chain: &Chain, wanted: &[bool]) -> Result<(), (usize, Stri
                 reason
             )));
         }
-        if !applied.no_op {
+        if !applied.no_op
+            && !matches!(
+                applied.step.verb,
+                Verb::Create | Verb::Replace | Verb::Overwrite | Verb::Append
+            )
+        {
             record_last_change(applied);
         }
+    }
+
+    // record_last_change once per content path, with the final content,
+    // so a marked earlier step does not appear in last_change.
+    for (path, final_opt) in &final_content {
+        let Some(new) = final_opt else { continue };
+        let before = chain
+            .snapshots
+            .iter()
+            .find(|s| s.path == *path)
+            .and_then(|s| s.content.clone());
+        if before.as_ref() == Some(new) {
+            continue;
+        }
+        let (before_v, kind) = match &before {
+            Some(s) => (last_change::classify_content(s), Kind::Edited),
+            None => (Before::Missing, Kind::Created),
+        };
+        last_change::record(path, before_v, kind, Some(new));
     }
 
     Ok(())
@@ -756,6 +872,45 @@ mod tests {
         assert!(msg.contains("changed since"), "got: {msg}");
         assert_eq!(fs::read_to_string(&a).expect("read"), "fn foo() {}\n");
         assert!(!note.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marked_earlier_step_on_the_same_file_is_not_applied() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "one\ntwo\nthree\n").expect("write");
+        let other = dir.join("b.txt");
+        fs::write(&other, "b\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &file, "one", "ONE"),
+            text_step(Verb::Replace, &file, "two", "TWO"),
+            text_step(Verb::Replace, &other, "b", "B"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        apply(&chain, &[false, true, true]).expect("apply");
+        assert_eq!(fs::read_to_string(&file).expect("read"), "one\nTWO\nthree\n");
+        assert_eq!(fs::read_to_string(&other).expect("read"), "B\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wanted_step_needing_a_marked_step_fails_loudly() {
+        let dir = tmp();
+        let file = dir.join("a.txt");
+        fs::write(&file, "one\n").expect("write");
+        let steps = vec![
+            text_step(Verb::Replace, &file, "one", "two"),
+            text_step(Verb::Replace, &file, "two", "three"),
+        ];
+        let chain = play_forward(steps, &dir).expect("play");
+        let err = apply(&chain, &[false, true]).expect_err("should fail");
+        assert!(
+            err.contains("step 2 can't be applied without step 1"),
+            "got: {err}"
+        );
+        assert!(err.contains("step 1 is marked"), "got: {err}");
+        assert_eq!(fs::read_to_string(&file).expect("read"), "one\n");
         let _ = fs::remove_dir_all(&dir);
     }
 

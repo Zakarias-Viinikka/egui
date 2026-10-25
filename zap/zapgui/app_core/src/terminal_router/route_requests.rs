@@ -663,10 +663,29 @@ fn _unused() {
 
 /// Rebuild a chain from the last review's unapplied steps and stash it
 /// for review. Writes nothing directly; the user confirms as usual.
+/// A retry that failed. `had_body` distinguishes a retry the AI wrote
+/// (a pasted chain block: copy it to the clipboard and pop a notice) from
+/// a bare `retry 2 5` the human typed (print only, nothing copied). The
+/// returned string is what goes on screen, and on the clipboard when the
+/// copy happens, so screen and paste-back always agree.
+fn retry_failure(sentence: String, had_body: bool) -> String {
+    if had_body {
+        crate::chain::popup::notify_copied("Retry failed", &sentence);
+        sentence
+    } else {
+        // Strip the leading "zap: " so the terminal line reads like the
+        // other zapgui errors and doesn't pretend a chain was attempted.
+        let rest = sentence.strip_prefix("zap: ").unwrap_or(&sentence);
+        format!("zapgui: {rest}")
+    }
+}
+
 fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
     let Some(rec) = crate::terminal_router::retry::current() else {
         return "zapgui: nothing to retry".to_string();
     };
+    let had_body = body.map(|b| !b.trim().is_empty()).unwrap_or(false);
+
     // Steps carried over from the record were parsed before any hidden
     // entry that might exist now. Refuse one that has become hidden.
     let hidden = zap_wire::hidden::HiddenSet::load();
@@ -676,29 +695,40 @@ fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
                 continue;
             }
             if let Some(msg) = hidden.refusal(std::path::Path::new(p)) {
-                return format!(
-                    "zapgui: step {} can't be retried: {}",
-                    i + 1,
-                    msg
+                return retry_failure(
+                    format!(
+                        "zap: nothing was written. step {} can't be retried: {}",
+                        i + 1,
+                        msg
+                    ),
+                    had_body,
                 );
             }
         }
         if step.verb.is_run() {
             if let Some(arg) = step.args.first() {
                 if let Some(msg) = hidden.refusal(std::path::Path::new(arg)) {
-                    return format!(
-                        "zapgui: step {} can't be retried: {}",
-                        i + 1,
-                        msg
+                    return retry_failure(
+                        format!(
+                            "zap: nothing was written. step {} can't be retried: {}",
+                            i + 1,
+                            msg
+                        ),
+                        had_body,
                     );
                 }
             }
         }
     }
     let replacements = match body {
-        Some(b) if !b.trim().is_empty() => match crate::chain::parse(b) {
+        Some(b) if had_body => match crate::chain::parse(b) {
             Ok(steps) => Some(steps),
-            Err(e) => return format!("zapgui: bad retry body: {e}"),
+            Err(e) => {
+                return retry_failure(
+                    format!("zap: nothing was written. {}.", e),
+                    had_body,
+                );
+            }
         },
         _ => None,
     };
@@ -708,7 +738,12 @@ fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
         replacements.as_deref(),
     ) {
         Ok(c) => c,
-        Err(e) => return format!("zapgui: {e}"),
+        Err(e) => {
+            return retry_failure(
+                format!("zap: nothing was written. {}.", e),
+                had_body,
+            );
+        }
     };
     match super::stash_pending_chain(chain) {
         Some(displaced) => {

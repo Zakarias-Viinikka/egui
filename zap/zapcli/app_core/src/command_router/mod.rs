@@ -54,11 +54,14 @@ pub enum Outcome {
     /// also marks the just-pushed prompt line skip_copy.
     Peek(Vec<Line>),
     Silent,
-    Unknown,
     Exit,
     Clear,
     CopyAll { include_peeks: bool },
     PrintAndCopy { lines: Vec<Line>, text: String },
+    /// The same peek lines plus the text they should copy on the
+    /// clipboard. Used by head and tail so a later scrollback copy skips
+    /// them.
+    PeekAndCopy { lines: Vec<Line>, text: String },
     /// A connection is open and will stream frames. The UI takes the
     /// Session and drains it each frame.
     Streaming(crate::general_util::socket::Session),
@@ -92,7 +95,7 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
 
     let mut parts = trimmed.split_whitespace();
     let Some(verb) = parts.next() else {
-        return Outcome::Unknown;
+        return Outcome::Silent;
     };
     let args: Vec<&str> = parts.collect();
 
@@ -164,7 +167,7 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
             let all = args.first().map(|a| *a == "all").unwrap_or(false);
             Outcome::CopyAll { include_peeks: all }
         }
-        _ => Outcome::Unknown,
+        _ => Outcome::Print(vec![Line::error(format!("unknown command: {verb}"))]),
     }
 }
 
@@ -253,6 +256,71 @@ pub fn reply_outcome(result: Result<String, String>) -> Outcome {
             }
         }
         Err(e) => Outcome::Print(vec![Line::error(e)]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_word_is_chain_verb_rejects_shell_ops_after_cd() {
+        assert!(!first_word_is_chain_verb("cd /tmp && c c"));
+        assert!(!first_word_is_chain_verb("cd /tmp; ls"));
+        assert!(!first_word_is_chain_verb("cd /tmp | cat"));
+        assert!(!first_word_is_chain_verb("cd /tmp && c c\ncargo test\n"));
+        assert!(first_word_is_chain_verb("cd /tmp\ncargo test\n"));
+        assert!(first_word_is_chain_verb("cd /tmp\nrun /tmp/x.sh\n"));
+        assert!(first_word_is_chain_verb("  cd /tmp\n  cargo test\n"));
+        assert!(first_word_is_chain_verb("\ncd /tmp\ncargo test\n"));
+        assert!(!first_word_is_chain_verb("cd /tmp\n"));
+    }
+
+    fn tmp_session() -> Session {
+        Session { cwd: std::env::temp_dir() }
+    }
+
+    #[test]
+    fn route_rejects_cd_with_and_operator() {
+        let mut s = tmp_session();
+        let before = s.cwd.clone();
+        let out = route("cd /tmp && c c", &mut s);
+        match out {
+            Outcome::Print(lines) => {
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].text.contains("shell operators"), "got: {}", lines[0].text);
+            }
+            _ => panic!("expected Print"),
+        }
+        assert_eq!(s.cwd, before);
+    }
+
+    #[test]
+    fn route_rejects_cd_with_semicolon() {
+        let mut s = tmp_session();
+        let before = s.cwd.clone();
+        let out = route("cd /tmp; ls", &mut s);
+        match out {
+            Outcome::Print(lines) => {
+                assert!(lines[0].text.contains("shell operators"), "got: {}", lines[0].text);
+            }
+            _ => panic!("expected Print"),
+        }
+        assert_eq!(s.cwd, before);
+    }
+
+    #[test]
+    fn route_rejects_cd_with_pipe() {
+        let mut s = tmp_session();
+        let before = s.cwd.clone();
+        let out = route("cd /tmp | cat", &mut s);
+        match out {
+            Outcome::Print(lines) => {
+                assert!(lines[0].text.contains("shell operators"), "got: {}", lines[0].text);
+            }
+            _ => panic!("expected Print"),
+        }
+        assert_eq!(s.cwd, before);
     }
 }
 

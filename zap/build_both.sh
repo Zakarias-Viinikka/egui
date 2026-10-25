@@ -23,8 +23,12 @@ exec "$HOME/.local/bin/zapcli" "$@"
 WRAP
 chmod +x "$HOME/.local/bin/zap"
 
-cd "$HOME/ProgStuff/egui/reusable_components"
-cargo build --release -p fading_popup
+cd "$HOME/ProgStuff/egui/zap/zapgui/fading_popup"
+[ -f fonts/Ubuntu-Light.ttf ] || {
+    mkdir -p fonts
+    cp "$HOME/ProgStuff/egui/reusable_components/fading_popup/fonts/Ubuntu-Light.ttf" fonts/
+}
+cargo build --release
 install -m 755 target/release/fading_popup "$HOME/.local/bin/fading_popup"
 
 pkill -x zapgui 2>/dev/null || true

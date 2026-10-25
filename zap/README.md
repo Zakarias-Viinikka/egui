@@ -36,7 +36,10 @@ Request shapes (zapcli -> zapgui):
 - `menu` - show the general menu.
 - `last [<path>]` - peek at last_change.
 - `retry [<n>...]` - rebuild the last review's unapplied steps. See
-  RETRY.md.
+  RETRY.md. A retry that fails puts its report on the clipboard and
+  pops "Retry failed · copied", the same as `chain`, when the retry
+  carried a pasted body; a bare `retry 2 5` the human typed just
+  prints the failure line.
 - `focus-if-busy` - reply `shown` or `idle`. Used by the external
   zap-front shortcut.
 - `CargoRun`, `RunFile`, `ChainRun` frames - streaming runs. Replies are
@@ -53,7 +56,13 @@ See CHAIN_CHEATSHEET.md. The parser is zap_wire::chain, with
 takes one. zapcli parses first so a bad path or unknown verb never
 reaches the socket; zapgui parses again. The chain tests use
 `parse_with` with an empty config so they never read the user's files.
-zapgui/app_core/src/chain/{parser,step}.rs are re-exports.
+zapgui/app_core/src/chain/{parser,step}.rs are re-exports. The `Verb`
+enum has twelve variants, including `Rename` and `AstGrep`; `Verb::ALL`
+is the array of every variant and a table-driven test pins name
+round-trip, `is_special`, `always_reviewed` and `has_editable_target`
+for each one. The parser collects every error it can find into one
+`ParseFailure` (sorted by line, deduped, at most 20 clauses then
+`(+ N more)`); `Verb::from_word` is the word-to-verb match.
 
 ## Confirm and deny
 
@@ -63,18 +72,21 @@ frame.
 
 Four buttons in a fixed row: Verify, Mark, a 168-point approve slot, and
 Deny All. On an ordinary step the slot holds the green Confirm check; on
-a cargo, run or chmod step it holds a wide two-line ALLOW CARGO / ALLOW
-RUN / ALLOW EXEC button, accent-bordered in the verb's colour. Confirm
-writes every unmarked step. Marked steps are skipped and kept for retry.
-Deny All writes nothing and makes the whole chain the retry payload,
-keeping Marks.
+a cargo, run, chmod or rename step it holds a wide two-line ALLOW CARGO
+/ ALLOW RUN / ALLOW EXEC / ALLOW button, accent-bordered in the verb's
+colour. Confirm writes every unmarked step. Marked steps are skipped and
+kept for retry. Deny All writes nothing and makes the whole chain the
+retry payload, keeping Marks.
 
 `confirm_gate` in drawing_requirements.rs is a pure function used by
 both Confirm and the wide Allow button. It stops on the first wanted
-step that fails its gate: cargo, run and chmod need both `verified` and
-`allowed`; zaprm, zapmv and rmdir need `visited`. Marked steps are not
-gated. The wide Allow button sets `allowed` for the shown step, then
-runs the same gate and write path as Confirm.
+step that fails its gate: cargo, run, chmod and rename need both
+`verified` and `allowed`; zaprm, zapmv and rmdir need `visited`. Marked
+steps are not gated. The wide Allow button sets `allowed` for the shown
+step, then runs the same gate and write path as Confirm. Confirm and
+Deny All use the 150 ms CLICK_GUARD; the wide Allow button uses a 600 ms
+SPECIAL_CLICK_GUARD so a miscued click right after a step change cannot
+approve a special request by accident.
 
 A chain can show only some of its steps. `review_indices` on Chain is
 the set of step numbers that need eyes; empty means every step, which
@@ -150,6 +162,18 @@ bar.
 
 The full-file pill at the top right of the viewer swaps between the
 snippet and every line of the file, re-paired with pair_lines_full.
+
+Right-click anywhere inside either pane box (including the gutter and
+the blank space below the last row) opens a small menu. The hit test is
+done by hand: the pointer position picks the pane (by which box
+contains it), then the row (from the per-row rects the viewer already
+allocates in pass 1). Entries: Copy line, Copy left/right side, Copy
+both sides as text. Greyed when the clicked side is empty on that row
+or has no text at all. A non-clickable hint at the bottom reads "Ctrl+C
+copies selected text". The menu is a popup keyed off `scroll_id`; it
+closes on pick, Esc or a click outside. The copy calls
+app_core::clipboard::copy_to_clipboard, then chain::popup::notify_copied
+shows "Copied line · copied" (or "copy failed").
 
 ## Edit-vs-replace
 
@@ -245,11 +269,37 @@ ends). The rule is set by MoveDisplay on DiffViewerParams.
 
 Every decision (Confirm, deny, failure, whitelist auto-apply) rebuilds
 a report sentence, puts it on the clipboard, and shows a fading_popup
-label.
+label. The helper `chain::popup::notify_copied(headline, text)` writes
+the clipboard first and then shows `<headline> · copied` or
+`<headline> · copy failed`, so every call site adds the same suffix.
+
+`report::build` caps the clipboard sentence at `REPORT_MAX_BYTES`
+(8000 bytes). The header (verdict plus failure reason) is always written
+in full. The step section gets what's left, minus a 40-byte tail
+reserve, or 1500 bytes when that would be smaller. Denied and Marked
+steps are listed first; Applied steps fill the remainder. `(+ N
+denied/marked step(s) not listed)` and `(+ N applied step(s) not
+listed)` at the end name exactly what was cut. `build_capped(chain,
+statuses, failure, cap)` is the same function with the cap as a
+parameter for tests.
 
 A failed clipboard write retains the payload in zapgui memory and shows
 a failure popup. `error` in zapcli retries the copy. The payload is
 lost if zapgui exits before a successful retry.
+
+The `fading_popup` binary is a separate small crate at
+`zapgui/fading_popup/`, not part of the zapgui workspace. `popup.rs`
+computes the popup's geometry (centred on the monitor in use from
+`xrandr --listmonitors`, top offset inside the work-area top from
+`xprop -root _NET_WORKAREA`, width from the text clamped to 180..480)
+and passes text, x, y and width as argv. The binary holds for 1500 ms
+and fades for 500 ms: two seconds total, the same for success and
+failure. A burst replaces the previous popup. Under `cfg(test)` the
+popup records to a thread-local instead of spawning, so unit tests
+never show a window; the `popup_gallery` test disables recording to
+check the real visuals. The popup is 18 px Ubuntu Light, 40 points
+tall, width 220..560 from the text; it sits flush with the review's
+top margin so both can be on screen together.
 
 ## Whitelist, hidden paths and extensions
 
@@ -311,7 +361,9 @@ egui's own handling.
 
 zapgui/app_core/src/chain/ - step / parser re-exports, play.rs (play
 forward + move detection), writer.rs (the one write routine), report.rs,
-whitelist.rs, popup.rs.
+whitelist.rs, popup.rs, astgrep.rs (the ast-grep subprocess,
+identifier scan, edit application and per-file output for the astgrep
+verb).
 
 zapgui/app_core/src/terminal_router/ - socket listener, route_requests,
 handle_chain_run, shared slot in mod.rs, retry.rs, file_trust.rs,
@@ -334,7 +386,16 @@ inline in mod.rs.
 
 zapcli/app_core/src/general_util/{socket,path_parsing}.rs.
 zapcli/app/src/egui_setup/drawing_requirements.rs - terminal UI,
-raw_input_hook.
+raw_input_hook, the input line (a TextEdit with a custom layouter that
+puts `prompt_width` of leading space on the first row only, so
+continuation rows start at column 0 and a long token breaks at the
+right edge).
+
+zapcli/app_core/src/general_util/instance_guard.rs - a small flag set by
+zapcli's own socket listener when a second launch sends "focus"; the UI
+takes it once per frame and issues a viewport Focus. Keep the command
+list flat: unknown verbs print `unknown command: <verb>` in red, blank
+Enter is Silent.
 
 zapgui/app/src/egui_setup/drawing_requirements.rs - review window,
 surface review, menu.

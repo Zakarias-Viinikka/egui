@@ -1,0 +1,17 @@
+[package]
+name = "fading_popup"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone: not part of any outer workspace, so `c t` in zapgui
+# doesn't try to build it. build_both.sh copies the font in first.
+
+[workspace]
+
+[[bin]]
+name = "fading_popup"
+path = "src/main.rs"
+
+[dependencies]
+x11rb = { version = "0.13", features = ["shape"] }
+fontdue = "0.9"

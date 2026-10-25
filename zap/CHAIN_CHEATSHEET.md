@@ -112,6 +112,20 @@ zaprm works on text files only (undo copy kept); refuses directories.
 zapmv never overwrites. mkdir accepts -p and always creates parents.
 rmdir removes an empty folder only.
 
+Quoted paths with spaces work for zaprm, zapmv, mkdir, rmdir, chmod and
+rename: write the whole path in quotes. They do not work for create,
+replace, overwrite or append, which take everything after the verb as
+the path; those handle a space in an unquoted path but not the quotes
+themselves, and the failure shows the quote in the path. A quoted path
+with spaces in a quoted verb like zaprm that is not quoted splits into
+two tokens, and the second is relative, so the parse fails loudly
+instead of touching the wrong file.
+
+Shell operators (&&, |, ;) are not supported. cd takes one folder and
+refuses anything with those in it. A cd inside a chain that contains
+them is rejected with "cd: &&, ; and | are not supported; put cd on its
+own line and the cargo or run line under it".
+
 Nothing in a chain is interpreted. Backticks, $, quotes, heredoc markers
 are literal.
 
@@ -158,7 +172,14 @@ tolerated). Quotes cover spaces.
 
 Every decision (deny, Confirm, failure, whitelist auto-apply) puts a
 plain sentence report on the clipboard and shows a popup. A cargo run
-summary appends under the last report.
+summary appends under the last report. Popup text ends with ` · copied`
+or ` · copy failed`.
+
+The report is capped at 8000 bytes. The header (verdict plus failure
+reason) is always written in full. Denied and Marked steps are listed
+first; Applied steps fill what's left. Anything cut is counted at the
+end as `(+ N denied/marked step(s) not listed)` or `(+ N applied
+step(s) not listed)`.
 
 A failure report names the step index and verb, and the reason may end
 with one parenthesised hint taken from the text the step actually saw:

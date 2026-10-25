@@ -136,13 +136,69 @@ compiles. Don't remove them.
   Verb::ALL and a table-driven test pin name round-trip, is_special,
   always_reviewed and has_editable_target. Move's caption
   duplicate-source bug is fixed.
+- Step 13: `astgrep rename <folder> <old> <new>` verb. Runs the
+  installed ast-grep binary read-only as a subprocess. Discovery order:
+  ZAP_AST_GREP, PATH, ~/.cargo/bin, ~/.local/bin, /usr/local/bin,
+  /usr/bin. Probes by capability (`--version` starts with `ast-grep`,
+  `scan --help` mentions `--inline-rules` and `--json`); never calls
+  `sg`. Successes cached in a OnceLock so installing while zapgui runs
+  needs no restart. Under `cfg(test)` a thread-local override lets
+  tests point at a fake script. The engine is `chain/astgrep.rs`
+  (find_binary, scan_with, edits_from, plan, FileEdit). One
+  `AppliedStep` for the whole rename, `files: Vec<FileEdit>`, before /
+  after as per-file concatenations with `=== path ===` headers, rows
+  built per file plus a summary header. Excludes target, .git and
+  dot-folders. Exclusivity check rejects any other step that touches
+  a changed .rs (before or after). BannerKind::Rename, cyan accent,
+  glyph `ag`. `refresh_trust_after_chain_confirm` and
+  `has_move_or_remove` do not touch it. `final_writes` does not
+  include it.
+- Step 14: 14a right-click menu in the diff viewer (Copy line, Copy
+  side, Copy both sides as text) with a fixed v1 (`just_opened`) so it
+  doesn't close the frame it opens; pane-local selection already in
+  place. 14b input-line word wrap: TextEdit with a custom layouter
+  that sets `leading_space` to the measured prompt width on the first
+  row only, plus a zero-width space when the buffer is empty so egui
+  has a row to place the caret on. 14c `head` and `tail` return
+  `Outcome::PeekAndCopy` and put their output on the clipboard. 14d
+  zapcli's own instance guard: `general_util::instance_guard`, a
+  `/run/user/1000/zapcli.sock` listener bound at startup, second
+  launch sends "focus" and exits. 14e unknown verbs print "unknown
+  command: <verb>"; `Outcome::Unknown` was removed, blank Enter returns
+  Silent.
+- Step 15: (15b done) `report::build` capped at `REPORT_MAX_BYTES`
+  (8000) with the new two-class rule; `build_capped` for tests; the
+  forty_step_sizes test prints real sizes. (15a done in a new local
+  copy of fading_popup at `zapgui/fading_popup/`, not the reusable
+  crate.) `chain::popup::notify_copied(headline, text)` writes the
+  clipboard first and shows "<headline> · copied" or " · copy failed".
+  `popup.rs` computes geometry (xrandr --listmonitors for the monitor
+  in use, xprop _NET_WORKAREA for the work-area top, width from the
+  text clamped to 180..480) and spawns `fading_popup <text> <x> <y>
+  <w>`. A burst replaces the previous popup. Under `cfg(test)` the
+  popup records to a thread-local (take_texts, last_text,
+  disable_recording) so unit tests never show a window;
+  `popup_gallery` disables recording to check the real visuals.
+- Step 16: `cd /path && c c` at the zapcli prompt is rejected by
+  `cd::run` (any arg with `&&`, `|`, `;` fails with "cd: shell operators
+  are not supported; give cd one folder"). A `cd` line inside a chain
+  with the same operators fails with "cd: &&, ; and | are not supported;
+  put cd on its own line and the cargo or run line under it". Quoted
+  paths with spaces work for zaprm / zapmv / mkdir / rmdir / chmod /
+  rename. `create / replace / overwrite / append` take the rest of the
+  line verbatim, so a quoted path fails loudly (quote shown in the
+  error); an unquoted space works but is not split-aware for the
+  quote-aware verbs.
 
 ## What's not built
 
-In todo.md and todo_later.md. Highlights: find / grep / rg, git
-read-only, fzf-style pickers (cdf, s, b, co, cop), t / cur, chmod +x as
-a chain step, partial-chain approval (only ask about the rm / mv step),
-input-line word wrap (continuation indent + overrun).
+Steps 1-16 are done. Step 17 is this docs sweep. Step 18 verifies two
+known bugs (a marked step getting applied on Confirm when it shares a
+file with a later applied step; retry failure text not reaching the
+clipboard), then prunes todo.md and todo_later.md. Highlights still
+open in the plan: find / grep / rg, git read-only, fzf-style pickers
+(cdf, s, b, co, cop), t / cur. The batch header lists the already-built
+items that todo.md still duplicates; step 18 deletes them.
 
 ## Things that bit us
 
@@ -191,3 +247,41 @@ batch. Its header is the session contract; steps 1-3 are the format
 template; step 4 onward are the settled designs. When a step's design
 turns out wrong at implementation time, amend the step in the plan; do
 not restate it here.
+
+- Step 17: docs sweep (README, CHAIN_CHEATSHEET, CHAIN_REVIEW_UI,
+  CONTEXT_FOR_AI, NOTES_FOR_NEXT_AI, FILE_TRUST). A drift guard in
+  zap_wire::chain (`every_verb_name_appears_in_the_cheat_sheet`) reads
+  CHAIN_CHEATSHEET.md with include_str! and asserts every Verb::ALL
+  name appears in it, so a new verb can't skip the cheat sheet.
+- Step 18: 18b, `writer::apply_detailed` groups content steps by path
+  and applies only the wanted ones onto the snapshot's before text, then
+  writes once per path; a wanted step whose old text relies on a marked
+  earlier step fails with "step N can't be applied without step M (same
+  file, step M is marked): ...". 18c, a retry failure that carried a
+  pasted body goes through `retry_failure` in route_requests.rs, which
+  calls `chain::popup::notify_copied("Retry failed", sentence)`; a bare
+  `retry 2 5` that fails only prints. 18d prunes todo.md and
+  todo_later.md to items nothing in the plan delivered, and adds the
+  drift guard.
+- Popup sizing: 18 px Ubuntu Light, 40 points tall, width 220..560
+  from the text, top offset 0 (flush with the review's top margin).
+  Bumping it meant keeping popup.rs's CHAR_W (10.5) and H (40) in
+  step with fading_popup/src/main.rs's FONT_SIZE (18.0) and H (44).
+
+## Plan status
+
+The 18-step plan is complete. All steps 1-18 are implemented and
+green. No further batch of the plan is expected.
+
+## What's not built
+
+In todo.md and todo_later.md. Highlights: find / grep / rg, git
+read-only, fzf-style pickers (cdf, s, b, co, cop), t / cur, `s` and
+`cdf` (blocked on the user pasting the two bashrc definitions),
+`<verb> --help` copying a description to the clipboard, `edit` (fzf +
+Mousepad), quoted paths with spaces in the built-ins and in
+create / replace / overwrite / append, tuning move-detection
+thresholds, tuning the wrap-arrow colour, and the step's preview
+still including a marked earlier step's edit on the same file
+(writes are correct; only the preview is cumulative). Rename `zaprm`
+to `delete` is in todo_later. The astgrep verb is .rs only.

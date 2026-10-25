@@ -150,6 +150,12 @@ impl eframe::App for NecessaryStructForEgui {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if app_core::general_util::instance_guard::take_focus() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            ui.ctx().request_repaint();
+        }
+
         self.drain_stream_frames(ui.ctx());
 
         if let Some(action) = self.pending_action.take() {
@@ -260,7 +266,6 @@ impl NecessaryStructForEgui {
         match app_core::command_router::route(&typed, &mut self.session) {
             Outcome::Print(lines) => self.history.extend(lines),
             Outcome::Silent => {}
-            Outcome::Unknown => {}
             Outcome::Exit => {
                 self.exit_requested = true;
             }
@@ -268,6 +273,17 @@ impl NecessaryStructForEgui {
             Outcome::PrintAndCopy { lines, text } => {
                 self.history.extend(lines);
                 ctx.copy_text(text);
+            }
+            Outcome::PeekAndCopy { lines, text } => {
+                if let Some(last) = self.history.last_mut() {
+                    last.skip_copy = true;
+                }
+                let n = lines.len();
+                self.history.extend(lines);
+                ctx.copy_text(text);
+                let mut msg = Line::cli(format!("copied {n} lines"));
+                msg.skip_copy = true;
+                self.history.push(msg);
             }
             Outcome::CopyAll { include_peeks } => {
                 self.history.pop();
@@ -416,32 +432,78 @@ impl NecessaryStructForEgui {
                 }
 
                 let id = egui::Id::new("zapcli_input");
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label(
-                        egui::RichText::new(format!("{prompt} > "))
-                            .font(mono.clone())
-                            .color(PROMPT),
-                    );
-                    // Ask the horizontal layout for its real remaining
-                    // width after the prompt. A guessed width made the
-                    // TextEdit wrap past the right edge.
-                    let remaining = ui.available_width().max(80.0);
-                    let out = egui::TextEdit::multiline(&mut self.typed)
-                        .id(id)
-                        .font(mono.clone())
-                        .text_color(TEXT)
-                        .desired_rows(1)
-                        .desired_width(remaining)
-                        .frame(egui::Frame::NONE)
-                        .show(ui);
-                    // Focus the input when nothing else holds focus. This
-                    // runs at most one frame per focus loss, so it can't
-                    // spin the render loop like request_focus() every frame.
-                    if ui.memory(|m| m.focused().is_none()) {
-                        out.response.request_focus();
-                    }
+                let prompt_str = format!("{prompt} > ");
+                let prompt_width = ui.fonts_mut(|f| {
+                    f.layout_no_wrap(prompt_str.clone(), mono.clone(), PROMPT)
+                        .size()
+                        .x
                 });
+                let avail_w = ui.available_width().max(80.0);
+                let mono_for_layouter = mono.clone();
+                let mut layouter =
+                    move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(
+                            buf.as_str(),
+                            0.0,
+                            egui::TextFormat {
+                                font_id: mono_for_layouter.clone(),
+                                color: TEXT,
+                                ..Default::default()
+                            },
+                        );
+                        job.wrap = egui::text::TextWrapping {
+                            max_width: wrap_width,
+                            break_anywhere: true,
+                            ..Default::default()
+                        };
+                        // Always set leading_space, and add an invisible
+                        // zero-width space when the buffer is empty so
+                        // egui has a row to put the caret on. Without a
+                        // row, egui renders the caret at (0, y) and it
+                        // sits over the prompt.
+                        if buf.as_str().is_empty() {
+                            job.append(
+                                "\u{200b}",
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: mono_for_layouter.clone(),
+                                    color: TEXT,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        if let Some(sec) = job.sections.last_mut() {
+                            sec.leading_space = prompt_width;
+                        }
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
+                let margin = egui::Margin::ZERO;
+                // Paint the prompt first, so the TextEdit's caret draws
+                // on top of it instead of being covered by it. Then the
+                // input line's cursor is visible even when the buffer is
+                // empty and the margin hasn't pushed it right yet.
+                let prompt_pos = ui.cursor().left_top();
+                ui.painter().text(
+                    prompt_pos,
+                    egui::Align2::LEFT_TOP,
+                    &prompt_str,
+                    mono.clone(),
+                    PROMPT,
+                );
+                let out = egui::TextEdit::multiline(&mut self.typed)
+                    .id(id)
+                    .font(mono.clone())
+                    .text_color(TEXT)
+                    .desired_rows(1)
+                    .desired_width(avail_w)
+                    .frame(egui::Frame::NONE)
+                    .margin(margin)
+                    .layouter(&mut layouter)
+                    .show(ui);
+                if ui.memory(|m| m.focused().is_none()) {
+                    out.response.request_focus();
+                }
             });
     }
 

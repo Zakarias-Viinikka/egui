@@ -333,7 +333,13 @@ pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseF
                 errors.push(stray_cd(header_no));
             }
             let mut reported = false;
-            if !is_absolute_or_home(folder) {
+            if folder.contains("&&") || folder.contains(';') || folder.contains('|') {
+                errors.push(ParseError {
+                    line: header_no,
+                    message: "cd: &&, ; and | are not supported; put cd on its own line and the cargo or run line under it".to_string(),
+                });
+                reported = true;
+            } else if !is_absolute_or_home(folder) {
                 errors.push(ParseError {
                     line: header_no,
                     message: format!(
@@ -1404,6 +1410,27 @@ mod tests {
     }
 
     #[test]
+    fn cd_with_and_operators_is_refused() {
+        let err = parse("cd /tmp && cargo test\n").expect_err("should fail");
+        assert!(err.message.contains("&&"), "got: {}", err.message);
+        assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn cd_with_semicolon_is_refused() {
+        let err = parse("cd /tmp; cargo test\n").expect_err("should fail");
+        assert!(err.message.contains(";"), "got: {}", err.message);
+        assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn cd_with_pipe_is_refused() {
+        let err = parse("cd /tmp | cargo test\n").expect_err("should fail");
+        assert!(err.message.contains('|'), "got: {}", err.message);
+        assert_eq!(err.line, 1);
+    }
+
+    #[test]
     fn hidden_rejects_create_replace_overwrite_append() {
         let cases = [
             "create /srv/secret/a.rs\n@new\nx\n@end\n",
@@ -1842,6 +1869,22 @@ mod tests {
         }
         assert!(identifier_problem("foo").is_none());
         assert!(identifier_problem("r#foo").is_some());
+    }
+
+    #[test]
+    fn every_verb_name_appears_in_the_cheat_sheet() {
+        // Drift guard (step 17): if a verb is added but the cheat sheet
+        // (which is what the AI is told to read) is not updated, this
+        // fails.
+        let sheet = include_str!("../../CHAIN_CHEATSHEET.md");
+        for v in Verb::ALL {
+            assert!(
+                sheet.contains(v.name()),
+                "verb {:?} ({}) not named in CHAIN_CHEATSHEET.md",
+                v,
+                v.name()
+            );
+        }
     }
 
     #[test]
