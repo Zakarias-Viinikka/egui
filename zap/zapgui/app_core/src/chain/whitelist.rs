@@ -250,6 +250,8 @@ pub fn validate_hidden_entry(raw: &str) -> Result<String, String> {
     Ok(t.to_string())
 }
 
+pub use zap_wire::extensions::NO_EXTENSION_TOKEN;
+
 pub fn extensions_path() -> PathBuf {
     zap_wire::config::config_dir().join("extensions.txt")
 }
@@ -267,7 +269,7 @@ pub fn save_extensions(lines: &[String]) -> Result<(), String> {
 pub fn validate_extension_entry(raw: &str) -> Result<String, String> {
     let t = raw.trim().trim_start_matches('.');
     if t.is_empty() {
-        return Err("empty entry".to_string());
+        return Ok(zap_wire::extensions::NO_EXTENSION_TOKEN.to_string());
     }
     if t.len() > 16 {
         return Err("extension too long (max 16)".to_string());

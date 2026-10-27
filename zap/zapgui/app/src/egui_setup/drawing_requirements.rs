@@ -2,7 +2,6 @@ use eframe::egui;
 use egui::text::{LayoutJob, TextWrapping};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use app_core::chain::{popup, report, writer, Chain, ChainOutcome, StepStatus, Verb};
 use app_core::terminal_router::surface_review::SurfaceReview;
@@ -13,8 +12,6 @@ use every_page_ever::ReusableComponents::glass_button::ui::{
     self as glass_button, BlockState, Icon as GlassIcon,
 };
 
-const CLICK_GUARD: Duration = Duration::from_millis(150);
-const SPECIAL_CLICK_GUARD: Duration = Duration::from_millis(600);
 const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(210, 80, 80);
 const CAPTION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 220, 220);
 const CAPTION_MARKED_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 90);
@@ -80,11 +77,55 @@ fn banner_hint(kind: BannerKind) -> &'static str {
     }
 }
 
-fn boundary_chip_text(boundary: &std::path::Path) -> String {
-    if boundary == std::path::Path::new("/") {
+fn step_folder(chain: Option<&Arc<Chain>>, i: usize) -> Option<PathBuf> {
+    chain
+        .and_then(|c| c.steps.get(i))
+        .and_then(|s| s.path.parent().map(|p| p.to_path_buf()))
+}
+
+/// Visible step numbers reordered so steps that touch the same folder sit
+/// together. Within a folder the original step order is kept. A step's
+/// folder is the parent of its target path; a move or rename groups by its
+/// source folder.
+fn blocks_ordered_by_folder(chain: Option<&Arc<Chain>>, visible: &[usize]) -> Vec<usize> {
+    let mut ordered = visible.to_vec();
+    ordered.sort_by(|&a, &b| {
+        step_folder(chain, a)
+            .cmp(&step_folder(chain, b))
+            .then(a.cmp(&b))
+    });
+    ordered
+}
+
+/// "md files only", "txt files only" or "md/txt files only" when every step
+/// in the chain targets one of those extensions. None otherwise.
+fn file_type_note(chain: &Chain) -> Option<&'static str> {
+    let mut has_md = false;
+    let mut has_txt = false;
+    for s in &chain.steps {
+        match s.path.extension().and_then(|e| e.to_str()) {
+            Some("md") => has_md = true,
+            Some("txt") => has_txt = true,
+            _ => return None,
+        }
+    }
+    match (has_md, has_txt) {
+        (true, true) => Some("md/txt files only"),
+        (true, false) => Some("md files only"),
+        (false, true) => Some("txt files only"),
+        (false, false) => None,
+    }
+}
+
+fn boundary_chip_text(boundary: &std::path::Path, chain: &Chain) -> String {
+    let base = if boundary == std::path::Path::new("/") {
         "edits span the whole disk".to_string()
     } else {
         format!("confined to {}/", boundary.display())
+    };
+    match file_type_note(chain) {
+        Some(note) => format!("{base} \u{00b7} {note}"),
+        None => base,
     }
 }
 
@@ -332,7 +373,6 @@ fn layout_caption(
 
 pub struct NecessaryStructForEgui {
     shown: Option<Arc<Chain>>,
-    shown_at: Instant,
     error_line: Option<String>,
     shown_step: usize,
     marked: Vec<bool>,
@@ -358,7 +398,6 @@ pub struct NecessaryStructForEgui {
     /// Set for one frame when the pill is clicked, so the viewer scrolls
     /// to the first change after switching modes.
     scroll_to_change_pending: bool,
-    surface_shown_at: Instant,
     did_init_style: bool,
     /// Loaded lazily the first time a step needs syntax colors.
     engine: Option<syntax::SyntaxEngine>,
@@ -382,7 +421,6 @@ impl Default for NecessaryStructForEgui {
     fn default() -> Self {
         Self {
             shown: None,
-            shown_at: Instant::now(),
             error_line: None,
             shown_step: 0,
             marked: Vec::new(),
@@ -404,7 +442,6 @@ impl Default for NecessaryStructForEgui {
             menu_extensions_error: None,
             full_file: false,
             scroll_to_change_pending: false,
-            surface_shown_at: Instant::now(),
             did_init_style: false,
             engine: None,
             step_tables: Vec::new(),
@@ -468,7 +505,6 @@ impl eframe::App for NecessaryStructForEgui {
             let now_none = current_surface.is_none();
             self.shown_surface = current_surface;
             self.surface_step = 0;
-            self.surface_shown_at = Instant::now();
             self.full_file = false;
             self.surface_tables.clear();
             self.surface_full.clear();
@@ -502,7 +538,6 @@ impl eframe::App for NecessaryStructForEgui {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
-            self.shown_at = Instant::now();
             self.error_line = None;
             self.shown_step = 0;
             self.full_file = false;
@@ -621,7 +656,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         let chip_right = pen_center_x - 11.0 - 8.0;
         let chip_max_w = cap_area_w * 0.45;
         let chip = chain.as_ref().map(|c| {
-            let text = boundary_chip_text(&c.boundary);
+            let text = boundary_chip_text(&c.boundary, c);
             let color = boundary_chip_color(&c.boundary);
             let g = chip_galley(ui, &text, color, chip_max_w);
             (g, color)
@@ -796,7 +831,6 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             ) {
                 self.full_file = !self.full_file;
                 self.scroll_to_change_pending = true;
-                self.shown_at = Instant::now();
             }
         }
 
@@ -945,62 +979,109 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
 
         let mut clicked_step: Option<usize> = None;
         if show_blocks {
-            let total = visible_count as f32 * layout.block_size
-                + (visible_count.saturating_sub(1)) as f32 * layout.gap;
-            let start_y = layout.viewer.center().y - total / 2.0 + layout.block_size / 2.0;
-            for (slot, &real_i) in visible.iter().enumerate() {
-                let marked = self.marked.get(real_i).copied().unwrap_or(false);
-                let shown = real_i == self.shown_step;
-                let state = match (marked, shown) {
-                    (true, true) => BlockState::MarkedSelected,
-                    (true, false) => BlockState::Marked,
-                    (false, true) => BlockState::Selected,
-                    (false, false) => BlockState::Normal,
-                };
-                let accent = chain
-                    .as_ref()
-                    .and_then(|c| c.steps.get(real_i))
-                    .map(|s| verb_accent(s.step.verb));
-                let step_ref = chain.as_ref().and_then(|c| c.steps.get(real_i));
-                let mut tip = if let Some(s) = step_ref {
-                    let file_name = s
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| s.path.display().to_string());
-                    format!(
-                        "Step {} of {}: {} {}",
-                        real_i + 1,
-                        step_count,
-                        verb_word(s.step.verb),
-                        file_name
-                    )
-                } else {
-                    format!("Step {} of {}", real_i + 1, step_count)
-                };
-                if marked {
-                    tip.push_str(", marked");
-                }
-                if self.verified.get(real_i).copied().unwrap_or(false) {
-                    tip.push_str(", verified");
-                }
-                let y = start_y + slot as f32 * (layout.block_size + layout.gap);
-                if glass_button::glass_step_block_ui(
-                    ui,
-                    egui::pos2(layout.block_col_x, y),
-                    real_i,
-                    state,
-                    accent,
-                    step_ref.map(|s| verb_glyph(s.step.verb)).unwrap_or(""),
-                    &tip,
-                ) {
-                    clicked_step = Some(real_i);
-                }
-            }
+            let col_left = layout.viewer.right() + layout.gap;
+            let col_rect = egui::Rect::from_min_max(
+                egui::pos2(col_left, layout.viewer.top()),
+                egui::pos2(col_left + 56.0, layout.viewer.bottom()),
+            );
+            let ordered = blocks_ordered_by_folder(chain.as_ref(), &visible);
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(col_rect)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+            let block_center_x = layout.block_col_x;
+            let mut group_rects: Vec<(Option<PathBuf>, Vec<egui::Rect>)> = Vec::new();
+            egui::ScrollArea::vertical()
+                .id_salt("chain_block_column")
+                .auto_shrink([false, false])
+                .show(&mut child, |ui| {
+                    ui.add_space(8.0);
+                    for &real_i in &ordered {
+                        let folder = step_folder(chain.as_ref(), real_i);
+                        let changed = group_rects.last().map_or(true, |(f, _)| *f != folder);
+                        if changed && !group_rects.is_empty() {
+                            ui.add_space(20.0);
+                        }
+                        let marked = self.marked.get(real_i).copied().unwrap_or(false);
+                        let shown = real_i == self.shown_step;
+                        let state = match (marked, shown) {
+                            (true, true) => BlockState::MarkedSelected,
+                            (true, false) => BlockState::Marked,
+                            (false, true) => BlockState::Selected,
+                            (false, false) => BlockState::Normal,
+                        };
+                        let accent = chain
+                            .as_ref()
+                            .and_then(|c| c.steps.get(real_i))
+                            .map(|s| verb_accent(s.step.verb));
+                        let step_ref = chain.as_ref().and_then(|c| c.steps.get(real_i));
+                        let mut tip = if let Some(s) = step_ref {
+                            let file_name = s
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| s.path.display().to_string());
+                            format!(
+                                "Step {} of {}: {} {}",
+                                real_i + 1,
+                                step_count,
+                                verb_word(s.step.verb),
+                                file_name
+                            )
+                        } else {
+                            format!("Step {} of {}", real_i + 1, step_count)
+                        };
+                        if marked {
+                            tip.push_str(", marked");
+                        }
+                        if self.verified.get(real_i).copied().unwrap_or(false) {
+                            tip.push_str(", verified");
+                        }
+                        let (row_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(col_rect.width(), layout.block_size + 12.0),
+                            egui::Sense::hover(),
+                        );
+                        if glass_button::glass_step_block_ui(
+                            ui,
+                            egui::pos2(block_center_x, row_rect.center().y),
+                            real_i,
+                            state,
+                            accent,
+                            step_ref.map(|s| verb_glyph(s.step.verb)).unwrap_or(""),
+                            &tip,
+                        ) {
+                            clicked_step = Some(real_i);
+                        }
+                        let block_rect = egui::Rect::from_center_size(
+                            row_rect.center(),
+                            egui::vec2(layout.block_size, layout.block_size),
+                        );
+                        if changed {
+                            group_rects.push((folder, vec![block_rect]));
+                        } else if let Some((_, rects)) = group_rects.last_mut() {
+                            rects.push(block_rect);
+                        }
+                    }
+                    ui.add_space(layout.block_size + 12.0);
+                    if group_rects.len() > 1 {
+                        for (_, rects) in &group_rects {
+                            let mut bounding = rects[0];
+                            for r in &rects[1..] {
+                                bounding = bounding.union(*r);
+                            }
+                            ui.painter().rect_stroke(
+                                bounding.expand(10.0),
+                                6.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(150, 160, 175, 200)),
+                                egui::StrokeKind::Middle,
+                            );
+                        }
+                    }
+                });
         }
         if let Some(i) = clicked_step {
             self.shown_step = i;
-            self.shown_at = Instant::now();
         }
         if let Some(slot) = self.visited.get_mut(self.shown_step) {
             *slot = true;
@@ -1018,8 +1099,6 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             );
         }
 
-        let click_ok = self.shown_at.elapsed() >= CLICK_GUARD;
-        let special_click_ok = self.shown_at.elapsed() >= SPECIAL_CLICK_GUARD;
         let shown_verb = chain
             .as_ref()
             .and_then(|c| c.steps.get(self.shown_step))
@@ -1104,8 +1183,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                     big,
                     accent,
                     tip,
-                ) && special_click_ok
-                {
+                ) {
                     allow_clicked = true;
                 }
             } else if glass_button::glass_button_ui(
@@ -1114,8 +1192,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 2,
                 GlassIcon::Confirm,
                 "Write every step that is not marked.",
-            ) && click_ok
-            {
+            ) {
                 confirmed = true;
             }
             if glass_button::glass_button_ui(
@@ -1124,8 +1201,7 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
                 3,
                 GlassIcon::Deny,
                 "Write nothing. All steps stay available for retry.",
-            ) && click_ok
-            {
+            ) {
                 deny_all_clicked = true;
             }
         }
@@ -1135,14 +1211,12 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
         } else if verify_clicked {
             if let Some(slot) = self.verified.get_mut(self.shown_step) {
                 *slot = !*slot;
-                self.shown_at = Instant::now();
             }
         }
 
         if !title_edit_open && mark_clicked {
             if let Some(slot) = self.marked.get_mut(self.shown_step) {
                 *slot = !*slot;
-                self.shown_at = Instant::now();
             }
         }
 
@@ -1150,7 +1224,6 @@ impl LiterallyDrawThePage for NecessaryStructForEgui {
             if let Some(slot) = self.allowed.get_mut(self.shown_step) {
                 *slot = true;
             }
-            self.shown_at = Instant::now();
             if let Some(c) = chain.clone() {
                 try_confirm(self, ui, &c);
             }
@@ -1219,7 +1292,6 @@ fn commit_title_edit(
                 this.visited = vec![false; n];
                 this.verified = vec![false; n];
                 this.allowed = vec![false; n];
-                this.shown_at = Instant::now();
                 this.title_edit = None;
                 this.error_line = None;
             } else {
@@ -1268,20 +1340,14 @@ pub fn confirm_gate(
             continue;
         }
         if verb.is_special() {
-            let v = verified.get(i).copied().unwrap_or(false);
             let a = allowed.get(i).copied().unwrap_or(false);
-            if !v {
-                return Some(GateStop {
-                    index: i,
-                    reason: "this step needs Verify before confirming",
-                });
-            }
             if !a {
                 return Some(GateStop {
                     index: i,
                     reason: "this step needs the Allow button before confirming",
                 });
             }
+            let _ = verified;
         } else if matches!(verb, Verb::Remove | Verb::Move | Verb::RemoveDir) {
             if !visited.get(i).copied().unwrap_or(false) {
                 return Some(GateStop {
@@ -1307,7 +1373,6 @@ fn try_confirm(this: &mut NecessaryStructForEgui, ui: &mut egui::Ui, c: &Arc<Cha
         &this.allowed,
     ) {
         this.shown_step = stop.index;
-        this.shown_at = Instant::now();
         this.error_line = Some(format!("step {}: {}", stop.index + 1, stop.reason));
         return;
     }
@@ -1368,7 +1433,6 @@ fn try_confirm(this: &mut NecessaryStructForEgui, ui: &mut egui::Ui, c: &Arc<Cha
             if !visible.contains(&failed_idx) {
                 this.revealed_all = true;
                 this.shown_step = failed_idx;
-                this.shown_at = Instant::now();
             }
         }
     }
@@ -1545,7 +1609,6 @@ impl NecessaryStructForEgui {
         ) {
             self.full_file = !self.full_file;
             self.scroll_to_change_pending = true;
-            self.surface_shown_at = Instant::now();
         }
 
         if self.full_file {
@@ -1598,40 +1661,57 @@ impl NecessaryStructForEgui {
         );
 
         if show_blocks {
-            let total = file_count as f32 * layout.block_size
-                + (file_count.saturating_sub(1)) as f32 * layout.gap;
-            let start_y = layout.viewer.center().y - total / 2.0 + layout.block_size / 2.0;
-            for i in 0..file_count {
-                let state = if i == self.surface_step {
-                    BlockState::Selected
-                } else {
-                    BlockState::Normal
-                };
-                let file_name = review
-                    .files
-                    .get(i)
-                    .map(|f| {
-                        f.path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| f.path.display().to_string())
-                    })
-                    .unwrap_or_default();
-                let tip = format!("File {} of {}: {}", i + 1, file_count, file_name);
-                let y = start_y + i as f32 * (layout.block_size + layout.gap);
-                if glass_button::glass_step_block_ui(
-                    ui,
-                    egui::pos2(layout.block_col_x, y),
-                    1000 + i,
-                    state,
-                    None,
-                    "",
-                    &tip,
-                ) {
-                    self.surface_step = i;
-                    self.surface_shown_at = Instant::now();
-                }
-            }
+            let col_left = layout.viewer.right() + layout.gap;
+            let col_rect = egui::Rect::from_min_max(
+                egui::pos2(col_left, layout.viewer.top()),
+                egui::pos2(col_left + 56.0, layout.viewer.bottom()),
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(col_rect)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+            let block_center_x = layout.block_col_x;
+            egui::ScrollArea::vertical()
+                .id_salt("surface_block_column")
+                .auto_shrink([false, false])
+                .show(&mut child, |ui| {
+                    ui.add_space(8.0);
+                    for i in 0..file_count {
+                        let state = if i == self.surface_step {
+                            BlockState::Selected
+                        } else {
+                            BlockState::Normal
+                        };
+                        let file_name = review
+                            .files
+                            .get(i)
+                            .map(|f| {
+                                f.path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| f.path.display().to_string())
+                            })
+                            .unwrap_or_default();
+                        let tip = format!("File {} of {}: {}", i + 1, file_count, file_name);
+                        let (row_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(col_rect.width(), layout.block_size + 12.0),
+                            egui::Sense::hover(),
+                        );
+                        if glass_button::glass_step_block_ui(
+                            ui,
+                            egui::pos2(block_center_x, row_rect.center().y),
+                            1000 + i,
+                            state,
+                            None,
+                            "",
+                            &tip,
+                        ) {
+                            self.surface_step = i;
+                        }
+                    }
+                    ui.add_space(layout.block_size + 12.0);
+                });
         }
 
         if close_button::close_button_ui(ui, layout.close_center, CLOSE_TIP) {
@@ -1643,15 +1723,13 @@ impl NecessaryStructForEgui {
         let start_x = layout.viewer.center().x - total_w / 2.0 + layout.button_size / 2.0;
         let mut confirm_clicked = false;
         let mut deny_clicked = false;
-        let surface_click_ok = self.surface_shown_at.elapsed() >= CLICK_GUARD;
         if glass_button::glass_button_ui(
             ui,
             egui::pos2(start_x, layout.button_y),
             0,
             GlassIcon::Confirm,
             "Write every step that is not marked.",
-        ) && surface_click_ok
-        {
+        ) {
             confirm_clicked = true;
         }
         if glass_button::glass_button_ui(
@@ -1660,8 +1738,7 @@ impl NecessaryStructForEgui {
             1,
             GlassIcon::Deny,
             "Write nothing. All steps stay available for retry.",
-        ) && surface_click_ok
-        {
+        ) {
             deny_clicked = true;
         }
 
@@ -1812,8 +1889,13 @@ impl NecessaryStructForEgui {
                     ui.label(egui::RichText::new("(all extensions allowed)").italics());
                 }
                 for (i, entry) in self.menu_extensions.iter().enumerate() {
+                    let label = if entry == app_core::chain::whitelist::NO_EXTENSION_TOKEN {
+                        "no extension".to_string()
+                    } else {
+                        format!(".{}", entry)
+                    };
                     ui.horizontal(|ui| {
-                        ui.label(format!(".{}", entry));
+                        ui.label(label);
                         if ui.button("remove").clicked() {
                             ext_to_remove = Some(i);
                         }
@@ -1826,15 +1908,13 @@ impl NecessaryStructForEgui {
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.menu_extensions_draft)
                             .desired_width(500.0)
-                            .hint_text("rs, md, toml, sh"),
+                            .hint_text("rs, md, toml, sh — or leave empty for no extension"),
                     );
                     let submitted =
                         resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if ui.button("add").clicked() || submitted {
                         let raw = self.menu_extensions_draft.trim().to_string();
-                        if !raw.is_empty() {
-                            ext_to_add = Some(raw);
-                        }
+                        ext_to_add = Some(raw);
                     }
                 });
 
@@ -2062,7 +2142,7 @@ mod tests {
     }
 
     #[test]
-    fn gate_passes_once_special_step_is_verified_and_allowed() {
+    fn gate_passes_once_special_step_is_allowed() {
         let verbs = [Verb::Cargo];
         let wanted = [true];
         let visited = [true];
@@ -2072,18 +2152,30 @@ mod tests {
     }
 
     #[test]
-    fn gate_stops_at_unverified_special_step() {
+    fn gate_passes_special_step_with_only_allow_no_verify() {
+        // The wide ALLOW button is enough on its own. Verify is not
+        // required before confirming a special step.
         let verbs = [Verb::Run];
         let wanted = [true];
         let visited = [true];
         let verified = [false];
         let allowed = [true];
+        assert!(confirm_gate(&verbs, &wanted, &visited, &verified, &allowed).is_none());
+    }
+
+    #[test]
+    fn gate_stops_at_un_allowed_special_step_even_if_verified() {
+        let verbs = [Verb::Run];
+        let wanted = [true];
+        let visited = [true];
+        let verified = [true];
+        let allowed = [false];
         let stop = confirm_gate(&verbs, &wanted, &visited, &verified, &allowed);
         assert_eq!(stop.unwrap().index, 0);
     }
 
     #[test]
-    fn gate_stops_at_unvisited_zaprm() {
+    fn gate_stops_at_unvisited_delete() {
         let verbs = [Verb::Remove];
         let wanted = [true];
         let visited = [false];
@@ -2110,8 +2202,8 @@ mod tests {
         let visited = [true];
         let stop = confirm_gate(&verbs, &wanted, &visited, &[false], &[false]);
         assert_eq!(stop.expect("stop").index, 0);
-        let stop = confirm_gate(&verbs, &wanted, &visited, &[true], &[false]);
-        assert_eq!(stop.expect("stop").index, 0);
+        // Allow alone is enough.
+        assert!(confirm_gate(&verbs, &wanted, &visited, &[false], &[true]).is_none());
         assert!(confirm_gate(&verbs, &wanted, &visited, &[true], &[true]).is_none());
     }
 

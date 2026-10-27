@@ -6,6 +6,11 @@ use std::path::Path;
 
 pub const EXTENSIONS_FILENAME: &str = "extensions.txt";
 
+/// The extensions.txt token that means "files with no dotted extension".
+/// Chosen so it passes the normal token rules and cannot be confused with
+/// a real extension a user is likely to have.
+pub const NO_EXTENSION_TOKEN: &str = "noext";
+
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionAllowlist {
     entries: Vec<String>,
@@ -68,7 +73,13 @@ impl ExtensionAllowlist {
             .entries
             .iter()
             .take(12)
-            .map(|e| format!(".{e}"))
+            .map(|e| {
+                if e == NO_EXTENSION_TOKEN {
+                    "no extension".to_string()
+                } else {
+                    format!(".{e}")
+                }
+            })
             .collect();
         let mut s = shown.join(", ");
         if self.entries.len() > 12 {
@@ -94,12 +105,18 @@ impl ExtensionAllowlist {
             .and_then(|e| e.to_str())
             .map(|s| s.to_ascii_lowercase());
         match ext.as_deref() {
-            None | Some("") => Some(format!(
-                "{}: {} has no extension, and only paths with an allowed extension can be written (allowed: {})",
-                verb,
-                path.display(),
-                self.allowed_list()
-            )),
+            None | Some("") => {
+                if self.entries.iter().any(|x| x == NO_EXTENSION_TOKEN) {
+                    None
+                } else {
+                    Some(format!(
+                        "{}: {} has no extension, and only paths with an allowed extension (or a file with no extension, if allowed) can be written (allowed: {})",
+                        verb,
+                        path.display(),
+                        self.allowed_list()
+                    ))
+                }
+            }
             Some(e) => {
                 if self.entries.iter().any(|x| x == e) {
                     None

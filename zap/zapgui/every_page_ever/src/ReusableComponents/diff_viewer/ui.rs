@@ -81,7 +81,7 @@ impl Default for DiffViewerParams<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Which {
     Left,
     Right,
@@ -272,19 +272,55 @@ fn diff_viewer_body(
     show_copy: bool,
     params: DiffViewerParams<'_>,
 ) {
-    let mid_x = rect.center().x;
-    let left_box = egui::Rect::from_min_max(rect.min, egui::pos2(mid_x - GAP / 2.0, rect.max.y));
-    let right_box =
-        egui::Rect::from_min_max(egui::pos2(mid_x + GAP / 2.0, rect.min.y), rect.max);
+    let has_left = blocks
+        .iter()
+        .any(|b| b.rows.iter().any(|r| r.left.is_some()));
+    let has_right = blocks
+        .iter()
+        .any(|b| b.rows.iter().any(|r| r.right.is_some()));
+    // A step with content on only one side shows only that side, using the
+    // whole viewer rect. A step with content on both sides, or none, keeps
+    // the two-pane layout.
+    let single: Option<Which> = match (has_left, has_right) {
+        (true, false) => Some(Which::Left),
+        (false, true) => Some(Which::Right),
+        _ => None,
+    };
 
-    for r in [left_box, right_box] {
+    let mid_x = rect.center().x;
+    // When only one side has content, draw a single pane the same size as
+    // one half of the two-pane layout, centered in the viewer.
+    let single_rect = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2((rect.width() - GAP) / 2.0, rect.height()),
+    );
+    let left_box = match single {
+        Some(_) => single_rect,
+        None => egui::Rect::from_min_max(rect.min, egui::pos2(mid_x - GAP / 2.0, rect.max.y)),
+    };
+    let right_box = match single {
+        Some(_) => single_rect,
+        None => egui::Rect::from_min_max(egui::pos2(mid_x + GAP / 2.0, rect.min.y), rect.max),
+    };
+
+    if single.is_some() {
         ui.painter().rect(
-            r,
+            single_rect,
             CORNER,
             CONTENT_BG,
             egui::Stroke::new(1.0, BORDER),
             egui::StrokeKind::Inside,
         );
+    } else {
+        for r in [left_box, right_box] {
+            ui.painter().rect(
+                r,
+                CORNER,
+                CONTENT_BG,
+                egui::Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
     if let Some(accent) = params.right_accent {
         paint_right_accent(ui, right_box, accent);
@@ -425,7 +461,9 @@ fn diff_viewer_body(
                         first_change_rect = Some(row_rect);
                     }
                     hr(ui, inner_left, y);
-                    hr(ui, inner_right, y);
+                    if single.is_none() {
+                        hr(ui, inner_right, y);
+                    }
                 }
 
                 if let Some(label) = &lr.tag_left {
@@ -440,47 +478,59 @@ fn diff_viewer_body(
 
                 let side_h = row_rect.bottom() - y;
 
-                draw_side_paint(
-                    ui,
-                    inner_left,
-                    y,
-                    side_h,
-                    Which::Left,
-                    lr.left_lineno,
-                    lr.left_in_move,
-                    &lr.row_kind,
-                    lr.left.is_some(),
-                    moves_mode,
-                    lr.edit,
-                );
-                draw_side_paint(
-                    ui,
-                    inner_right,
-                    y,
-                    side_h,
-                    Which::Right,
-                    lr.right_lineno,
-                    lr.right_in_move,
-                    &lr.row_kind,
-                    lr.right.is_some(),
-                    moves_mode,
-                    lr.edit,
-                );
+                if single != Some(Which::Right) {
+                    draw_side_paint(
+                        ui,
+                        inner_left,
+                        y,
+                        side_h,
+                        Which::Left,
+                        lr.left_lineno,
+                        lr.left_in_move,
+                        &lr.row_kind,
+                        lr.left.is_some(),
+                        moves_mode,
+                        lr.edit,
+                    );
+                }
+                if single != Some(Which::Left) {
+                    draw_side_paint(
+                        ui,
+                        inner_right,
+                        y,
+                        side_h,
+                        Which::Right,
+                        lr.right_lineno,
+                        lr.right_in_move,
+                        &lr.row_kind,
+                        lr.right.is_some(),
+                        moves_mode,
+                        lr.edit,
+                    );
+                }
 
                 // Wrap markers: a small arrow at each continuation row,
                 // sitting in the gap between the bar and the text.
-                paint_wrap_marks(ui, text_x_left - 10.0, y, lr.left.as_ref());
-                paint_wrap_marks(ui, text_x_right - 10.0, y, lr.right.as_ref());
+                if single != Some(Which::Right) {
+                    paint_wrap_marks(ui, text_x_left - 10.0, y, lr.left.as_ref());
+                }
+                if single != Some(Which::Left) {
+                    paint_wrap_marks(ui, text_x_right - 10.0, y, lr.right.as_ref());
+                }
 
                 label_ys.push(y);
             }
 
             // Place each pane's labels together so selection stays within its pane.
-            for (lr, y) in laid.iter().zip(label_ys.iter()) {
-                place_label(ui, lr.left.as_ref(), text_x_left, *y, wrap_left);
+            if single != Some(Which::Right) {
+                for (lr, y) in laid.iter().zip(label_ys.iter()) {
+                    place_label(ui, lr.left.as_ref(), text_x_left, *y, wrap_left);
+                }
             }
-            for (lr, y) in laid.iter().zip(label_ys.iter()) {
-                place_label(ui, lr.right.as_ref(), text_x_right, *y, wrap_right);
+            if single != Some(Which::Left) {
+                for (lr, y) in laid.iter().zip(label_ys.iter()) {
+                    place_label(ui, lr.right.as_ref(), text_x_right, *y, wrap_right);
+                }
             }
 
             if params.scroll_to_change_once {
@@ -501,12 +551,23 @@ fn diff_viewer_body(
             // contains the pointer, then the row from the per-row rects.
             if ui.input(|i| i.pointer.secondary_clicked()) {
                 if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                    let which = if left_box.contains(pos) {
-                        Some(Which::Left)
-                    } else if right_box.contains(pos) {
-                        Some(Which::Right)
-                    } else {
-                        None
+                    let which = match single {
+                        Some(w) => {
+                            if single_rect.contains(pos) {
+                                Some(w)
+                            } else {
+                                None
+                            }
+                        }
+                        None => {
+                            if left_box.contains(pos) {
+                                Some(Which::Left)
+                            } else if right_box.contains(pos) {
+                                Some(Which::Right)
+                            } else {
+                                None
+                            }
+                        }
                     };
                     if let Some(which) = which {
                         let row = row_rects.iter().position(|r| r.contains(pos));

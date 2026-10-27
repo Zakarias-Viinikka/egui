@@ -150,6 +150,10 @@ impl eframe::App for NecessaryStructForEgui {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(path) = app_core::general_util::instance_guard::take_cd() {
+            self.session.cwd = path.clone();
+            self.history.push(Line::cli(format!("cd {}", path.display())));
+        }
         if app_core::general_util::instance_guard::take_focus() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);

@@ -47,7 +47,7 @@ refusal line is "deliberately hidden by the user: <path>".
 allowlist. A missing or empty file allows every extension. When the
 list is set, create, replace, overwrite and append only write a path
 whose final component has one of the listed extensions. Extensionless
-paths (Makefile, .gitignore, foo.) are refused. zaprm, zapmv, mkdir,
+paths (Makefile, .gitignore, foo.) are refused. delete, zapmv, mkdir,
 rmdir and chmod are not checked, so a rename can change the extension.
 run and cargo bypass it. Add or remove entries from the whitelist menu
 (`whitelist` in zapcli), under Allowed extensions.
@@ -86,10 +86,10 @@ create, replace, overwrite, append carry content between markers:
     <text>
     @end
 
-zaprm, zapmv, mkdir, rmdir are one line; chmod +x <path>... makes one
+delete, zapmv, mkdir, rmdir are one line; chmod +x <path>... makes one
 or more files executable (only +x, one step per path):
 
-    zaprm <path> [<path>...]
+    delete <path> [<path>...]
     zapmv <from> <to>
     mkdir [-p] <path> [<path>...]
     rmdir <path> [<path>...]
@@ -108,16 +108,16 @@ trailing newline if missing; append also adds one before the appended
 text if the file doesn't end with one. --no-newline turns both off.
 Missing parent folders are made.
 
-zaprm works on text files only (undo copy kept); refuses directories.
+delete works on text files only (undo copy kept); refuses directories.
 zapmv never overwrites. mkdir accepts -p and always creates parents.
 rmdir removes an empty folder only.
 
-Quoted paths with spaces work for zaprm, zapmv, mkdir, rmdir, chmod and
+Quoted paths with spaces work for delete, zapmv, mkdir, rmdir, chmod and
 rename: write the whole path in quotes. They do not work for create,
 replace, overwrite or append, which take everything after the verb as
 the path; those handle a space in an unquoted path but not the quotes
 themselves, and the failure shows the quote in the path. A quoted path
-with spaces in a quoted verb like zaprm that is not quoted splits into
+with spaces in a quoted verb like delete that is not quoted splits into
 two tokens, and the second is relative, so the parse fails loudly
 instead of touching the wrong file.
 
@@ -142,7 +142,7 @@ one leading @. Only lines that collide with a marker word need this.
 
 ## Review
 
-A chain with any zaprm, zapmv, chmod, cargo or run step always needs
+A chain with any delete, zapmv, chmod, cargo or run step always needs
 review, even inside a whitelisted folder. Whitelisted folders auto-apply
 only create, replace, overwrite, append and mkdir. Unapproved .sh /
 .toml files also go to review - see FILE_TRUST.md.
@@ -195,7 +195,7 @@ a path does not exist. Files over 20,000 lines get no hint.
 A chain that does not parse is rejected as a whole, and every problem
 found is listed in one sentence, in line order, each clause ending with
 "at line N" (at most 20, then "(+ N more)"):
-zap: nothing was sent. use zaprm at line 2; create: path must be absolute or start with ~/ (got src/a.rs) at line 5; cd: folder must be absolute or start with ~/ (got tmp) at line 9.
+zap: nothing was sent. use delete at line 2; create: path must be absolute or start with ~/ (got src/a.rs) at line 5; cd: folder must be absolute or start with ~/ (got tmp) at line 9.
 
 When the reviewer used the edit-title pen (create, mkdir, zapmv,
 rename steps only), the report also carries one clause per edited
@@ -209,3 +209,20 @@ astgrep rename <folder> <old> <new>
 Renames the Rust identifier <old> to <new> in every .rs file under <folder>, using the installed ast-grep binary. One line, four tokens. <folder> is absolute or starts with ~/. <old> and <new> are plain ASCII identifiers (letter or underscore first, then letters, digits, underscore), not `_` alone, not a Rust keyword, and they must differ. Lifetimes and loop labels are never renamed. Files under target, .git and dot-folders are skipped.
 
 Always goes to review. At most one astgrep step per chain. A trailing cd + cargo is fine. Every other step in the chain must stay off the .rs files under the folder (before astgrep) and off the files astgrep changed (after it), or the chain fails with "put it in a separate paste". The extension allowlist does not apply. If ast-grep is missing or too old, the step fails with a one-line reason. ast-grep is found through ZAP_AST_GREP, PATH, ~/.cargo/bin, ~/.local/bin, /usr/local/bin, /usr/bin.
+
+## Quoted paths
+
+Body verbs (create, replace, overwrite, append) and a chain's `cd` line
+accept a path wrapped in one matching pair of `"` or `'`. The pair is
+stripped; the rest is taken verbatim. No escapes, no splitting on
+spaces inside. A path line that isn't wrapped in a matching pair is
+used verbatim as before, so an unquoted path with spaces still works.
+
+## Retry
+
+`retry` re-sends every unapplied step. `retry 2 5` re-sends exactly
+steps 2 and 5 (1-based, from the original chain). `retry -2` re-sends
+every unapplied step except step 2. Can't mix `retry 2 -5` in one
+line. A `retry -N` line doesn't take a replacement body. `retry 2 5`
+with a body after it substitutes the numbered steps with the bodies
+you paste.

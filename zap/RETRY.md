@@ -48,6 +48,19 @@ the diff shown is against the file's current state. Nothing is applied
 directly; the rebuilt chain goes into the same pending slot as any other
 chain and shows the same review window.
 
+## Dropping steps
+
+`retry -N [M ...]` retries every unapplied step except the named ones.
+Use it when a step that failed was already done in a previous chain, or
+should be left out for any other reason. The reply says which steps were
+dropped. The dropped steps aren't in the new chain at all — they aren't
+reported as failed, denied, or marked.
+
+`retry -N` doesn't take a replacement body: a body replaces a step you
+are retrying, and a dropped step is not retried. Mixing included and
+dropped step numbers in one line (`retry 2 -3`) is refused with a single
+message.
+
 ## Limits
 
 A retry of a run or cargo step is refused: resend it as a chain. Runs

@@ -5,11 +5,18 @@ use std::path::PathBuf;
 
 pub struct Session {
     pub cwd: PathBuf,
+    /// When the last chain failed to parse and a repair was proposed,
+    /// this holds the corrected text. Typing `y` on its own sends it;
+    /// any other non-empty input clears it.
+    pub pending_chain_repair: Option<String>,
 }
 
 impl Default for Session {
     fn default() -> Self {
-        Self { cwd: default_folder() }
+        Self {
+            cwd: default_folder(),
+            pending_chain_repair: None,
+        }
     }
 }
 
@@ -70,6 +77,26 @@ pub enum Outcome {
 pub fn route(input: &str, session: &mut Session) -> Outcome {
     let trimmed = input.trim();
 
+    // A pending chain repair is sent when the user types `y`. Any other
+    // non-empty input clears it.
+    if trimmed == "y" {
+        if let Some(rep) = session.pending_chain_repair.take() {
+            let out = core_commands::chain::run(&rep, session);
+            return match out {
+                Outcome::Silent => {
+                    Outcome::Print(vec![Line::cli("zap: retried with the corrected chain")])
+                }
+                Outcome::Print(mut lines) => {
+                    lines.insert(0, Line::cli("zap: retried with the corrected chain"));
+                    Outcome::Print(lines)
+                }
+                other => other,
+            };
+        }
+    } else if !trimmed.is_empty() {
+        session.pending_chain_repair = None;
+    }
+
     // zap and overwrite both send their payload to zapgui. zap sends the
     // rest of the line verbatim. overwrite sends "<path>\n<content>" where
     // content can contain newlines (from a paste).
@@ -93,11 +120,12 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         return reply_outcome(crate::general_util::socket::send(trimmed));
     }
 
-    let mut parts = trimmed.split_whitespace();
-    let Some(verb) = parts.next() else {
+    let Some(verb) = trimmed.split_whitespace().next() else {
         return Outcome::Silent;
     };
-    let args: Vec<&str> = parts.collect();
+    let rest = trimmed[verb.len()..].trim_start();
+    let owned_args = crate::general_util::path_parsing::split_quoted(rest);
+    let args: Vec<&str> = owned_args.iter().map(|s| s.as_str()).collect();
 
     match verb {
         "run" => {
@@ -152,7 +180,7 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         "cd" => core_commands::cd::run(&args, session),
         "ls" => core_commands::ls::run(&args, session),
         "cat" => core_commands::cat::run(&args, session),
-        "rm" => Outcome::Print(vec![Line::error("use zaprm")]),
+        "rm" => Outcome::Print(vec![Line::error("use delete")]),
         "mv" => Outcome::Print(vec![Line::error("use zapmv")]),
         "head" => core_commands::head::run(&args, session),
         "tail" => core_commands::tail::run(&args, session),
@@ -162,7 +190,7 @@ pub fn route(input: &str, session: &mut Session) -> Outcome {
         "help" => core_commands::help::run(),
         "whitelist" => core_commands::whitelist::run(),
         "exit" | "quit" => Outcome::Exit,
-        "cls" | "clear" => Outcome::Clear,
+        "cl" | "cls" | "clear" => Outcome::Clear,
         "copy" => {
             let all = args.first().map(|a| *a == "all").unwrap_or(false);
             Outcome::CopyAll { include_peeks: all }
@@ -223,13 +251,18 @@ fn first_word_is_chain_verb(input: &str) -> bool {
     let first_line = input.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     let trimmed = first_line.trim_start();
     let first = trimmed.split_whitespace().next().unwrap_or("");
-    if !matches!(
+    // Single-line cargo/run stay the standalone commands, handled by the
+    // router's match arms below.
+    if matches!(first, "cargo" | "run") {
+        return false;
+    }
+    if matches!(
         first,
         "create"
             | "replace"
             | "overwrite"
             | "append"
-            | "zaprm"
+            | "delete"
             | "zapmv"
             | "mkdir"
             | "rmdir"
@@ -237,12 +270,15 @@ fn first_word_is_chain_verb(input: &str) -> bool {
             | "rename"
             | "astgrep"
     ) {
-        return false;
+        return trimmed
+            .strip_prefix(first)
+            .map(|rest| rest.starts_with(' ') || rest.starts_with('\t'))
+            .unwrap_or(false);
     }
-    trimmed
-        .strip_prefix(first)
-        .map(|rest| rest.starts_with(' ') || rest.starts_with('\t'))
-        .unwrap_or(false)
+    // A near-miss spelling of a chain verb (e.g. "craete" for "create")
+    // routes to the chain parser so the error names a line and the repair
+    // module can propose the fix.
+    zap_wire::repair::closest_verb(first).is_some()
 }
 
 pub fn reply_outcome(result: Result<String, String>) -> Outcome {
@@ -277,7 +313,10 @@ mod tests {
     }
 
     fn tmp_session() -> Session {
-        Session { cwd: std::env::temp_dir() }
+        Session {
+            cwd: std::env::temp_dir(),
+            pending_chain_repair: None,
+        }
     }
 
     #[test]
@@ -307,6 +346,51 @@ mod tests {
             _ => panic!("expected Print"),
         }
         assert_eq!(s.cwd, before);
+    }
+
+    #[test]
+    fn quoted_args_survive_split() {
+        let args = crate::general_util::path_parsing::split_quoted("  \"/a b.txt\" \"/c d.txt\" ");
+        assert_eq!(args, vec!["/a b.txt", "/c d.txt"]);
+    }
+
+    #[test]
+    fn single_quotes_also_work() {
+        let args = crate::general_util::path_parsing::split_quoted("'/a b.txt' plain");
+        assert_eq!(args, vec!["/a b.txt", "plain"]);
+    }
+
+    #[test]
+    fn unquoted_args_still_split_on_whitespace() {
+        let args = crate::general_util::path_parsing::split_quoted("a b c");
+        assert_eq!(args, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn mismatched_quotes_are_left_as_typed() {
+        // A lone quote just stays in the arg; the path resolver will
+        // reject it. Not silently mangled.
+        let args = crate::general_util::path_parsing::split_quoted("\"/a b");
+        assert_eq!(args, vec!["/a b"]);
+    }
+
+    #[test]
+    fn misspelled_body_verb_routes_to_chain_parser() {
+        assert!(first_word_is_chain_verb("craete /tmp/a.rs\n@new\nx\n@end\n"));
+        assert!(first_word_is_chain_verb("craete /tmp/a.rs\n"));
+        assert!(first_word_is_chain_verb("delet /tmp/a.rs\n"));
+    }
+
+    #[test]
+    fn short_typos_that_are_not_verb_like_stay_unknown() {
+        assert!(!first_word_is_chain_verb("cut\n"));
+        assert!(!first_word_is_chain_verb("cats /tmp/x\n"));
+    }
+
+    #[test]
+    fn single_line_cargo_and_run_stay_standalone() {
+        assert!(!first_word_is_chain_verb("cargo test\n"));
+        assert!(!first_word_is_chain_verb("run /tmp/x.sh\n"));
     }
 
     #[test]

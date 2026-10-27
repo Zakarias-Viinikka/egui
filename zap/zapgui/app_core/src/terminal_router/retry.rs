@@ -63,16 +63,44 @@ pub fn payload(rec: &RetryRecord, only: Option<&[usize]>) -> Vec<Step> {
     }
 }
 
+/// Every unapplied step except those in `exclude`. Out-of-range indices
+/// in `exclude` match nothing and are ignored here; the caller checks
+/// ranges before calling.
+pub fn payload_dropping(rec: &RetryRecord, exclude: &[usize]) -> Vec<Step> {
+    rec.steps
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| rec.statuses.get(*i) != Some(&StepStatus::Applied))
+        .filter(|(i, _)| !exclude.contains(i))
+        .map(|(_, s)| s.clone())
+        .collect()
+}
+
 /// Build a fresh chain from the retry payload. Re-reads each file from
 /// disk via `play_forward`, so the diff shown is against current state.
 pub fn build_retry_chain(
     rec: &RetryRecord,
     only: Option<&[usize]>,
+    exclude: Option<&[usize]>,
     replacements: Option<&[Step]>,
 ) -> Result<Chain, String> {
+    if only.is_some() && exclude.is_some() {
+        return Err(
+            "retry: can't combine include step numbers and drop step numbers"
+                .to_string(),
+        );
+    }
+    if exclude.is_some() && replacements.is_some() {
+        return Err(
+            "retry: retry -N doesn't take replacement bodies".to_string()
+        );
+    }
     let steps: Vec<Step> = match (only, replacements) {
         // Bare retry, or bare retry with explicit step numbers. The
         // listed steps are the ones resubmitted, unchanged.
+        (None, None) if exclude.is_some() => {
+            payload_dropping(rec, exclude.unwrap())
+        }
         (None, None) | (Some(_), None) => payload(rec, only),
         (None, Some(_)) => {
             return Err(
@@ -185,6 +213,85 @@ mod tests {
     }
 
     #[test]
+    fn payload_dropping_skips_applied_and_excluded() {
+        let rec = RetryRecord {
+            steps: vec![
+                make_step(Verb::Create, "/tmp/a"),
+                make_step(Verb::Create, "/tmp/b"),
+                make_step(Verb::Create, "/tmp/c"),
+                make_step(Verb::Create, "/tmp/d"),
+            ],
+            statuses: vec![
+                StepStatus::Applied,
+                StepStatus::Failed,
+                StepStatus::Failed,
+                StepStatus::Marked,
+            ],
+        };
+        let p = payload_dropping(&rec, &[1]);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].path, "/tmp/c");
+        assert_eq!(p[1].path, "/tmp/d");
+    }
+
+    #[test]
+    fn payload_dropping_ignores_out_of_range() {
+        let rec = RetryRecord {
+            steps: vec![make_step(Verb::Create, "/tmp/a")],
+            statuses: vec![StepStatus::Failed],
+        };
+        let p = payload_dropping(&rec, &[99]);
+        assert_eq!(p.len(), 1);
+    }
+
+    #[test]
+    fn build_retry_chain_with_exclude_drops_steps() {
+        let dir = tmp();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, "one\n").expect("write");
+        fs::write(&b, "two\n").expect("write");
+        let rec = RetryRecord {
+            steps: vec![
+                replace_step(&a, "one", "ONE"),
+                replace_step(&b, "two", "TWO"),
+            ],
+            statuses: vec![StepStatus::Failed, StepStatus::Failed],
+        };
+        let chain = build_retry_chain(&rec, None, Some(&[1]), None).expect("build");
+        assert_eq!(chain.steps.len(), 1);
+        assert_eq!(chain.steps[0].after, "ONE\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_retry_chain_rejects_only_and_exclude() {
+        let rec = RetryRecord {
+            steps: vec![make_step(Verb::Create, "/tmp/a")],
+            statuses: vec![StepStatus::Failed],
+        };
+        let err = build_retry_chain(&rec, Some(&[0]), Some(&[0]), None)
+            .expect_err("both");
+        assert!(err.contains("include") || err.contains("combine"), "got: {err}");
+    }
+
+    #[test]
+    fn build_retry_chain_rejects_exclude_with_replacements() {
+        let rec = RetryRecord {
+            steps: vec![make_step(Verb::Create, "/tmp/a")],
+            statuses: vec![StepStatus::Failed],
+        };
+        let err = build_retry_chain(
+            &rec,
+            None,
+            Some(&[0]),
+            Some(&[make_step(Verb::Create, "/tmp/a")]),
+        )
+        .expect_err("exclude+body");
+        assert!(err.contains("doesn't take replacement bodies"), "got: {err}");
+    }
+
+    #[test]
     fn payload_skips_applied() {
         let rec = RetryRecord {
             steps: vec![
@@ -246,7 +353,7 @@ mod tests {
             steps: vec![],
             statuses: vec![],
         };
-        let e = build_retry_chain(&rec, None, None).expect_err("empty");
+        let e = build_retry_chain(&rec, None, None, None).expect_err("empty");
         assert!(e.contains("nothing to retry"), "got: {e}");
     }
 
@@ -256,7 +363,7 @@ mod tests {
             steps: vec![make_step(Verb::Create, "/tmp/a")],
             statuses: vec![StepStatus::Applied],
         };
-        let e = build_retry_chain(&rec, None, None).expect_err("all applied");
+        let e = build_retry_chain(&rec, None, None, None).expect_err("all applied");
         assert!(e.contains("nothing to retry"), "got: {e}");
     }
 
@@ -269,7 +376,7 @@ mod tests {
             steps: vec![cargo],
             statuses: vec![StepStatus::Failed],
         };
-        let e = build_retry_chain(&rec, None, None).expect_err("run");
+        let e = build_retry_chain(&rec, None, None, None).expect_err("run");
         assert!(e.contains("run"), "got: {e}");
     }
 
@@ -282,7 +389,7 @@ mod tests {
             steps: vec![replace_step(&file, "hello", "world")],
             statuses: vec![StepStatus::Failed],
         };
-        let chain = build_retry_chain(&rec, None, None).expect("build");
+        let chain = build_retry_chain(&rec, None, None, None).expect("build");
         assert_eq!(chain.steps.len(), 1);
         assert_eq!(chain.steps[0].after, "world\n");
         let _ = fs::remove_dir_all(&dir);
@@ -302,7 +409,7 @@ mod tests {
             ],
             statuses: vec![StepStatus::Failed, StepStatus::Failed],
         };
-        let chain = build_retry_chain(&rec, Some(&[1]), None).expect("build");
+        let chain = build_retry_chain(&rec, Some(&[1]), None, None).expect("build");
         assert_eq!(chain.steps.len(), 1);
         assert_eq!(chain.steps[0].after, "TWO\n");
         let _ = fs::remove_dir_all(&dir);
@@ -347,7 +454,7 @@ mod tests {
             statuses: vec![StepStatus::Failed],
         };
         let new_step = replace_step(&file, "hello", "goodbye");
-        let chain = build_retry_chain(&rec, Some(&[0]), Some(&[new_step]))
+        let chain = build_retry_chain(&rec, Some(&[0]), None, Some(&[new_step]))
             .expect("build");
         assert_eq!(chain.steps.len(), 1);
         assert_eq!(chain.steps[0].after, "goodbye\n");
@@ -363,6 +470,7 @@ mod tests {
         let err = build_retry_chain(
             &rec,
             Some(&[0]),
+            None,
             Some(&[
                 make_step(Verb::Create, "/tmp/a"),
                 make_step(Verb::Create, "/tmp/b"),
@@ -394,7 +502,7 @@ mod tests {
             ],
         };
         let fixed = replace_step(&b, "two\n", "two-fixed");
-        let chain = build_retry_chain(&rec, Some(&[1]), Some(&[fixed]))
+        let chain = build_retry_chain(&rec, Some(&[1]), None, Some(&[fixed]))
             .expect("build");
         assert_eq!(chain.steps.len(), 3, "all steps should be retried");
         assert_eq!(chain.steps[0].after, "ONE\n");
@@ -418,7 +526,7 @@ mod tests {
             statuses: vec![StepStatus::Applied, StepStatus::Failed],
         };
         let fixed = replace_step(&b, "two\n", "two-fixed");
-        let chain = build_retry_chain(&rec, Some(&[1]), Some(&[fixed]))
+        let chain = build_retry_chain(&rec, Some(&[1]), None, Some(&[fixed]))
             .expect("build");
         assert_eq!(chain.steps.len(), 1, "applied step is not resent");
         assert_eq!(chain.steps[0].after, "two-fixed");
@@ -434,6 +542,7 @@ mod tests {
         let err = build_retry_chain(
             &rec,
             Some(&[0]),
+            None,
             Some(&[make_step(Verb::Create, "/tmp/a")]),
         )
         .expect_err("should fail");

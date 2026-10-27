@@ -422,3 +422,50 @@ across all three workspaces.
 /run/user/1000/zap.sock. Hardcoded in
 zapgui/app_core/src/terminal_router/mod.rs (SOCKET_PATH) and
 zapcli/app_core/src/general_util/socket.rs (SOCKET).
+
+## Changes 2026-10-27
+
+- `zaprm` is now `delete`. The old name is gone, no alias.
+- `retry -N [M ...]` drops the named steps from a retry. `retry -2`
+  retries every unapplied step except step 2. Can't mix included and
+  dropped step numbers in one line. `retry -N` doesn't take a
+  replacement body. Retry argument errors now go on the clipboard with
+  a "Retry failed · copied" popup, same as other retry failures.
+- Chain body verbs (`create`, `replace`, `overwrite`, `append`) and a
+  chain `cd` line accept a path wrapped in one matching pair of `"` or
+  `'`. The pair is stripped; the rest is taken verbatim. No escapes,
+  no splitting on spaces inside. The built-ins `cat`, `head`, `tail`,
+  `wc`, `ls` also accept quoted paths.
+- extensions.txt can contain the token `noext` to allow extensionless
+  files (`Makefile`, `.gitignore`). The add field in the Allowed
+  extensions menu, when empty, adds `noext`.
+- `zap p` (from a terminal) sends `$PWD` to the running zapcli as a new
+  `cd` folder and raises its window. `zap -free` is gone; plain `zap`
+  launches zapcli detached. `build_both.sh`, `zapcli/build_and_install.sh`
+  and `zapgui/build_and_install.sh` pkill both binaries before
+  installing, so a fresh launch always picks up the new code.
+  `build_both.sh` sleeps 1s then runs `zap`, so a rebuild ends with a
+  fresh zapcli in front of you.
+- `cl` is an alias for `cls` / `clear`.
+- A chain that fails to parse may print a repair suggestion (`Proposed
+  fix: ...`) and offer `Type y to send the corrected chain.` Typing `y`
+  sends the corrected chain. Typing anything else drops the offer.
+  Covered: misspelled verbs, marker typos (`@ends`, `@news`, `@olds`),
+  missing final marker, missing `@end` before another header.
+- Exec/run spawn failures where the OS can't find the program (`spawn
+  cargo: No such file or directory`) are fixed by resolving the program
+  through `/bin/bash -lc` / `-lic` first, then spawning the absolute
+  path. Typed text never reaches a shell — only approved `run` or
+  `cargo` steps.
+- Review window: the blocks column on the right is a scroll area and is
+  grouped by folder. Each folder group with 2+ members gets a subtle
+  border around its blocks.
+- Review window: all click guards removed, including the 600 ms guard
+  on the wide ALLOW button.
+- Review window: a step with content on only one side (empty before or
+  empty after) shows a single half-width pane centered in the viewer.
+  The other pane, its HRs, wrap marks and hit test are all skipped.
+- Review window: the boundary chip names "md files only", "txt files
+  only" or "md/txt files only" when the chain touches only those.
+- Review window: the wide ALLOW button alone confirms a special step.
+  Verify is no longer required first.

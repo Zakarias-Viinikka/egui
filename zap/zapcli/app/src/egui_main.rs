@@ -53,8 +53,14 @@ fn setup_guard_handed_off() -> bool {
         for mut s in listener.incoming().flatten() {
             let mut buf = String::new();
             let _ = s.read_to_string(&mut buf);
-            if buf.trim() == "focus" {
+            let msg = buf.trim();
+            if msg == "focus" {
                 app_core::general_util::instance_guard::request_focus();
+            } else if let Some(rest) = msg.strip_prefix("cd ") {
+                let path = std::path::PathBuf::from(rest.trim());
+                if path.is_dir() {
+                    app_core::general_util::instance_guard::request_cd(path);
+                }
             }
         }
     });

@@ -125,7 +125,7 @@ impl Chain {
     /// The path and after text of the last content-writing step per file,
     /// honoring `wanted`. A missing entry in `wanted` counts as true, so
     /// an empty slice means every step. Steps that write no content
-    /// (zaprm, zapmv, mkdir, rmdir, cargo, run) never appear.
+    /// (delete, zapmv, mkdir, rmdir, cargo, run) never appear.
     pub fn final_writes(&self, wanted: &[bool]) -> Vec<(PathBuf, String)> {
         let mut out: Vec<(PathBuf, String)> = Vec::new();
         for (i, step) in self.steps.iter().enumerate() {
@@ -683,7 +683,7 @@ fn verb_name(v: Verb) -> &'static str {
         Verb::Replace => "replace",
         Verb::Overwrite => "overwrite",
         Verb::Append => "append",
-        Verb::Remove => "zaprm",
+        Verb::Remove => "delete",
         Verb::Move => "zapmv",
         Verb::Mkdir => "mkdir",
         Verb::RemoveDir => "rmdir",
@@ -1778,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn final_writes_drops_zaprm_zapmv_mkdir_rmdir() {
+    fn final_writes_drops_delete_zapmv_mkdir_rmdir() {
         let dir = tmp();
         let rm_file = dir.join("rm.txt");
         let src = dir.join("src.txt");
@@ -1932,7 +1932,7 @@ mod tests {
     }
 
     #[test]
-    fn three_whitelisted_edits_and_a_zaprm_marks_only_the_zaprm() {
+    fn three_whitelisted_edits_and_a_delete_marks_only_the_delete() {
         let dir = tmp();
         let sub = dir.join("w");
         fs::create_dir_all(&sub).expect("mkdir");
@@ -1956,7 +1956,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_outside_whitelist_is_marked_with_the_zaprm() {
+    fn an_edit_outside_whitelist_is_marked_with_the_delete() {
         let dir = tmp();
         let sub = dir.join("w");
         let outside = dir.join("out");
@@ -2197,7 +2197,7 @@ mod tests {
     }
 
     #[test]
-    fn zaprm_on_a_mistyped_name_suggests_the_sibling() {
+    fn delete_on_a_mistyped_name_suggests_the_sibling() {
         let dir = tmp();
         fs::write(dir.join("utils.rs"), "x\n").expect("write");
         let err = fail_text(vec![rm_step(&dir.join("utlis.rs"))], &dir);

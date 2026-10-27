@@ -280,7 +280,7 @@ fn verb_of(applied: &AppliedStep) -> &'static str {
         Verb::Replace => "replace",
         Verb::Overwrite => "overwrite",
         Verb::Append => "append",
-        Verb::Remove => "zaprm",
+        Verb::Remove => "delete",
         Verb::Move => "zapmv",
         Verb::Mkdir => "mkdir",
         Verb::RemoveDir => "rmdir",

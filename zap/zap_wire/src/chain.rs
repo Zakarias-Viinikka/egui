@@ -56,7 +56,7 @@ impl Verb {
             Verb::Replace => "replace",
             Verb::Overwrite => "overwrite",
             Verb::Append => "append",
-            Verb::Remove => "zaprm",
+            Verb::Remove => "delete",
             Verb::Move => "zapmv",
             Verb::Mkdir => "mkdir",
             Verb::RemoveDir => "rmdir",
@@ -69,14 +69,14 @@ impl Verb {
     }
 
     /// The verb a header word names, if any. `rm` and `mv` are not here:
-    /// they are refused with a "use zaprm / zapmv" message.
+    /// they are refused with a "use delete / zapmv" message.
     pub fn from_word(word: &str) -> Option<Verb> {
         Some(match word {
             "create" => Verb::Create,
             "replace" => Verb::Replace,
             "overwrite" => Verb::Overwrite,
             "append" => Verb::Append,
-            "zaprm" => Verb::Remove,
+            "delete" => Verb::Remove,
             "zapmv" => Verb::Move,
             "mkdir" => Verb::Mkdir,
             "rmdir" => Verb::RemoveDir,
@@ -339,7 +339,7 @@ pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseF
                     message: "cd: &&, ; and | are not supported; put cd on its own line and the cargo or run line under it".to_string(),
                 });
                 reported = true;
-            } else if !is_absolute_or_home(folder) {
+            } else if !is_absolute_or_home(&folder) {
                 errors.push(ParseError {
                     line: header_no,
                     message: format!(
@@ -347,7 +347,7 @@ pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseF
                     ),
                 });
                 reported = true;
-            } else if let Some(msg) = config.hidden.refusal(std::path::Path::new(folder)) {
+            } else if let Some(msg) = config.hidden.refusal(std::path::Path::new(&folder)) {
                 errors.push(ParseError { line: header_no, message: msg });
                 reported = true;
             }
@@ -548,16 +548,31 @@ pub fn parse_with(input: &str, config: &ParseConfig) -> Result<Vec<Step>, ParseF
     }
 }
 
-fn try_cd(line: &str) -> Option<&str> {
+fn try_cd(line: &str) -> Option<String> {
     let (word, rest) = match line.find(char::is_whitespace) {
         Some(idx) => (&line[..idx], line[idx + 1..].trim()),
         None => (line, ""),
     };
     if word == "cd" && !rest.is_empty() {
-        Some(rest)
+        Some(strip_one_quote_pair(rest))
     } else {
         None
     }
+}
+
+/// Strip one matching pair of `"` or `'` from around `s`, if present.
+/// The whole string must be wrapped in the same quote char; otherwise
+/// nothing changes.
+fn strip_one_quote_pair(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if s.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return s[1..s.len() - 1].to_string();
+        }
+    }
+    s.to_string()
 }
 
 /// A line that starts a new step: its first word is a verb, or cd, rm or mv.
@@ -597,7 +612,7 @@ fn parse_header(line: &str, line_no: usize) -> Result<(Verb, &str), ParseError> 
     };
     let Some(verb) = Verb::from_word(word) else {
         let message = match word {
-            "rm" => "use zaprm".to_string(),
+            "rm" => "use delete".to_string(),
             "mv" => "use zapmv".to_string(),
             _ => format!("unknown command: {:?}", word),
         };
@@ -632,13 +647,19 @@ fn read_block(
         ));
     }
     if !is_marker_line(lines[i]) {
-        // A body was forgotten: the text where a marker was due is not
-        // part of any block. Resume at the next thing that looks like a step.
+        // A body was forgotten, or a marker was misspelled. If the line
+        // starts with `@`, report what was found so the repair module can
+        // suggest the closest real marker. Otherwise just say what was
+        // expected.
+        let t = lines[i].trim_end();
+        let expected_first = if verb == Verb::Replace { "old" } else { "new" };
+        let message = if t.starts_with('@') {
+            format!("{}: expected @{}, got {}", verb.name(), expected_first, t)
+        } else {
+            format!("{}: expected @{}", verb.name(), expected_first)
+        };
         return Err((
-            ParseError {
-                line: i + 1,
-                message: format!("{}: expected @new", verb.name()),
-            },
+            ParseError { line: i + 1, message },
             next_header(lines, i),
         ));
     }
@@ -704,7 +725,7 @@ fn parse_single_line(
                 if a.starts_with('-') && a.len() > 1 {
                     return Err(ParseError {
                         line,
-                        message: format!("rm: unsupported option {a}"),
+                        message: format!("delete: unsupported option {a}"),
                     });
                 }
                 require_absolute(a, line, verb, config)?;
@@ -1060,6 +1081,8 @@ fn parse_path_and_flags(
         }
     }
 
+    rest = strip_one_quote_pair(&rest);
+
     if rest.is_empty() {
         return Err(ParseError {
             line,
@@ -1272,7 +1295,7 @@ mod tests {
 
     #[test]
     fn parses_a_remove() {
-        let steps = parse("zaprm /tmp/a.rs\n").expect("parse");
+        let steps = parse("delete /tmp/a.rs\n").expect("parse");
         assert_eq!(steps[0].verb, Verb::Remove);
     }
 
@@ -1285,7 +1308,7 @@ mod tests {
     #[test]
     fn old_rm_name_is_rejected() {
         let err = parse("rm /tmp/a.rs\n").expect_err("should fail");
-        assert!(err.message.contains("zaprm"), "got: {}", err.message);
+        assert!(err.message.contains("delete"), "got: {}", err.message);
     }
 
     #[test]
@@ -1450,9 +1473,9 @@ mod tests {
     }
 
     #[test]
-    fn hidden_rejects_zaprm_zapmv_mkdir_rmdir_chmod() {
+    fn hidden_rejects_delete_zapmv_mkdir_rmdir_chmod() {
         let cases = [
-            "zaprm /srv/secret/a.rs\n",
+            "delete /srv/secret/a.rs\n",
             "zapmv /srv/secret/a.rs /tmp/b.rs\n",
             "zapmv /tmp/a.rs /srv/secret/b.rs\n",
             "mkdir /srv/secret/sub\n",
@@ -1471,8 +1494,8 @@ mod tests {
     }
 
     #[test]
-    fn hidden_rejects_zaprm_with_hidden_path_second() {
-        let err = parse_hidden("zaprm /tmp/a.rs /srv/secret/b.rs\n", &["/srv/secret"])
+    fn hidden_rejects_delete_with_hidden_path_second() {
+        let err = parse_hidden("delete /tmp/a.rs /srv/secret/b.rs\n", &["/srv/secret"])
             .expect_err("should fail");
         assert!(
             err.message.starts_with("deliberately hidden by the user: "),
@@ -1509,7 +1532,7 @@ mod tests {
     fn empty_config_keeps_every_form_parsing() {
         let cases = [
             "create /srv/secret/a.rs\n@new\nx\n@end\n",
-            "zaprm /srv/secret/a.rs\n",
+            "delete /srv/secret/a.rs\n",
             "mkdir /srv/secret/sub\n",
             "cd /srv/secret\ncargo test\n",
         ];
@@ -1561,7 +1584,7 @@ mod tests {
     fn allowlist_does_not_affect_non_writing_verbs() {
         let config = allowlist_config("rs");
         for c in [
-            "zaprm /tmp/Makefile\n",
+            "delete /tmp/Makefile\n",
             "zapmv /tmp/Makefile /tmp/b\n",
             "mkdir /tmp/Makefile\n",
             "rmdir /tmp/Makefile\n",
@@ -1586,7 +1609,7 @@ mod tests {
     #[test]
     fn error_clause_ends_with_its_line() {
         let f = parse_all("rm /tmp/a.rs\n").expect_err("should fail");
-        assert_eq!(f.to_string(), "use zaprm at line 1");
+        assert_eq!(f.to_string(), "use delete at line 1");
     }
 
     #[test]
@@ -1596,7 +1619,7 @@ mod tests {
         let s = f.to_string();
         assert_eq!(
             s,
-            "use zaprm at line 1; create: path must be absolute or start with ~/ (got src/a.rs) at line 2; cd: folder must be absolute or start with ~/ (got tmp) at line 6"
+            "use delete at line 1; create: path must be absolute or start with ~/ (got src/a.rs) at line 2; cd: folder must be absolute or start with ~/ (got tmp) at line 6"
         );
         assert!(!s.contains('\n'));
         assert!(!s.contains("line 1:"));
@@ -1620,7 +1643,7 @@ mod tests {
 
     #[test]
     fn forgotten_body_skips_code_lines() {
-        let input = "create /tmp/a.rs\nfn main() {}\nlet x = 1;\nzaprm src/b.rs\n";
+        let input = "create /tmp/a.rs\nfn main() {}\nlet x = 1;\ndelete src/b.rs\n";
         let f = parse_all(input).expect_err("should fail");
         assert_eq!(f.errors().len(), 2, "got: {f}");
         assert_eq!(f.errors()[0].line, 2);
@@ -1654,7 +1677,7 @@ mod tests {
 
     #[test]
     fn steps_after_run_give_one_complaint() {
-        let input = "cd /tmp\ncargo test\nzaprm /tmp/a\nzaprm /tmp/b\nmkdir /tmp/c\nrmdir /tmp/d\n";
+        let input = "cd /tmp\ncargo test\ndelete /tmp/a\ndelete /tmp/b\nmkdir /tmp/c\nrmdir /tmp/d\n";
         let f = parse_all(input).expect_err("should fail");
         assert_eq!(f.errors().len(), 1, "got: {f}");
         assert_eq!(f.first().line, 3);
@@ -1663,7 +1686,7 @@ mod tests {
 
     #[test]
     fn errors_after_run_still_show() {
-        let input = "cd /tmp\ncargo test\nzaprm /tmp/a\nzaprm rel\n";
+        let input = "cd /tmp\ncargo test\ndelete /tmp/a\ndelete rel\n";
         let f = parse_all(input).expect_err("should fail");
         assert_eq!(f.errors().len(), 2, "got: {f}");
         assert!(f.errors()[0].message.contains("last step"));
@@ -1691,7 +1714,7 @@ mod tests {
     #[test]
     fn from_word_knows_every_verb_and_not_rm_mv() {
         for w in [
-            "create", "replace", "overwrite", "append", "zaprm", "zapmv", "mkdir",
+            "create", "replace", "overwrite", "append", "delete", "zapmv", "mkdir",
             "rmdir", "chmod", "cargo", "run", "rename", "astgrep",
         ] {
             let v = Verb::from_word(w).expect(w);
@@ -1912,5 +1935,108 @@ mod tests {
             assert_eq!(v.always_reviewed(), expect_always(v), "always_reviewed {:?}", v);
             assert_eq!(v.has_editable_target(), expect_editable(v), "has_editable_target {:?}", v);
         }
+    }
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::*;
+
+    fn parse_q(input: &str) -> Result<Vec<Step>, ParseError> {
+        parse_with(input, &ParseConfig::empty()).map_err(|f| f.first().clone())
+    }
+
+    #[test]
+    fn quoted_create_path_is_stripped() {
+        let steps = parse_q("create \"/tmp/a b.md\"\n@new\nx\n@end\n").expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+    }
+
+    #[test]
+    fn single_quoted_create_path_is_stripped() {
+        let steps = parse_q("create '/tmp/a b.md'\n@new\nx\n@end\n").expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+    }
+
+    #[test]
+    fn quoted_cd_folder_is_stripped() {
+        let steps =
+            parse_q("cd \"/tmp/a b\"\ncargo check\n").expect("parse");
+        assert_eq!(steps[0].cwd.as_deref(), Some("/tmp/a b"));
+    }
+
+    #[test]
+    fn quoted_append_path_is_stripped() {
+        let steps = parse_q("append \"/tmp/a b.md\"\n@new\nmore\n@end\n").expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+    }
+
+    #[test]
+    fn quoted_overwrite_path_is_stripped() {
+        let steps =
+            parse_q("overwrite \"/tmp/a b.md\"\n@new\nwhole\n@end\n").expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+    }
+
+    #[test]
+    fn quoted_replace_path_is_stripped() {
+        let steps = parse_q(
+            "replace \"/tmp/a b.md\"\n@old\nx\n@new\ny\n@end\n",
+        )
+        .expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+    }
+
+    #[test]
+    fn quote_with_count_flag_still_works() {
+        let steps = parse_q(
+            "replace \"/tmp/a b.md\" x3\n@old\nx\n@new\ny\n@end\n",
+        )
+        .expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+        assert_eq!(steps[0].count, Some(3));
+    }
+
+    #[test]
+    fn quote_with_no_newline_flag_still_works() {
+        let steps =
+            parse_q("create \"/tmp/a b.md\" --no-newline\n@new\nx\n@end\n")
+                .expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+        assert!(steps[0].no_newline);
+    }
+
+    #[test]
+    fn mismatched_quotes_are_still_refused() {
+        // `"/tmp/a` never closes the quote; the leading `"` makes the
+        // path look relative, so the absolute check fires.
+        let err = parse_q("create \"/tmp/a b.md\n@new\nx\n@end\n")
+            .expect_err("should fail");
+        assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn empty_quoted_path_is_missing() {
+        let err = parse_q("create \"\"\n@new\nx\n@end\n").expect_err("should fail");
+        assert!(err.message.contains("missing path"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn unquoted_path_with_space_is_still_accepted() {
+        // The old behaviour: everything after the verb is the path.
+        let steps = parse_q("create /tmp/a b.md\n@new\nx\n@end\n").expect("parse");
+        assert_eq!(steps[0].path, "/tmp/a b.md");
+    }
+
+    #[test]
+    fn strip_one_quote_pair_works() {
+        assert_eq!(strip_one_quote_pair("\"/a b\""), "/a b");
+        assert_eq!(strip_one_quote_pair("'/a b'"), "/a b");
+        assert_eq!(strip_one_quote_pair("/a b"), "/a b");
+        assert_eq!(strip_one_quote_pair("\"/a"), "\"/a");
+        assert_eq!(strip_one_quote_pair("a\""), "a\"");
+        assert_eq!(strip_one_quote_pair("\"a'"), "\"a'");
+        assert_eq!(strip_one_quote_pair(""), "");
+        assert_eq!(strip_one_quote_pair("\""), "\"");
     }
 }

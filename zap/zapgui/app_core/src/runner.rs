@@ -58,8 +58,45 @@ impl Run {
     }
 }
 
+/// Resolve `program` to an absolute path when possible, using the user's
+/// login shell so their `.bashrc` PATH setup (rustup shims, custom
+/// bin dirs, etc.) is visible. Falls back to the input unchanged when
+/// resolution fails, so direct spawn behaves as before.
+///
+/// Only the *program name* goes through the shell; the args are still
+/// passed as a plain argv array to `Command::spawn`. Typed text in
+/// zapcli never reaches this code path — only `run` and `cargo` steps
+/// the user approved in the review window do.
+fn resolve_program(program: &str) -> String {
+    if program.starts_with('/') {
+        return program.to_string();
+    }
+    let cmdstr = format!("command -v -- {}", program);
+    for flags in [&["-lc"][..], &["-lic"][..]] {
+        let mut cmd = Command::new("/bin/bash");
+        for f in flags {
+            cmd.arg(f);
+        }
+        cmd.arg(&cmdstr)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Ok(out) = cmd.output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let p = s.trim();
+                if p.starts_with('/') {
+                    return p.to_string();
+                }
+            }
+        }
+    }
+    program.to_string()
+}
+
 pub fn spawn(spec: RunSpec) -> Result<Run, String> {
-    let mut cmd = Command::new(&spec.program);
+    let resolved = resolve_program(&spec.program);
+    let mut cmd = Command::new(&resolved);
     cmd.args(&spec.args)
         .current_dir(&spec.cwd)
         .stdin(Stdio::null())
@@ -332,5 +369,29 @@ mod tests {
         }
         let s = done.expect("done event");
         assert!(s.starts_with("signal "), "got {s}");
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_path_is_returned_unchanged() {
+        assert_eq!(resolve_program("/bin/echo"), "/bin/echo");
+        assert_eq!(resolve_program("/usr/bin/env"), "/usr/bin/env");
+    }
+
+    #[test]
+    fn path_resolved_name_returns_absolute() {
+        // echo is on every linux PATH. The result must be absolute.
+        let p = resolve_program("echo");
+        assert!(p.starts_with('/'), "got: {p}");
+    }
+
+    #[test]
+    fn nonexistent_name_falls_back_unchanged() {
+        let p = resolve_program("this-name-does-not-exist-xyzzy-123");
+        assert_eq!(p, "this-name-does-not-exist-xyzzy-123");
     }
 }

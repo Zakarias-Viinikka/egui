@@ -285,3 +285,69 @@ thresholds, tuning the wrap-arrow colour, and the step's preview
 still including a marked earlier step's edit on the same file
 (writes are correct; only the preview is cumulative). Rename `zaprm`
 to `delete` is in todo_later. The astgrep verb is .rs only.
+
+## Batch 2026-10-27
+
+See `stale_artifacts/27_oct_preplan.md` for the pre-plan. Done in this
+batch:
+
+- `zaprm` renamed to `delete` everywhere; `Verb::Remove` already named
+  itself `delete`, so this only removed an old alias and updated docs
+  and tests.
+- `retry -N` drop-steps. `retry::payload_dropping`, an `exclude` arg to
+  `build_retry_chain`, arg parsing in `route_requests::handle_retry`,
+  and `retry_arg_error` for the popup + clipboard on arg errors. Tests
+  pin behaviour: mixing include/exclude refused, exclude+body refused,
+  out-of-range excluded indices ignored.
+- Quoted paths: `path_parsing::split_quoted` for the built-ins,
+  `chain::strip_one_quote_pair` for body verbs and chain `cd`.
+- Extensionless files: `extensions::NO_EXTENSION_TOKEN` (`"noext"`)
+  checked on a path with no dotted extension. `validate_extension_entry`
+  returns the token when given an empty string, and the menu's add
+  field never bails on empty. `NO_EXTENSION_TOKEN` re-exported from
+  `app_core::chain::whitelist` because `app` doesn't depend on
+  `zap_wire`.
+- `zap p` and kill-on-launch: `instance_guard::request_cd` /
+  `take_cd`, listener parses `cd <path>` off the socket, UI takes the
+  pending cwd once per frame. `build_both.sh` and both
+  `build_and_install.sh` scripts pkill both binaries before installing.
+  `build_both.sh` ends with `sleep 1; zap`.
+- `cl` alias for `cls` / `clear`.
+- Repair suggestions: new module `zap_wire::repair`. It iterates: fix
+  one error, re-parse, fix the next, up to 4 rounds. Gives up if no
+  fix is available or if the corrected chain still fails to parse. The
+  parser was changed to name what it found for a `@`-prefixed
+  non-marker (e.g. `create: expected @new, got @news`) so the typo
+  path has data to work on. `first_word_is_chain_verb` in the router
+  routes near-miss verbs (edit distance 1 for short words, 2 for 6+
+  chars) to the chain parser so the repair path runs. On a repair,
+  `session.pending_chain_repair` stores the corrected text; the next
+  `y` sends it, any other non-empty input clears it.
+- Exec/run spawn: `runner::resolve_program` tries `bash -lc 'command -v
+  -- <prog>'`, then `-lic`, and uses the absolute path. Falls back to
+  the input if both fail. Only approved `run`/`cargo` steps go through
+  this path.
+- Review window: blocks column is a scroll area. `blocks_ordered_by_folder`
+  sorts visible steps by `step_folder` (parent of the step's path), then
+  by step number. Groups of 2+ folders get a border drawn 10 px outside
+  the block extents. `StrokeKind::Middle` so the stroke straddles the
+  edge.
+- Review window: `CLICK_GUARD` and `SPECIAL_CLICK_GUARD` removed. So
+  were `shown_at`, `surface_shown_at` and every `elapsed()` read of
+  them.
+- Review window: `diff_viewer_body` computes `has_left` / `has_right`
+  from the rows and picks a `single: Option<Which>`. When one side is
+  empty, the pane is half-width, centered, and the other side's bar,
+  line numbers, HR, wrap marks and hit-test region are all skipped.
+- Review window: `boundary_chip_text` takes the chain and appends a
+  file-type note. `file_type_note` returns "md files only", "txt files
+  only" or "md/txt files only" only when every step touches one of
+  those extensions.
+- Review window: `confirm_gate` no longer checks `verified` for a
+  special verb. `allowed` alone passes. Tests updated.
+
+Pending items from this batch's own discussions that were NOT acted on:
+the user asked whether built-in errors (cd / cat / ls / head / tail /
+wc) should copy to the clipboard like chain-parse errors do. That
+question was left open. Only chain-parse and retry-arg errors copy
+today.

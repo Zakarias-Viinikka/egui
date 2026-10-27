@@ -410,29 +410,60 @@ pub fn route(request: &str) -> String {
         return handle_last(Some(rest.trim()));
     }
     if request == "retry" {
-        return handle_retry(None, None);
+        return handle_retry(None, None, None);
     }
     if let Some(rest) = request.strip_prefix("retry ") {
         let (nums_part, body) = match rest.find('\n') {
             Some(nl) => (&rest[..nl], Some(&rest[nl + 1..])),
             None => (rest, None),
         };
+        let tokens: Vec<&str> = nums_part.split_whitespace().collect();
+        if tokens.is_empty() {
+            return retry_arg_error("zapgui: retry takes step numbers or nothing".to_string());
+        }
+        let is_exclude = tokens[0].starts_with('-');
         let mut idx: Vec<usize> = Vec::new();
-        for tok in nums_part.split_whitespace() {
-            match tok.parse::<usize>() {
+        for tok in &tokens {
+            let parsed = if is_exclude {
+                match tok.strip_prefix('-') {
+                    Some(n) => n,
+                    None => {
+                        return retry_arg_error(format!(
+                            "zapgui: retry can't mix included and dropped step numbers (got {tok})"
+                        ));
+                    }
+                }
+            } else {
+                if tok.starts_with('-') {
+                    return retry_arg_error(format!(
+                        "zapgui: retry can't mix included and dropped step numbers (got {tok})"
+                    ));
+                }
+                tok
+            };
+            match parsed.parse::<usize>() {
                 Ok(n) if n >= 1 => idx.push(n - 1),
                 Ok(_) => {
-                    return format!("zapgui: step numbers are 1-based (got {tok})");
+                    return retry_arg_error(format!(
+                        "zapgui: step numbers are 1-based (got {tok})"
+                    ));
                 }
                 Err(_) => {
-                    return format!("zapgui: bad step number {tok}");
+                    return retry_arg_error(format!("zapgui: bad step number {tok}"));
                 }
             }
         }
-        if idx.is_empty() {
-            return "zapgui: retry takes step numbers or nothing".to_string();
+        let had_body = body.map(|b| !b.trim().is_empty()).unwrap_or(false);
+        if is_exclude && had_body {
+            return retry_arg_error(
+                "zapgui: retry -N doesn't take replacement bodies".to_string(),
+            );
         }
-        return handle_retry(Some(idx), body);
+        return if is_exclude {
+            handle_retry(None, Some(idx), body)
+        } else {
+            handle_retry(Some(idx), None, body)
+        };
     }
     if let Some(rest) = request.strip_prefix("surfacereview ") {
         return handle_surface_review(rest);
@@ -680,10 +711,31 @@ fn retry_failure(sentence: String, had_body: bool) -> String {
     }
 }
 
-fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
+/// Copy a retry argument error to the clipboard and pop a short notice,
+/// matching the pattern retry_failure uses for retry-body failures.
+fn retry_arg_error(msg: String) -> String {
+    crate::chain::popup::notify_copied("Retry failed", &msg);
+    msg
+}
+
+fn handle_retry(
+    only: Option<Vec<usize>>,
+    exclude: Option<Vec<usize>>,
+    body: Option<&str>,
+) -> String {
     let Some(rec) = crate::terminal_router::retry::current() else {
-        return "zapgui: nothing to retry".to_string();
+        return retry_arg_error("zapgui: nothing to retry".to_string());
     };
+    if let Some(ex) = &exclude {
+        for &i in ex {
+            if i >= rec.steps.len() {
+                return retry_arg_error(format!(
+                    "zapgui: no step {} in the last review",
+                    i + 1
+                ));
+            }
+        }
+    }
     let had_body = body.map(|b| !b.trim().is_empty()).unwrap_or(false);
 
     // Steps carried over from the record were parsed before any hidden
@@ -735,6 +787,7 @@ fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
     let chain = match crate::terminal_router::retry::build_retry_chain(
         &rec,
         only.as_deref(),
+        exclude.as_deref(),
         replacements.as_deref(),
     ) {
         Ok(c) => c,
@@ -745,6 +798,16 @@ fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
             );
         }
     };
+    let drop_note = if let Some(ex) = &exclude {
+        let mut nums: Vec<usize> = ex.iter().copied().collect();
+        nums.sort_unstable();
+        nums.dedup();
+        let s: Vec<String> = nums.iter().map(|i| (i + 1).to_string()).collect();
+        Some(format!("dropped step(s) {}", s.join(", ")))
+    } else {
+        None
+    };
+
     match super::stash_pending_chain(chain) {
         Some(displaced) => {
             let first = displaced
@@ -752,12 +815,18 @@ fn handle_retry(only: Option<Vec<usize>>, body: Option<&str>) -> String {
                 .first()
                 .map(|s| s.path.display().to_string())
                 .unwrap_or_default();
-            let sentence = format!("zap: replaced unconfirmed chain ({first}).");
+            let mut sentence = format!("zap: replaced unconfirmed chain ({first}).");
+            if let Some(note) = drop_note {
+                sentence.push_str(&format!(" ({note})"));
+            }
             crate::chain::popup::show("Replaced");
             let _ = crate::clipboard::copy_to_clipboard(&sentence);
             sentence
         }
-        None => String::new(),
+        None => match drop_note {
+            Some(note) => format!("zapgui: retry queued, {note}"),
+            None => String::new(),
+        },
     }
 }
 

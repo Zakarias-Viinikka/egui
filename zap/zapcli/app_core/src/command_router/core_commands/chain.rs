@@ -4,11 +4,18 @@ use super::super::{Line, Outcome, Session, reply_outcome};
 /// before the chain request is sent. Parse errors are separately forwarded for
 /// clipboard copying. `input` is what the user typed, verbatim, including any
 /// newlines from a paste.
-pub fn run(input: &str, session: &Session) -> Outcome {
+pub fn run(input: &str, session: &mut Session) -> Outcome {
     let steps = match zap_wire::chain::parse(input) {
         Ok(s) => s,
         Err(e) => {
-            let message = format!("zap: nothing was sent. {e}.");
+            let mut message = format!("zap: nothing was sent. {e}.");
+            if let Some(rep) = zap_wire::repair::repair(input, &e) {
+                message.push_str(&format!(
+                    " Proposed fix: {}. Type y to send the corrected chain.",
+                    rep.changes.join("; ")
+                ));
+                session.pending_chain_repair = Some(rep.corrected);
+            }
             let copy_request = format!("copy-error\n{message}");
             match crate::general_util::socket::send(&copy_request) {
                 Ok(reply) if reply.starts_with("zap error:") => {
