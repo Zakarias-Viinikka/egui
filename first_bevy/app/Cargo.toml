@@ -1,0 +1,10 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_egui.workspace = true
+every_page_ever = { path = "../every_page_ever" }
+app_core = { path = "../app_core" }
