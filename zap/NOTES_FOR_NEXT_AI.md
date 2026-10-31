@@ -242,11 +242,13 @@ items that todo.md still duplicates; step 18 deletes them.
 
 ## Where the pending decisions live
 
-implementation_plan_2026-10-16.md is the source of truth for the next
-batch. Its header is the session contract; steps 1-3 are the format
-template; step 4 onward are the settled designs. When a step's design
-turns out wrong at implementation time, amend the step in the plan; do
-not restate it here.
+31_implementation_plan.md is the source of truth for the current batch.
+Its header is the session contract; the numbered steps are the settled
+designs. When a step's design turns out wrong at implementation time,
+amend the step in the plan; do not restate it here.
+
+implementation_plan_2026-10-16.md is complete (all 18 steps green); its
+notes below stay as history.
 
 - Step 17: docs sweep (README, CHAIN_CHEATSHEET, CHAIN_REVIEW_UI,
   CONTEXT_FOR_AI, NOTES_FOR_NEXT_AI, FILE_TRUST). A drift guard in
@@ -270,8 +272,9 @@ not restate it here.
 
 ## Plan status
 
-The 18-step plan is complete. All steps 1-18 are implemented and
-green. No further batch of the plan is expected.
+The 18-step plan (implementation_plan_2026-10-16.md) is complete. All
+steps 1-18 are implemented and green. The current batch is
+31_implementation_plan.md.
 
 ## What's not built
 

@@ -9,6 +9,7 @@ Read in this order; don't read the whole repo, most of it is noise.
 README.md first - architecture, wire protocol, egui patch.
 Then CHAIN_CHEATSHEET.md for the grammar and escape rule.
 Then CHAIN_REVIEW_UI.md, FILE_TRUST.md, RETRY.md as needed.
+Then 31_implementation_plan.md for the current batch's spec.
 
 ## 2. Shared parser
 
